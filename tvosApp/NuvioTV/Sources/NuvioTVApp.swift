@@ -21,6 +21,7 @@ struct NuvioTVApp: App {
     init() {
         #if os(macOS)
         MacDiagnostics.start()
+        MacDiagnostics.watchArrowKeys()
         #endif
         let totalRam = ProcessInfo.processInfo.physicalMemory
         let isLegacyDevice = totalRam <= 2_500_000_000 // <= 2.5 GB (Apple TV HD)
@@ -3093,6 +3094,14 @@ struct TVHomeView: View {
     }
     @FocusState private var isLoadingFocusActive: Bool
     @FocusState private var focusedCardID: String?
+    #if os(macOS)
+    /// Captured from the rows' ScrollViewReader so the move handler can scroll
+    /// an off-screen row in before focusing it.
+    @State private var macScrollProxy: ScrollViewProxy?
+    /// Focus dips through nil whenever a row re-renders. Home restores it, since
+    /// no row is allowed to answer that dip on macOS any more.
+    @State private var macLastFocusedCardID: String?
+    #endif
 
     var body: some View {
         let _ = TVHomeDebugTrace.log("home.body.render active=\(isActive) isEnabled=\(isEnabled)")
@@ -3313,6 +3322,12 @@ struct TVHomeView: View {
                             // materialization; lazy mounting limits row work
                             // outside the viewport without changing row geometry.
                             ScrollViewReader { verticalScrollProxy in
+                                #if os(macOS)
+                                // Held so the move handler — which has to live on the focus
+                                // section below, the only place it actually receives commands —
+                                // can still scroll a row into view before focusing it.
+                                let _ = DispatchQueue.main.async { macScrollProxy = verticalScrollProxy }
+                                #endif
                                 ScrollView(.vertical, showsIndicators: false) {
                                     // Spacing is 0 here because each row carries its own top gap;
                                     // see the ForEach below.
@@ -3359,6 +3374,7 @@ struct TVHomeView: View {
                                                     rowScrollStore.setIndex(newIndex, for: section.id)
                                                 },
                                                 initialFocusCardKey: initialFocusCardKey,
+                                                macFocusedCardKey: focusedCardID,
                                                 externalFocus: $focusedCardID,
                                                 restrictFocusToCardKey: overlayRestoreCardID,
                                                 retainFocusAppearanceForCardKey: overlayRestoreCardID,
@@ -3447,6 +3463,7 @@ struct TVHomeView: View {
                                                 },
                                                 initialFocusCardKey: initialFocusCardKey,
                                                 landscapeFocusedId: landscapeFocusedId(for: section.id),
+                                                macFocusedCardKey: focusedCardID,
                                                 externalFocus: $focusedCardID,
                                                 restrictFocusToCardKey: overlayRestoreCardID,
                                                 retainFocusAppearanceForCardKey: overlayRestoreCardID,
@@ -3638,18 +3655,23 @@ struct TVHomeView: View {
                     .defaultFocusIfAvailable($focusedCardID, store.lastFocusedCardID ?? focusWork.pendingOverlayRestoreCardID)
                     #if os(macOS)
                     // macOS has no focus engine, so Home moves its own focus.
+                    // This has to sit on the focus section: on the ScrollView
+                    // inside the reader it never received a single command.
                     .onMoveCommand { direction in
-                        let next = MacHomeFocus.nextCardKey(
-                            from: focusedCardID,
-                            direction: direction,
-                            sections: homeOrderedSections(store.sections)
-                        )
-                        MacDiagnostics.log(
-                            "homeFocus.move dir=\(direction) from=\(focusedCardID ?? "none") "
-                                + "to=\(next ?? "none")"
-                        )
-                        guard let next else { return }
-                        focusedCardID = next
+                        handleMacHomeMove(direction, scrollProxy: macScrollProxy)
+                    }
+                    // Nothing on macOS focuses a card by itself — a click
+                    // activates one instead — and `onMoveCommand` is only
+                    // routed to the focused view and its ancestors. With focus
+                    // nowhere, the arrow keys reach nothing at all, so give
+                    // them somewhere to start.
+                    .onKeyPress(.return) {
+                        macActivateFocusedCard()
+                        return .handled
+                    }
+                    .onAppear { seedMacHomeFocusIfNeeded() }
+                    .onChange(of: store.sections.count) { _, _ in
+                        seedMacHomeFocusIfNeeded()
                     }
                     #endif
                 }
@@ -3671,12 +3693,28 @@ struct TVHomeView: View {
             }
         }
         .task(id: "\(contentIdentity.profileId):\(contentIdentity.catalogRevision):\(tmdbHomeSettingsKey)") {
+            #if os(macOS)
+            // Continue Watching renders from the persisted first page until the
+            // builder runs, and the rebuild below only happens after every
+            // catalog has loaded over the network. On the Apple TV that store is
+            // full from actually watching things, so the gap never shows; on a
+            // Mac it is a thin copy of the account list and the row sat at two
+            // titles until the catalogs finished. Prime it up front, off the
+            // critical path so the catalog load is not delayed.
+            Task { @MainActor in
+                await ContinueWatchingBuilder.rebuild(reason: "home appear")
+                await macFillContinueWatchingPages()
+            }
+            #endif
             await loadWithAutomaticRetry(for: contentIdentity, forceReload: true)
             // Add-on metadata providers are configured by the time Home has
             // loaded, so this is the pass that recovers titles an earlier sync
             // could not resolve. Mirrors the phone's
             // `retryMetadataResolutionWhenAddonMetaProvidersReady`.
             await ContinueWatchingBuilder.rebuild(reason: "home loaded")
+            #if os(macOS)
+            await macFillContinueWatchingPages()
+            #endif
             await ContinueWatchingStore.refreshMissingEpisodeDetails()
         }
         .task(id: "\(contentIdentity.profileId):\(collectionsRevision)") {
@@ -3878,6 +3916,38 @@ struct TVHomeView: View {
             focusWork.landscapeFocusTask?.cancel()
             landscapeFocusedId = nil
         }
+        #if os(macOS)
+        // Distinguishes a write that never lands from one that lands and is
+        // then reverted by another focus authority.
+        .onChange(of: focusedCardID) { oldValue, newValue in
+            MacDiagnostics.log("homeFocus.state \(oldValue ?? "none") -> \(newValue ?? "none")")
+            if let newValue {
+                macPublishHero(for: newValue)
+            }
+            guard isActive else { return }
+            if let newValue {
+                macLastFocusedCardID = newValue
+                return
+            }
+            // A transient nil from a re-render, not a deliberate exit. Focus must
+            // not be left at nil: with nothing focused, no further arrow key is
+            // routed here at all and navigation dies outright — which is exactly
+            // what happened when the remembered card had been unmounted.
+            let restore = macLastFocusedCardID
+            DispatchQueue.main.async {
+                guard focusedCardID == nil, let restore else { return }
+                focusedCardID = restore
+            }
+            // Last resort: if the remembered card no longer exists, put focus on
+            // something that does rather than leaving the app unnavigable.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                guard focusedCardID == nil, isActive else { return }
+                MacDiagnostics.log("homeFocus.recover from=\(restore ?? "none")")
+                macLastFocusedCardID = nil
+                seedMacHomeFocusIfNeeded()
+            }
+        }
+        #endif
         .onChange(of: focusedCardID) { _, newValue in
             if let newValue {
                 if let pendingInitialFocusCardKey {
@@ -4045,6 +4115,7 @@ struct TVHomeView: View {
                             initialScrollIndex: rowScrollStore.index(for: section.id),
                             onScrollIndexChange: { rowScrollStore.setIndex($0, for: section.id) },
                             initialFocusCardKey: initialFocusCardKey,
+                            macFocusedCardKey: focusedCardID,
                             externalFocus: $focusedCardID,
                             restrictFocusToCardKey: overlayRestoreCardID,
                             retainFocusAppearanceForCardKey: overlayRestoreCardID,
@@ -4082,6 +4153,7 @@ struct TVHomeView: View {
                             onScrollIndexChange: { rowScrollStore.setIndex($0, for: section.id) },
                             initialFocusCardKey: initialFocusCardKey,
                             landscapeFocusedId: nil,
+                            macFocusedCardKey: focusedCardID,
                             externalFocus: $focusedCardID,
                             restrictFocusToCardKey: overlayRestoreCardID,
                             retainFocusAppearanceForCardKey: overlayRestoreCardID,
@@ -4128,6 +4200,7 @@ struct TVHomeView: View {
                             section: section,
                             watchedTitleKeys: watchedTitleKeys,
                             initialFocusCardKey: initialFocusCardKey,
+                            macFocusedCardKey: focusedCardID,
                             externalFocus: $focusedCardID,
                             restrictFocusToCardKey: overlayRestoreCardID,
                             onInitialFocusRequested: { didRequestInitialCardFocus = true },
@@ -4583,7 +4656,16 @@ struct TVHomeView: View {
     /// The feature only stands in for the hero when it has something to show —
     /// a new profile with no history keeps the ordinary hero.
     private var featureHeroActive: Bool {
-        homeFeature && homeLayout != "Grid View" && !featureItems.isEmpty
+        #if os(macOS)
+        // The carousel is a tvOS device: it owns focus as a single unit and is
+        // reached by moving up off the first row, which needs the focus engine
+        // macOS does not have. Keeping it here left Continue Watching both
+        // unreachable and invisible on load. As a plain row it is navigable
+        // like everything else.
+        return false
+        #else
+        return homeFeature && homeLayout != "Grid View" && !featureItems.isEmpty
+        #endif
     }
 
     private var visibleHero: NuvioMeta? {
@@ -4931,6 +5013,148 @@ struct TVHomeView: View {
     /// Pinning is an invariant above the user/catalog order: saved cross-device
     /// row positions may arrange the remainder, but can never push a pinned
     /// collection below a catalog.
+    #if os(macOS)
+    /// Arrow-key focus movement for Home.
+    ///
+    /// macOS has no focus engine, so this writes the same `focusedCardID` the
+    /// cards bind to. Kept out of the view builder deliberately — inline it was
+    /// enough to push the enclosing expression past the type-checker's budget.
+    /// Updates the hero/backdrop for a focused card key.
+    ///
+    /// On tvOS the card itself reports focus and Home reacts. That callback never
+    /// arrives here, because moving focus means writing a shared key and the card
+    /// does not re-render for it — so Home resolves the meta itself.
+    private func macPublishHero(for cardKey: String) {
+        guard let sectionId = MacHomeFocus.sectionId(of: cardKey) else { return }
+        let itemId = String(cardKey.dropFirst(sectionId.count + 1))
+        guard let section = macNavigableSections.first(where: { $0.id == sectionId }) else { return }
+        if let meta = section.items.first(where: { $0.id == itemId }) {
+            settleCatalogFocus(on: meta, in: sectionId)
+        } else if let folder = section.collectionFolders.first(where: { $0.id == itemId }) {
+            settleFolderFocus(folder, in: sectionId)
+        }
+    }
+
+    /// Puts focus on a card when nothing holds it, so arrow keys are routed to
+    /// Home at all. Prefers the card the user was last on.
+    private func seedMacHomeFocusIfNeeded() {
+        guard focusedCardID == nil else { return }
+        let sections = macNavigableSections
+        let remembered = store.lastFocusedCardID
+        let seed = remembered.flatMap { key in
+            sections.contains { MacHomeFocus.cardKeys(for: $0).contains(key) } ? key : nil
+        } ?? MacHomeFocus.firstCardKey(sections: sections)
+        guard let seed else { return }
+        MacDiagnostics.log("homeFocus.seed \(seed)")
+        focusedCardID = seed
+    }
+
+    /// Opens whatever the focused card points at, mirroring a row's `onSelect`:
+    /// Continue Watching resumes (unless it is an unaired Up Next entry), and
+    /// everything else opens details.
+    private func macActivateFocusedCard() {
+        guard let cardKey = focusedCardID,
+              let sectionId = MacHomeFocus.sectionId(of: cardKey) else { return }
+        let itemId = String(cardKey.dropFirst(sectionId.count + 1))
+        guard let section = macNavigableSections.first(where: { $0.id == sectionId }) else { return }
+
+        if let folder = section.collectionFolders.first(where: { $0.id == itemId }) {
+            openCollectionFolderFromHome(
+                folder: folder,
+                sectionTitle: section.title,
+                restoreCardID: cardKey
+            )
+            return
+        }
+
+        guard let meta = section.items.first(where: { $0.id == itemId }) else { return }
+        MacDiagnostics.log("homeFocus.activate " + cardKey)
+
+        let isResumeRow = sectionId == TVHomeSection.continueWatchingId
+            || sectionId == TVHomeSection.upcomingId
+        if isResumeRow, let item = continueWatchingByMetaId[meta.id] {
+            if item.isUpNextEntry && !item.hasAired && !item.isAiringToday {
+                navigateToDetailsFromHome(id: meta.id, type: meta.type, restoreCardID: cardKey)
+            } else {
+                onResumePlayback(item)
+            }
+            return
+        }
+        navigateToDetailsFromHome(id: meta.id, type: meta.type, restoreCardID: cardKey)
+    }
+
+    #if os(macOS)
+    /// Materialises the rest of the Continue Watching plan.
+    ///
+    /// The builder renders one ~20-entry slice per page and filters most of it
+    /// out as already watched, so page one yields a couple of rows from a plan
+    /// of seventy-odd. On tvOS the rest arrive as focus nears the end of the
+    /// row; with a pointer and a wide window that just reads as a truncated
+    /// list. Bounded so a long history cannot spin here.
+    @MainActor
+    private func macFillContinueWatchingPages() async {
+        var pages = 0
+        while ContinueWatchingBuilder.canLoadMore, pages < 8 {
+            _ = await ContinueWatchingBuilder.loadNextPage()
+            pages += 1
+        }
+        refreshContinueWatching()
+    }
+    #endif
+
+    /// Exactly the rows the view lays out, including the pinned ones that
+    /// `store.sections` does not carry.
+    private var macNavigableSections: [TVHomeSection] {
+        visibleSections.filter(\.hasContent)
+    }
+
+    private func handleMacHomeMove(_ direction: MoveCommandDirection, scrollProxy: ScrollViewProxy?) {
+        let next = MacHomeFocus.nextCardKey(
+            from: focusedCardID,
+            direction: direction,
+            sections: macNavigableSections
+        )
+        MacDiagnostics.log(
+            "homeFocus.move dir=\(direction) from=\(focusedCardID ?? "none") to=\(next ?? "none")"
+        )
+        guard let next else { return }
+
+        let fromSection = MacHomeFocus.sectionId(of: focusedCardID)
+        let toSection = MacHomeFocus.sectionId(of: next)
+        guard let toSection, toSection != fromSection else {
+            focusedCardID = next
+            return
+        }
+
+        // The rows are a LazyVStack: a row outside the viewport is not mounted,
+        // and focus cannot land on a view that does not exist — which is why
+        // moving into an off-screen row computed the right card but never took.
+        // Scroll it in first (minimally, so the hero above is not pushed off
+        // screen the way an anchored pin would).
+        let previous = focusedCardID
+        scrollProxy?.scrollTo(toSection, anchor: .top)
+        focusedCardID = next
+
+        // A single run-loop turn is not reliably enough for the row to mount,
+        // which made this work intermittently; and while focus is briefly nil
+        // the arriving row seeds its own first card, which beat the write to
+        // the column we actually wanted. Re-assert over a few turns, but only
+        // while focus is still where it was or nowhere — never overrule a
+        // later press.
+        for delay in [0.02, 0.08, 0.2] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard focusedCardID == previous || focusedCardID == nil else { return }
+                focusedCardID = next
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            if focusedCardID != next {
+                MacDiagnostics.log("homeFocus.writeRejected target=" + next)
+            }
+        }
+    }
+    #endif
+
     private func homeOrderedSections(_ sections: [TVHomeSection]) -> [TVHomeSection] {
         let pinnedCollections = sections.filter {
             $0.isCollectionRow && $0.isPinnedCollection
@@ -5155,6 +5379,9 @@ struct TVHomeView: View {
     /// Catalog title focus: card strip + row offset are immediate; hero/backdrop
     /// publish only after the settle delay (and cancel if focus moves again).
     private func settleCatalogFocus(on meta: NuvioMeta, in sectionId: String) {
+        #if os(macOS)
+        MacDiagnostics.log("hero.settleRequested meta=" + meta.id + " section=" + sectionId)
+        #endif
         focusWork.pendingFocusedMeta = meta
         focusWork.pendingFocusedFolder = nil
         focusWork.pendingSectionId = sectionId
@@ -5214,7 +5441,14 @@ struct TVHomeView: View {
             guard let settledMeta = focusWork.pendingFocusedMeta,
                   settledMeta.id == targetMetaId,
                   let targetSectionId,
-                  focusWork.pendingSectionId == targetSectionId else { return }
+                  focusWork.pendingSectionId == targetSectionId else {
+                #if os(macOS)
+                let pending: String = focusWork.pendingFocusedMeta?.id ?? "none"
+                let wanted: String = targetMetaId ?? "none"
+                MacDiagnostics.log("hero.settleBailed pending=" + pending + " wanted=" + wanted)
+                #endif
+                return
+            }
 
             // Leaving a folder hero: clear only after settle so backdrop stays frozen.
             focusedSectionId = targetSectionId
@@ -5224,6 +5458,19 @@ struct TVHomeView: View {
             if focusedMeta?.id != settledMeta.id {
                 focusedMeta = settledMeta
             }
+            #if os(macOS)
+            // Pulled into locals: inline, the interpolation was enough to push
+            // this expression past the type-checker's budget.
+            let heroBackdrop: String = settledMeta.backgroundUrl ?? "none"
+            let heroPoster: String = settledMeta.posterUrl ?? "none"
+            let heroNeedsEnrich: Bool = settledMeta.needsHeroMetadataEnrichment
+            MacDiagnostics.log(
+                "hero.publish meta=" + settledMeta.id
+                    + " backdrop=" + heroBackdrop
+                    + " poster=" + heroPoster
+                    + " needsEnrich=" + String(heroNeedsEnrich)
+            )
+            #endif
 
             TVHomeDebugTrace.log(
                 "hero.publish section=\(targetSectionId) meta=\(settledMeta.id) "

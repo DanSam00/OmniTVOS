@@ -104,7 +104,7 @@ struct DetailsScreen: View {
                     onBack: handleBack
                 )
             } else if viewModel.uiState.meta != nil {
-                #if os(tvOS)
+                #if os(tvOS) || os(macOS)
                 TvDetailsContent(
                     uiState: viewModel.uiState,
                     onPlayClick: {
@@ -180,7 +180,7 @@ struct DetailsScreen: View {
                 #endif
             }
 
-            #if os(tvOS)
+            #if os(tvOS) || os(macOS)
             if let expandedComment {
                 CommentDetailOverlay(
                     comment: expandedComment,
@@ -204,7 +204,7 @@ struct DetailsScreen: View {
             #endif
         }
         .animation(.easeInOut(duration: 0.18), value: isStreamPickerPresented)
-        #if os(tvOS)
+        #if os(tvOS) || os(macOS)
         // Present sources in an isolated full-screen focus hierarchy. Keeping
         // this overlay inside the details screen's vertical ScrollView ancestry
         // lets tvOS apply focus-visibility corrections to the shared host,
@@ -3927,7 +3927,7 @@ actor PersonProfileImageCache {
     init() {
         cache.countLimit = 60
         cache.totalCostLimit = 20 * 1024 * 1024 // 20 MB
-        #if canImport(UIKit)
+        #if canImport(UIKit) || os(macOS)
         NotificationCenter.default.addObserver(
             forName: UIApplication.didReceiveMemoryWarningNotification,
             object: nil,
@@ -4629,7 +4629,7 @@ private struct TvEpisodeCard: View {
                 .frame(width: cardWidth, height: cardHeight)
                 .background {
                     if liquidGlassCards {
-                        #if os(tvOS)
+                        #if os(tvOS) || os(macOS)
                         if #available(tvOS 26.0, macOS 26.0, *) {
                             shape
                                 .fill(isFocused ? Color.white.opacity(0.18) : Color.white.opacity(0.08))
@@ -4909,7 +4909,7 @@ private struct TvStreamGlass<S: InsettableShape>: ViewModifier {
     }
 }
 
-#if os(tvOS)
+#if os(tvOS) || os(macOS)
 private struct TvStreamPickerOverlay: View {
     let meta: NuvioMeta
     let episode: NuvioVideo?

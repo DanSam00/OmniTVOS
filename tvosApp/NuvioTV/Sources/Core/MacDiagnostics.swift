@@ -52,6 +52,24 @@ enum MacDiagnostics {
         observe(NSWindow.didResizeNotification, as: "window.didResize")
     }
 
+    /// Counts arrow keys as they arrive, without consuming them. If these
+    /// outnumber the moves Home receives, something between the two is
+    /// swallowing the event.
+    private static var keyMonitor: Any?
+
+    static func watchArrowKeys() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let names: [UInt16: String] = [123: "left", 124: "right", 125: "down", 126: "up"]
+            if let name = names[event.keyCode] {
+                let responder = NSApplication.shared.keyWindow?.firstResponder
+                let kind = responder.map { String(describing: type(of: $0)) } ?? "nil"
+                log("key." + name + " responder=" + kind)
+            }
+            return event
+        }
+    }
+
     static func log(_ message: @autoclosure () -> String) {
         let line = message()
         logger.log("\(line, privacy: .public)")

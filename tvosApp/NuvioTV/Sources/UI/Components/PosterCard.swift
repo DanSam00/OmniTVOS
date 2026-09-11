@@ -177,7 +177,13 @@ struct PosterCard: View {
     /// restoration — e.g. returning to the exact card after the menu. Keyed by
     /// `externalFocusValue` (must be unique per card instance, since the same
     /// meta.id can appear in more than one row), falling back to meta.id.
-    var externalFocus: FocusState<String?>.Binding? = nil
+/// Mirror of Home's focused card key as a plain value.
+    ///
+    /// `.focused(binding, equals:)` is not a render dependency, so a card never
+    /// re-evaluates when the shared key moves — it never looks focused and never
+    /// reports focus. A stored property does cause the re-render.
+    var macFocusedCardKey: String? = nil
+        var externalFocus: FocusState<String?>.Binding? = nil
     var externalFocusValue: String? = nil
     /// Fired when the card is held (Siri Remote select press-and-hold), to raise
     /// the quick-actions menu. Nil disables the long-press.
@@ -223,7 +229,15 @@ struct PosterCard: View {
 
     var body: some View {
         #if os(tvOS) || os(macOS)
-        Button(action: onClick) {
+        Button {
+            #if os(macOS)
+            // A click on macOS activates the card but does not focus it, so
+            // arrowing on from where you clicked was impossible. Take focus
+            // first, then act.
+            externalFocus?.wrappedValue = externalFocusValue ?? meta.id
+            #endif
+            onClick()
+        } label: {
             posterContent
         }
         .buttonStyle(PosterCardButtonStyle())
@@ -232,6 +246,15 @@ struct PosterCard: View {
         .focused($isFocused)
         .modifier(ExternalFocusBinding(binding: externalFocus, id: externalFocusValue ?? meta.id))
         .nuvioFocusEffectDisabledIfAvailable()
+        #if os(macOS)
+        .onChange(of: isMacExternallyFocused) { _, focused in
+            if focused {
+                onFocus?(meta)
+            } else {
+                onBlur?(meta)
+            }
+        }
+        #endif
         .titleActionsContextMenu(
             meta: meta,
             onOpenDetails: onOpenDetails ?? onClick,
@@ -735,8 +758,22 @@ struct PosterCard: View {
     }
 
     private var showsFocusedAppearance: Bool {
-        isFocused || retainFocusAppearance
+        #if os(macOS)
+        return isMacExternallyFocused || isFocused || retainFocusAppearance
+        #else
+        return isFocused || retainFocusAppearance
+        #endif
     }
+
+    #if os(macOS)
+    /// True when Home's shared focus key points at this card. The card's own
+    /// `@FocusState` does not follow a write to the shared key, so this is what
+    /// the appearance and the focus callbacks have to read from.
+    private var isMacExternallyFocused: Bool {
+        guard let macFocusedCardKey else { return false }
+        return macFocusedCardKey == (externalFocusValue ?? meta.id)
+    }
+    #endif
 
     private var showsPosterTitle: Bool {
         effectivePosterLabels
@@ -863,7 +900,15 @@ struct PosterCard: View {
 // value that affects the card's rendering or focus eligibility changes.
 extension PosterCard: Equatable {
     static func == (lhs: PosterCard, rhs: PosterCard) -> Bool {
-        lhs.meta.id == rhs.meta.id
+        #if os(macOS)
+        // Focus moves by writing a shared key. Without comparing that here the
+        // card is judged unchanged and never redraws as focused — the hero
+        // followed focus while the tile highlight stayed put. Comparing the
+        // derived flag rather than the key keeps the boundary useful: only the
+        // two cards actually swapping focus differ.
+        if lhs.isMacExternallyFocused != rhs.isMacExternallyFocused { return false }
+        #endif
+        return lhs.meta.id == rhs.meta.id
             && lhs.meta.name == rhs.meta.name
             && lhs.meta.posterUrl == rhs.meta.posterUrl
             && lhs.meta.backgroundUrl == rhs.meta.backgroundUrl

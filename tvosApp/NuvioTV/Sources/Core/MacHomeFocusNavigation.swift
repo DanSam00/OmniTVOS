@@ -22,6 +22,20 @@ enum MacHomeFocus {
         return section.items.map { "\(section.id)\u{1}\($0.id)" }
     }
 
+    /// The first card on Home, used to give focus somewhere to start from.
+    static func firstCardKey(sections: [TVHomeSection]) -> String? {
+        for section in sections {
+            if let first = cardKeys(for: section).first { return first }
+        }
+        return nil
+    }
+
+    /// The row a card key belongs to. Keys are "<sectionId>\u{1}<itemId>".
+    static func sectionId(of cardKey: String?) -> String? {
+        guard let cardKey, let separator = cardKey.firstIndex(of: "\u{1}") else { return nil }
+        return String(cardKey[cardKey.startIndex..<separator])
+    }
+
     /// The card an arrow press should land on, or nil to leave focus alone.
     ///
     /// `sections` must already be in display order — the caller passes the same

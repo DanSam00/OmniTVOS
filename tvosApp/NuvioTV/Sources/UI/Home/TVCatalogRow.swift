@@ -138,6 +138,9 @@ struct TVCatalogRow: View {
     var onScrollIndexChange: (Int) -> Void = { _ in }
     let initialFocusCardKey: String?
     let landscapeFocusedId: String?
+    /// Home's focused card key as a plain value — see PosterCard for why the
+    /// focus binding alone cannot drive a re-render.
+    var macFocusedCardKey: String? = nil
     var externalFocus: FocusState<String?>.Binding? = nil
     var restrictFocusToCardKey: String? = nil
     var retainFocusAppearanceForCardKey: String? = nil
@@ -191,11 +194,42 @@ struct TVCatalogRow: View {
         return min(max(raw, 0), items.count - 1)
     }
 
+    #if os(macOS)
+    /// Moves this row's scroll window to a card Home has just focused.
+    ///
+    /// macOS has no focus engine, so Home writes `focusedCardID` directly. Only
+    /// a window of cards around `effectiveScrollIndex` is mounted, so a write
+    /// aimed past that window lands on a view that does not exist — and because
+    /// focus never arrives, the row never scrolls to mount it. Following the
+    /// intended key here breaks that deadlock.
+    private func macFollowExternalFocus(_ key: String?) {
+        let prefix = "\(id)\u{1}"
+        guard let key, key.hasPrefix(prefix) else { return }
+        let itemId = String(key.dropFirst(prefix.count))
+        guard let index = items.firstIndex(where: { $0.id == itemId }) else {
+            MacDiagnostics.log("row.follow.miss row=" + id + " item=" + itemId + " items=" + String(items.count))
+            return
+        }
+        guard effectiveScrollIndex != index else { return }
+        MacDiagnostics.log("row.follow row=" + id + " index=" + String(index))
+        scrollIndex = index
+        onScrollIndexChange(index)
+    }
+    #endif
+
     private func materializedCardIndices(visibleCardCount: Int) -> [Int] {
         guard !items.isEmpty else { return [] }
         let focusIndex = effectiveScrollIndex
-        var lowerBound = max(0, focusIndex - 4)
-        var upperBound = min(items.count - 1, focusIndex + visibleCardCount)
+        #if os(macOS)
+        // A card outside this window does not exist, and focus cannot land on a
+        // view that is not there — so keep it generous enough that arrowing
+        // cannot outrun it between re-centres.
+        let backtrack = 40
+        #else
+        let backtrack = 4
+        #endif
+        var lowerBound = max(0, focusIndex - backtrack)
+        var upperBound = min(items.count - 1, focusIndex + max(visibleCardCount, backtrack))
 
         let rowPrefix = "\(id)\u{1}"
         for key in [initialFocusCardKey, restrictFocusToCardKey] {
@@ -233,7 +267,16 @@ struct TVCatalogRow: View {
         // and drag focus back off the row the user just moved to. Only offer
         // one while this row holds focus, or while nothing is focused at all
         // (launch, and returning from an overlay).
+        #if os(macOS)
+        // macOS has no focus engine, so Home drives focus explicitly and is the
+        // single authority for it. A row must never offer a default: focus dips
+        // through nil on every re-render, and a row that answers that dip
+        // re-seeds its own first card — which is what kept dragging horizontal
+        // moves back to the start of the row.
+        return nil
+        #else
         guard isRowFocused || externalFocus?.wrappedValue == nil else { return nil }
+        #endif
         let idx = effectiveScrollIndex
         return "\(id)\u{1}\(items[idx].id)"
     }
@@ -267,8 +310,18 @@ struct TVCatalogRow: View {
                 .zIndex(0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        #if !os(macOS)
+        // On macOS a focus section swallows the arrow keys trying to move focus
+        // within it, and Home never sees the command. Focus is driven here, so
+        // the section earns nothing.
         .focusSection()
+        #endif
         .defaultFocusIfAvailable(externalFocus, defaultFocusCardKey)
+        #if os(macOS)
+        .onChange(of: macFocusedCardKey) { _, key in
+            macFollowExternalFocus(key)
+        }
+        #endif
     }
 
     private var cardStrip: some View {
@@ -367,6 +420,7 @@ struct TVCatalogRow: View {
                         onInitialFocusRequested: shouldRequestInitialFocus ? onInitialFocusRequested : nil,
                         onFocus: handleFocus,
                         onBlur: onBlur,
+                        macFocusedCardKey: macFocusedCardKey,
                         externalFocus: externalFocus,
                         externalFocusValue: cardKey,
                         onLongPress: onLongPress,
@@ -391,8 +445,20 @@ struct TVCatalogRow: View {
                         onSelect(item)
                     }
                     .disabled(
-                        (restrictFocusToCardKey != nil && restrictFocusToCardKey != cardKey)
-                            || (!isRowFocused && itemIndex != effectiveScrollIndex)
+                        {
+                            if restrictFocusToCardKey != nil, restrictFocusToCardKey != cardKey {
+                                return true
+                            }
+                            #if os(macOS)
+                            // Home drives focus directly here, so every mounted
+                            // card has to be able to receive it. Narrowing this
+                            // to the scrolled-to card is a focus-engine device
+                            // that only makes sense on tvOS.
+                            return false
+                            #else
+                            return !isRowFocused && itemIndex != effectiveScrollIndex
+                            #endif
+                        }()
                     )
                 }
             }
@@ -448,6 +514,15 @@ extension TVCatalogRow: Equatable {
         let retainEqual = (lhsRetainInRow == rhsRetainInRow)
             && (!lhsRetainInRow || lhs.retainFocusAppearanceForCardKey == rhs.retainFocusAppearanceForCardKey)
 
+        #if os(macOS)
+        // Same reasoning as `restrictFocusToCardKey` above: compare the focused
+        // key only while it belongs to this row, so the row re-renders (and
+        // scrolls) when focus moves inside it without waking every other row.
+        let lhsFocusInRow = lhs.macFocusedCardKey?.hasPrefix("\(lhs.id)\u{1}") == true
+        let rhsFocusInRow = rhs.macFocusedCardKey?.hasPrefix("\(rhs.id)\u{1}") == true
+        if lhsFocusInRow != rhsFocusInRow { return false }
+        if lhsFocusInRow, lhs.macFocusedCardKey != rhs.macFocusedCardKey { return false }
+        #endif
         return lhs.id == rhs.id
             && lhs.title == rhs.title
             && lhs.addonName == rhs.addonName
@@ -498,6 +573,9 @@ struct TVHomeCatalogGridSection: View {
     let section: TVHomeSection
     let watchedTitleKeys: Set<String>
     let initialFocusCardKey: String?
+    /// Home's focused card key as a plain value — see PosterCard for why the
+    /// focus binding alone cannot drive a re-render.
+    var macFocusedCardKey: String? = nil
     var externalFocus: FocusState<String?>.Binding? = nil
     var restrictFocusToCardKey: String? = nil
     var suppressFocusAnimations = false
@@ -583,6 +661,9 @@ struct TVHomeCatalogGridSection: View {
 
 struct TVHomeSeeAllCard: View {
     let title: String
+    /// Home's focused card key as a plain value — see PosterCard for why the
+    /// focus binding alone cannot drive a re-render.
+    var macFocusedCardKey: String? = nil
     var externalFocus: FocusState<String?>.Binding? = nil
     let externalFocusValue: String
     var retainFocusAppearance = false
@@ -849,6 +930,9 @@ struct TVCollectionFolderRow: View {
     let initialScrollIndex: Int
     let onScrollIndexChange: (Int) -> Void
     let initialFocusCardKey: String?
+    /// Home's focused card key as a plain value — see PosterCard for why the
+    /// focus binding alone cannot drive a re-render.
+    var macFocusedCardKey: String? = nil
     var externalFocus: FocusState<String?>.Binding? = nil
     var restrictFocusToCardKey: String? = nil
     var retainFocusAppearanceForCardKey: String? = nil
@@ -886,6 +970,21 @@ struct TVCollectionFolderRow: View {
         posterLabels && folders.contains { !$0.hideTitle }
     }
 
+    #if os(macOS)
+    /// Folder-row counterpart of the meta row's follower: moves this row's
+    /// scroll window to a folder Home has just focused, so a card outside the
+    /// mounted window can exist for focus to land on.
+    private func macFollowExternalFocus(_ key: String?) {
+        let prefix = "\(id)\u{1}"
+        guard let key, key.hasPrefix(prefix) else { return }
+        let folderId = String(key.dropFirst(prefix.count))
+        guard let index = folders.firstIndex(where: { $0.id == folderId }),
+              effectiveScrollIndex != index else { return }
+        scrollIndex = index
+        onScrollIndexChange(index)
+    }
+    #endif
+
     private func materializedCardIndices(
         stripWidth: CGFloat,
         layoutMode: String
@@ -893,7 +992,15 @@ struct TVCollectionFolderRow: View {
         guard !folders.isEmpty else { return [] }
 
         let focusIndex = effectiveScrollIndex
-        var lowerBound = max(0, focusIndex - 4)
+        #if os(macOS)
+        // A card outside this window does not exist, and focus cannot land on a
+        // view that is not there — so keep it generous enough that arrowing
+        // cannot outrun it between re-centres.
+        let backtrack = 40
+        #else
+        let backtrack = 4
+        #endif
+        var lowerBound = max(0, focusIndex - backtrack)
         var upperBound = focusIndex
         let spacing = TVCollectionFolderCardLayout.rowSpacing(layoutMode: layoutMode)
         var coveredWidth: CGFloat = 0
@@ -906,6 +1013,12 @@ struct TVCollectionFolderRow: View {
             upperBound = index
             if coveredWidth >= stripWidth { break }
         }
+
+        #if os(macOS)
+        // The loop above only mounts as far as the strip is wide; extend it so
+        // arrowing past the visible edge still finds a card to focus.
+        upperBound = min(folders.count - 1, max(upperBound, focusIndex + backtrack))
+        #endif
 
         let rowPrefix = "\(id)\u{1}"
         for key in [initialFocusCardKey, restrictFocusToCardKey] {
@@ -924,7 +1037,16 @@ struct TVCollectionFolderRow: View {
         guard !folders.isEmpty else { return nil }
         // See TVCatalogRow.defaultFocusCardKey — an unfocused row must not
         // re-assert itself into the shared FocusState.
+        #if os(macOS)
+        // macOS has no focus engine, so Home drives focus explicitly and is the
+        // single authority for it. A row must never offer a default: focus dips
+        // through nil on every re-render, and a row that answers that dip
+        // re-seeds its own first card — which is what kept dragging horizontal
+        // moves back to the start of the row.
+        return nil
+        #else
         guard isRowFocused || externalFocus?.wrappedValue == nil else { return nil }
+        #endif
         let idx = effectiveScrollIndex
         return "\(id)\u{1}\(folders[idx].id)"
     }
@@ -943,8 +1065,18 @@ struct TVCollectionFolderRow: View {
                 .zIndex(0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        #if !os(macOS)
+        // On macOS a focus section swallows the arrow keys trying to move focus
+        // within it, and Home never sees the command. Focus is driven here, so
+        // the section earns nothing.
         .focusSection()
+        #endif
         .defaultFocusIfAvailable(externalFocus, defaultFocusFolderKey)
+        #if os(macOS)
+        .onChange(of: macFocusedCardKey) { _, key in
+            macFollowExternalFocus(key)
+        }
+        #endif
     }
 
     private var cardStrip: some View {
@@ -974,6 +1106,7 @@ struct TVCollectionFolderRow: View {
                         folder: folder,
                         shouldRequestInitialFocus: shouldRequestInitialFocus,
                         onInitialFocusRequested: shouldRequestInitialFocus ? onInitialFocusRequested : nil,
+                        macFocusedCardKey: macFocusedCardKey,
                         externalFocus: externalFocus,
                         externalFocusValue: cardKey,
                         onFocus: {
@@ -992,8 +1125,20 @@ struct TVCollectionFolderRow: View {
                         onSelect: { onSelect(folder) }
                     )
                     .disabled(
-                        (restrictFocusToCardKey != nil && restrictFocusToCardKey != cardKey)
-                            || (!isRowFocused && index != effectiveScrollIndex)
+                        {
+                            if restrictFocusToCardKey != nil, restrictFocusToCardKey != cardKey {
+                                return true
+                            }
+                            #if os(macOS)
+                            // Home drives focus directly here, so every mounted
+                            // card has to be able to receive it. Narrowing this
+                            // to the scrolled-to card is a focus-engine device
+                            // that only makes sense on tvOS.
+                            return false
+                            #else
+                            return !isRowFocused && index != effectiveScrollIndex
+                            #endif
+                        }()
                     )
                 }
             }
@@ -1035,6 +1180,15 @@ extension TVCollectionFolderRow: Equatable {
         let retainEqual = (lhsRetainInRow == rhsRetainInRow)
             && (!lhsRetainInRow || lhs.retainFocusAppearanceForCardKey == rhs.retainFocusAppearanceForCardKey)
 
+        #if os(macOS)
+        // Same reasoning as `restrictFocusToCardKey` above: compare the focused
+        // key only while it belongs to this row, so the row re-renders (and
+        // scrolls) when focus moves inside it without waking every other row.
+        let lhsFocusInRow = lhs.macFocusedCardKey?.hasPrefix("\(lhs.id)\u{1}") == true
+        let rhsFocusInRow = rhs.macFocusedCardKey?.hasPrefix("\(rhs.id)\u{1}") == true
+        if lhsFocusInRow != rhsFocusInRow { return false }
+        if lhsFocusInRow, lhs.macFocusedCardKey != rhs.macFocusedCardKey { return false }
+        #endif
         return lhs.id == rhs.id
             && lhs.title == rhs.title
             && lhs.horizontalEdgeInset == rhs.horizontalEdgeInset
@@ -1052,6 +1206,9 @@ struct TVCollectionFolderCard: View {
     let folder: TVCollectionFolderItem
     var shouldRequestInitialFocus: Bool = false
     var onInitialFocusRequested: (() -> Void)? = nil
+    /// Home's focused card key as a plain value — see PosterCard for why the
+    /// focus binding alone cannot drive a re-render.
+    var macFocusedCardKey: String? = nil
     var externalFocus: FocusState<String?>.Binding? = nil
     var externalFocusValue: String? = nil
     var onFocus: (() -> Void)? = nil

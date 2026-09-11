@@ -93,6 +93,14 @@ enum ContinueWatchingBuilder {
     static func rebuild(reason: String) async {
         let rebuildStarted = TVHomeDebugTrace.now()
         TVHomeDebugTrace.log("cw.builder.rebuild.begin reason=\(reason)")
+        #if os(macOS)
+        MacDiagnostics.log(
+            "cw.rebuild.begin reason=" + reason
+                + " ledger=" + String(WatchProgressLedger.records().count)
+                + " stored=" + String(ContinueWatchingStore.items().count)
+                + " paged=" + String(pagedItems.count)
+        )
+        #endif
         // With Trakt or Simkl driving the row, Home renders that provider's list
         // and this derived one is never shown. Keep syncing rows into the ledger,
         // but do not spend metadata requests rendering something invisible.
@@ -117,6 +125,9 @@ enum ContinueWatchingBuilder {
             )
             : []
         guard !candidates.isEmpty || !seeds.isEmpty else {
+            #if os(macOS)
+            MacDiagnostics.log("cw.rebuild.emptyLedger reason=" + reason)
+            #endif
             diagnostic = "\(reason): ledger empty"
             plan = []
             materialized = []
@@ -153,6 +164,15 @@ enum ContinueWatchingBuilder {
         // but must not be pushed back to the account, which re-entered this
         // builder and span a sync loop.
         ContinueWatchingStore.replaceAll(page.items, origin: .rematerialisation)
+
+        #if os(macOS)
+        MacDiagnostics.log(
+            "cw.rebuild.end rendered=" + String(page.items.count)
+                + " candidates=" + String(candidates.count)
+                + " seeds=" + String(seeds.count)
+                + " plan=" + String(plan.count)
+        )
+        #endif
         diagnostic = "\(reason): ledger \(WatchProgressLedger.records().count), "
             + "candidates \(candidates.count), seeds \(seeds.count), plan \(plan.count), "
             + "page 1 built \(page.items.count), showing \(ContinueWatchingStore.items().count), "
