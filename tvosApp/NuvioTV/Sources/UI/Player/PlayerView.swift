@@ -1,6 +1,51 @@
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 import Combine
+
+/// Shown while playback is waiting on the network: says that the connection is
+/// the reason, and how fast it is actually running.
+///
+/// Only appears once a stall is genuinely network-bound and a rate has been
+/// sampled — a spinner during ordinary startup is not a connection problem, and
+/// labelling it as one would be misleading.
+private struct PlayerConnectionWarning: View {
+    let speedMbps: Double
+    let isStalled: Bool
+
+    /// Below this, a 1080p stream cannot sustain playback, so the stall is
+    /// almost certainly throughput rather than a momentary hiccup.
+    private let slowThresholdMbps: Double = 8
+
+    var body: some View {
+        if isStalled, speedMbps > 0 {
+            HStack(spacing: 12) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundColor(speedMbps < slowThresholdMbps ? .orange : .white.opacity(0.8))
+
+                Text(
+                    L10n.format(
+                        "player_slow_connection",
+                        fallback: "Slow connection · %@ Mbps",
+                        String(format: "%.1f", speedMbps)
+                    )
+                )
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundColor(.white.opacity(0.92))
+            }
+            .padding(.horizontal, 22)
+            .padding(.vertical, 12)
+            .background(Capsule().fill(Color.black.opacity(0.6)))
+            .overlay(Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
+            .transition(.opacity)
+        }
+    }
+}
 
 struct PlayerView: View {
     @StateObject private var viewModel = PlayerViewModel()
@@ -240,6 +285,7 @@ struct PlayerView: View {
                         && !viewModel.postPlayState.isVisible
                         && viewModel.sidePanel == nil
                 )
+                .nuvioFocusable()
                 .focused($remoteInputFocused)
                 .onTapGesture {
                     if viewModel.isScrubbing {
@@ -304,6 +350,7 @@ struct PlayerView: View {
                 }
                 .buttonStyle(PosterCardButtonStyle())
                 .focusEffectDisabledIfAvailable()
+                .nuvioFocusable()
                 .focused($skipSegmentFocused)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                 .padding(.leading, 60)
@@ -321,6 +368,7 @@ struct PlayerView: View {
                     }
                     .buttonStyle(PosterCardButtonStyle())
                     .focusEffectDisabledIfAvailable()
+                    .nuvioFocusable()
                     .focused($nextEpisodeFocused)
                     if autoPlayNextEnabled && !viewModel.isAutoPlayCancelled && !viewModel.isAdvancingEpisode {
                         Button(action: { viewModel.cancelAutoPlay() }) {
@@ -331,6 +379,7 @@ struct PlayerView: View {
                                 .background(cancelAutoPlayFocused ? Color.white : Color.white.opacity(0.14), in: Capsule())
                         }
                         .buttonStyle(.plain)
+                        .nuvioFocusable()
                         .focused($cancelAutoPlayFocused)
                     }
                 }
@@ -596,9 +645,13 @@ struct PlayerView: View {
                 focusRemoteInput()
             }
         }
+        #if os(macOS)
+        .background(MacPlayPauseKeyCatcher { viewModel.togglePlayPause() })
+        #else
         .onPlayPauseCommand {
             viewModel.togglePlayPause()
         }
+        #endif
         .onMoveCommand { direction in
             // The Episodes/Sources sheet exclusively owns directional input.
             // Do not let list navigation also seek or reveal player controls.
@@ -742,6 +795,7 @@ struct PlayerView: View {
         }
         .buttonStyle(PosterCardButtonStyle())
         .focusEffectDisabledIfAvailable()
+        .nuvioFocusable()
         .focused($postPlayFocus, equals: .miniPlayer)
         .onMoveCommand { direction in
             if direction == .down {
@@ -772,11 +826,18 @@ struct PlayerView: View {
                 )
                 .transition(.opacity)
             } else {
-                ProgressView()
-                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                    .scaleEffect(2)
-                    .padding(48)
-                    .glassCircle()
+                VStack(spacing: 20) {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        .scaleEffect(2)
+                        .padding(48)
+                        .glassCircle()
+
+                    PlayerConnectionWarning(
+                        speedMbps: viewModel.networkSpeedMbps,
+                        isStalled: viewModel.isStalledOnNetwork
+                    )
+                }
             }
         case .playing, .paused:
             if viewModel.isSwitchingSource || viewModel.isReloadingStream || viewModel.didDetectReplacementStream || !didReportPlaybackStarted {
@@ -1171,30 +1232,217 @@ struct PlaybackDebugHUDView: View {
 struct MPVVideoSurface: UIViewControllerRepresentable {
     let controller: MPVPlayerViewController
 
+    #if os(macOS)
+    func makeNSViewController(context: Context) -> MPVPlayerViewController {
+        controller
+    }
+
+    func updateNSViewController(_ nsViewController: MPVPlayerViewController, context: Context) {}
+    #else
     func makeUIViewController(context: Context) -> MPVPlayerViewController {
         controller
     }
 
     func updateUIViewController(_ uiViewController: MPVPlayerViewController, context: Context) {}
+    #endif
 }
 
 /// Hosts AetherEngine's `AetherPlayerView` for native / software decode.
 struct AetherPlayerSurface: UIViewControllerRepresentable {
     let controller: AetherPlaybackController
 
-    func makeUIViewController(context: Context) -> AetherPlaybackController {
+    private func makeSurface() -> AetherPlaybackController {
         controller.rebindSurface()
         PictureInPictureManager.shared.fullscreenSurfaceDidRebind()
         return controller
     }
 
-    func updateUIViewController(_ uiViewController: AetherPlaybackController, context: Context) {
-        uiViewController.rebindSurface()
+    private func updateSurface(_ controller: AetherPlaybackController) {
+        controller.rebindSurface()
         PictureInPictureManager.shared.fullscreenSurfaceDidRebind()
     }
+
+    #if os(macOS)
+    func makeNSViewController(context: Context) -> AetherPlaybackController { makeSurface() }
+
+    func updateNSViewController(_ nsViewController: AetherPlaybackController, context: Context) {
+        updateSurface(nsViewController)
+    }
+    #else
+    func makeUIViewController(context: Context) -> AetherPlaybackController { makeSurface() }
+
+    func updateUIViewController(_ uiViewController: AetherPlaybackController, context: Context) {
+        updateSurface(uiViewController)
+    }
+    #endif
 }
 
 
+#if os(macOS)
+/// Keyboard stand-in for the Siri Remote's hold-to-seek.
+///
+/// tvOS installs window-level press recognizers because a focused SwiftUI view
+/// otherwise swallows the remote's arrow holds. The same problem exists on the
+/// Mac — the focus engine consumes arrow keys — so this uses a window-level
+/// `NSEvent` monitor for the same reason.
+///
+/// Taps are deliberately passed through so ordinary focus navigation and
+/// `onMoveCommand` seeking still work; only once a key has been held past the
+/// threshold does this take the key over and start a continuous seek.
+private struct RemoteSeekPressCatcher: NSViewRepresentable {
+    let isActive: Bool
+    let onBeginBackward: () -> Void
+    let onBeginForward: () -> Void
+    let onEnd: () -> Void
+
+    func makeNSView(context: Context) -> RemoteSeekKeyHostView {
+        let view = RemoteSeekKeyHostView()
+        apply(to: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: RemoteSeekKeyHostView, context: Context) {
+        apply(to: nsView)
+    }
+
+    static func dismantleNSView(_ nsView: RemoteSeekKeyHostView, coordinator: ()) {
+        nsView.stopMonitoring()
+    }
+
+    private func apply(to view: RemoteSeekKeyHostView) {
+        view.onBeginBackward = onBeginBackward
+        view.onBeginForward = onBeginForward
+        view.onEnd = onEnd
+        view.setActive(isActive)
+    }
+}
+
+final class RemoteSeekKeyHostView: NSView {
+    private enum Direction {
+        case backward
+        case forward
+    }
+
+    var onBeginBackward: () -> Void = {}
+    var onBeginForward: () -> Void = {}
+    var onEnd: () -> Void = {}
+
+    private static let leftArrowKeyCode: UInt16 = 123
+    private static let rightArrowKeyCode: UInt16 = 124
+    /// Matches the tvOS recognizer's `minimumPressDuration`.
+    private static let holdThreshold: TimeInterval = 0.35
+
+    private var monitor: Any?
+    private var acceptsNewHolds = false
+    private var activeDirection: Direction?
+    private var pendingKeyCode: UInt16?
+    private var holdTimer: Timer?
+
+    func setActive(_ active: Bool) {
+        acceptsNewHolds = active
+        if !active, activeDirection == nil {
+            cancelPendingHold()
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        installMonitorIfNeeded()
+    }
+
+    private func installMonitorIfNeeded() {
+        stopMonitoring()
+        guard window != nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
+            guard let self else { return event }
+            return self.handle(event) ? nil : event
+        }
+    }
+
+    func stopMonitoring() {
+        endSeekIfActive()
+        cancelPendingHold()
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
+        }
+        monitor = nil
+    }
+
+    deinit {
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
+        }
+        holdTimer?.invalidate()
+    }
+
+    /// Returns true when the event was consumed by a hold-seek.
+    private func handle(_ event: NSEvent) -> Bool {
+        guard let direction = Self.direction(for: event.keyCode) else { return false }
+
+        if event.type == .keyUp {
+            let wasSeeking = activeDirection == direction
+            cancelPendingHold()
+            endSeekIfActive()
+            // Swallow only the key-up that terminates a seek; a plain tap's
+            // key-up belongs to whoever handled the key-down.
+            return wasSeeking
+        }
+
+        if activeDirection == direction {
+            // Already seeking: absorb the auto-repeat so it does not also
+            // register as step-seeks.
+            return true
+        }
+
+        guard acceptsNewHolds, activeDirection == nil else { return false }
+
+        if pendingKeyCode != event.keyCode {
+            cancelPendingHold()
+            pendingKeyCode = event.keyCode
+            holdTimer = Timer.scheduledTimer(
+                withTimeInterval: Self.holdThreshold,
+                repeats: false
+            ) { [weak self] _ in
+                self?.beginSeek(direction)
+            }
+        }
+        // Let the first key-down through so a tap still steps normally, but
+        // absorb the auto-repeats that arrive while the hold is still pending.
+        return event.isARepeat
+    }
+
+    private static func direction(for keyCode: UInt16) -> Direction? {
+        switch keyCode {
+        case leftArrowKeyCode: return .backward
+        case rightArrowKeyCode: return .forward
+        default: return nil
+        }
+    }
+
+    private func beginSeek(_ direction: Direction) {
+        holdTimer = nil
+        pendingKeyCode = nil
+        guard acceptsNewHolds, activeDirection == nil else { return }
+        activeDirection = direction
+        switch direction {
+        case .backward: onBeginBackward()
+        case .forward: onBeginForward()
+        }
+    }
+
+    private func cancelPendingHold() {
+        holdTimer?.invalidate()
+        holdTimer = nil
+        pendingKeyCode = nil
+    }
+
+    private func endSeekIfActive() {
+        guard activeDirection != nil else { return }
+        activeDirection = nil
+        onEnd()
+    }
+}
+#else
 private struct RemoteSeekPressCatcher: UIViewControllerRepresentable {
     let isActive: Bool
     let onBeginBackward: () -> Void
@@ -1321,3 +1569,4 @@ private final class RemoteSeekPressViewController: UIViewController {
         }
     }
 }
+#endif

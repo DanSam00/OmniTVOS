@@ -8,7 +8,12 @@
 
 import Combine
 import Foundation
+#if canImport(UIKit)
 import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 
 @MainActor
 final class NuvioSyncManager: ObservableObject {
@@ -141,7 +146,12 @@ final class NuvioSyncManager: ObservableObject {
             forName: ContinueWatchingStore.changedNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
+        ) { [weak self] notification in
+            // A rebuild is this device re-deriving rows it just read; pushing it
+            // back re-enters the builder and loops.
+            guard notification.object as? ContinueWatchingStore.ChangeOrigin != .rematerialisation else {
+                return
+            }
             Task { @MainActor in self?.schedulePush() }
         })
         observers.append(center.addObserver(
@@ -545,7 +555,7 @@ final class NuvioSyncManager: ObservableObject {
             guard let remote = remoteProfiles.first(where: { $0.profileIndex == remoteId }) else {
                 return false
             }
-            let remoteName = remote.name.isEmpty ? "Nuvio User" : remote.name
+            let remoteName = remote.name.isEmpty ? "Omni User" : remote.name
             return remoteName == local.name
                 && remote.effectiveAvatarValue == local.avatarId
                 && remote.usesPrimaryAddons == local.usesPrimaryAddons
@@ -1183,7 +1193,7 @@ final class NuvioSyncManager: ObservableObject {
     /// Re-pulls account profiles a few times after the initial post-login pull
     /// came back empty. That first read often races a just-issued token and
     /// returns nothing even though the account has profiles; the who's-watching
-    /// screen would then be left showing the local "Nuvio Guest" placeholder
+    /// screen would then be left showing the local "Omni Guest" placeholder
     /// until the user picks a profile (which triggers a fresh pull) and returns.
     /// This stays awaited by the post-login bootstrap so the placeholder cannot
     /// be selected while a recoverable account read is still in progress.
@@ -1440,14 +1450,14 @@ final class NuvioSyncManager: ObservableObject {
         return "\(userId):\(remoteProfileId)"
     }
 
-    /// The locally seeded Guest that exists before account sync. "Nuvio User"
+    /// The locally seeded Guest that exists before account sync. "Omni User"
     /// is also the legitimate default name returned by Nuvio accounts and must
     /// not be mistaken for an unsynced placeholder.
     private static func isPlaceholderProfile(_ profile: Profile) -> Bool {
         if profile.id == "guest" { return true }
         // Compatibility with an older fresh-install seed that used remote slot
         // 1 locally. Synced primary profiles are marked admin, so a real account
-        // profile named "Nuvio Guest" is not mistaken for the placeholder.
+        // profile named "Omni Guest" is not mistaken for the placeholder.
         let name = profile.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return profile.id == "1" && !profile.isAdmin && profile.avatarId.isEmpty
             && name == "nuvio guest"
@@ -1567,7 +1577,7 @@ private enum ProfileSyncIndexStore {
                 bind(localId: localId, remoteId: remote.profileIndex)
                 return Profile(
                     id: localId,
-                    name: remote.name.isEmpty ? "Nuvio User" : remote.name,
+                    name: remote.name.isEmpty ? "Omni User" : remote.name,
                     isPinProtected: remote.pinEnabled ?? preservedProfile?.isPinProtected ?? false,
                     isAdmin: remote.profileIndex == 1,
                     // The web app stores custom image links in avatar_url,
@@ -2045,12 +2055,19 @@ fileprivate final class NuvioAPIClient {
     /// human-readable device and client version.
     @MainActor
     func registerCurrentDevice(session: AuthSession) async throws {
-        let device = UIDevice.current
         let clientVersion = Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString"
         ) as? String ?? "dev"
+        #if os(macOS)
+        let deviceName = (Host.current().localizedName ?? ProcessInfo.processInfo.hostName)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        let platform = "macOS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+        #else
+        let device = UIDevice.current
         let deviceName = device.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let platform = "\(device.systemName) \(device.systemVersion)"
+        #endif
 
         try await rpcVoid(
             "register_current_device",

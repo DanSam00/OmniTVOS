@@ -357,6 +357,7 @@ struct PlayerControls: View {
                 .contentShape(Circle())
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($focusedControl, equals: focusKey)
         .disabled(!isTransportButtonFocusable(focusKey))
         .focusEffectDisabledIfAvailable()
@@ -412,6 +413,7 @@ struct PlayerControls: View {
                 && !viewModel.isScrubbing
                 && !viewModel.showPauseOverlay
         )
+        .nuvioFocusable()
         .focused($focusedControl, equals: .timeline)
         .focusEffectDisabledIfAvailable()
         .onTapGesture { viewModel.beginScrub() }
@@ -499,7 +501,7 @@ struct GlassControlsContainer<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        if #available(tvOS 26.0, *) {
+        if #available(tvOS 26.0, macOS 26.0, *) {
             GlassEffectContainer(spacing: 28) { content }
         } else {
             content
@@ -510,7 +512,7 @@ struct GlassControlsContainer<Content: View>: View {
 extension View {
     @ViewBuilder
     func glassCircle() -> some View {
-        if #available(tvOS 26.0, *) {
+        if #available(tvOS 26.0, macOS 26.0, *) {
             glassEffect(.regular.interactive(), in: .circle)
         } else {
             background(.ultraThinMaterial, in: Circle())
@@ -519,7 +521,7 @@ extension View {
 
     @ViewBuilder
     func glassCircleSurface() -> some View {
-        if #available(tvOS 26.0, *) {
+        if #available(tvOS 26.0, macOS 26.0, *) {
             glassEffect(.regular, in: .circle)
         } else {
             background(.ultraThinMaterial, in: Circle())
@@ -528,7 +530,7 @@ extension View {
 
     @ViewBuilder
     func glassCapsule() -> some View {
-        if #available(tvOS 26.0, *) {
+        if #available(tvOS 26.0, macOS 26.0, *) {
             glassEffect(.regular.interactive(), in: .capsule)
         } else {
             background(.ultraThinMaterial, in: Capsule())
@@ -537,7 +539,7 @@ extension View {
 
     @ViewBuilder
     func glassRoundedRect(cornerRadius: CGFloat) -> some View {
-        if #available(tvOS 26.0, *) {
+        if #available(tvOS 26.0, macOS 26.0, *) {
             glassEffect(.regular, in: .rect(cornerRadius: cornerRadius))
         } else {
             background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius))
@@ -717,7 +719,7 @@ private struct PlayerGlassCircleButtonBackground: ViewModifier {
     func body(content: Content) -> some View {
         if filled {
             content.background(Color.white, in: Circle())
-        } else if #available(tvOS 26.0, *) {
+        } else if #available(tvOS 26.0, macOS 26.0, *) {
             content.glassEffect(.regular, in: Circle())
         } else {
             content.background(.ultraThinMaterial, in: Circle())
@@ -889,6 +891,7 @@ struct PlayerSettingsPanel: View {
                         )
                 }
                 .buttonStyle(PosterCardButtonStyle())
+                .nuvioFocusable()
                 .focused($focus, equals: .tab(item))
                 .focusEffectDisabledIfAvailable()
                 .scaleEffect(isFocused ? 1.06 : 1)
@@ -1082,6 +1085,7 @@ struct PlayerSettingsPanel: View {
             )
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($focus, equals: focusKey)
         .focusEffectDisabledIfAvailable()
     }
@@ -1173,6 +1177,7 @@ struct PlayerSettingsPanel: View {
             )
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($focus, equals: .option(option.id))
         .focusEffectDisabledIfAvailable()
     }
@@ -1316,6 +1321,7 @@ struct PlayerSettingsPanel: View {
                 )
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($focus, equals: .style(focusKey))
         .focusEffectDisabledIfAvailable()
     }
@@ -1334,6 +1340,7 @@ struct PlayerSettingsPanel: View {
                     )
             }
             .buttonStyle(PosterCardButtonStyle())
+            .nuvioFocusable()
             .focused($focus, equals: .style(focusKey))
             .focusEffectDisabledIfAvailable()
         }
@@ -1370,6 +1377,7 @@ struct PlayerSettingsPanel: View {
                 )
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($focus, equals: .style(.color(hex)))
         .focusEffectDisabledIfAvailable()
         .scaleEffect(isFocused ? 1.14 : 1)
@@ -1408,6 +1416,7 @@ struct PlayerSettingsPanel: View {
                 )
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($focus, equals: .style(.backgroundColor(hex)))
         .focusEffectDisabledIfAvailable()
         .scaleEffect(isFocused ? 1.14 : 1)
@@ -1514,6 +1523,7 @@ struct PlayerSettingsPanel: View {
             )
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($focus, equals: .audio(track.id))
         .focusEffectDisabledIfAvailable()
     }
@@ -1644,6 +1654,7 @@ struct PlayerSettingsPanel: View {
                 )
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($focus, equals: .audioControl(focusKey))
         .focusEffectDisabledIfAvailable()
         .disabled(disabled)
@@ -1762,6 +1773,7 @@ struct PlayerSettingsPanel: View {
             )
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($focus, equals: .aspect(mode.rawValue))
         .focusEffectDisabledIfAvailable()
     }
@@ -1794,6 +1806,7 @@ struct PlayerSettingsPanel: View {
             )
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($focus, equals: focusKey)
         .focusEffectDisabledIfAvailable()
     }
@@ -1815,6 +1828,25 @@ struct SystemAudioRoutePicker: UIViewRepresentable {
     var tintColor: UIColor = .white
     var activeTintColor: UIColor = .white
 
+    #if os(macOS)
+    // AppKit's picker has no tint properties; colour is set per control state,
+    // and it draws its own borderless chrome.
+    func makeNSView(context: Context) -> AVRoutePickerView {
+        let picker = AVRoutePickerView()
+        picker.isRoutePickerButtonBordered = false
+        applyColors(to: picker)
+        return picker
+    }
+
+    func updateNSView(_ nsView: AVRoutePickerView, context: Context) {
+        applyColors(to: nsView)
+    }
+
+    private func applyColors(to picker: AVRoutePickerView) {
+        picker.setRoutePickerButtonColor(tintColor, for: .normal)
+        picker.setRoutePickerButtonColor(activeTintColor, for: .active)
+    }
+    #else
     func makeUIView(context: Context) -> AVRoutePickerView {
         let picker = AVRoutePickerView()
         picker.prioritizesVideoDevices = false
@@ -1828,4 +1860,5 @@ struct SystemAudioRoutePicker: UIViewRepresentable {
         uiView.tintColor = tintColor
         uiView.activeTintColor = activeTintColor
     }
+    #endif
 }

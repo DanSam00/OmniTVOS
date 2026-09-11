@@ -7,13 +7,21 @@
 
 import SwiftUI
 import Foundation
+#if canImport(UIKit)
 import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 import ImageIO
 import OSLog
 
 @main
 struct NuvioTVApp: App {
     init() {
+        #if os(macOS)
+        MacDiagnostics.start()
+        #endif
         let totalRam = ProcessInfo.processInfo.physicalMemory
         let isLegacyDevice = totalRam <= 2_500_000_000 // <= 2.5 GB (Apple TV HD)
         let memCapacity = isLegacyDevice ? (12 * 1024 * 1024) : (32 * 1024 * 1024)
@@ -24,8 +32,23 @@ struct NuvioTVApp: App {
 
     var body: some Scene {
         WindowGroup {
+            #if os(macOS)
+            // The tvOS layout draws its own full-bleed backdrop, so the standard
+            // title bar leaves a white strip across the top. The window is made
+            // full-height in AppKit rather than with `.windowStyle` — see
+            // `MacWindowConfigurator` for why. The traffic lights stay and simply
+            // float over the artwork, as they do in other media apps.
             ContentView()
+                .macTVCanvas()
+                .ignoresSafeArea()
+                .macFullBleedWindow()
+            #else
+            ContentView()
+            #endif
         }
+        #if os(macOS)
+        .commands { MacTabCommands() }
+        #endif
     }
 }
 
@@ -83,6 +106,7 @@ enum TVTab: String, CaseIterable, Identifiable {
     case home = "Home"
     case search = "Search"
     case library = "Library"
+    case calendar = "Calendar"
     case settings = "Settings"
 
     var id: String { rawValue }
@@ -98,6 +122,8 @@ enum TVTab: String, CaseIterable, Identifiable {
             return L10n.string("nav_search", fallback: "Search")
         case .library:
             return L10n.string("nav_library", fallback: "Library")
+        case .calendar:
+            return L10n.string("nav_calendar", fallback: "Calendar")
         case .settings:
             return L10n.string("nav_settings", fallback: "Settings")
         }
@@ -109,6 +135,7 @@ enum TVTab: String, CaseIterable, Identifiable {
         case .home: return "house"
         case .search: return "magnifyingglass"
         case .library: return "rectangle.stack"
+        case .calendar: return "calendar"
         case .settings: return "gearshape"
         }
     }
@@ -146,6 +173,9 @@ struct ContentView: View {
     /// Ceiling on the profile-switch cover, whatever Home ends up publishing.
     private static let profileGateTimeout: TimeInterval = 5
     @State private var selectedTab: TVTab = .home
+    #if os(macOS)
+    @ObservedObject private var tabCommands = MacTabCommandBus.shared
+    #endif
     /// Series context for the current playback, captured at play time so the
     /// player can offer/auto-play the next episode. Empty for movies/trailers.
     @State private var playbackEpisodes: [NuvioVideo] = []
@@ -287,6 +317,27 @@ struct ContentView: View {
         // settings suite, so each profile keeps its own theme, layout, playback
         // preferences, etc. Falls back to the shared store before a profile is picked.
         .defaultAppStorage(ProfileSettings.store(for: profileViewModel.activeProfile?.id))
+        #if os(macOS)
+        // ⌘1/⌘2 arrive on the Scene's commands, which cannot reach this view's
+        // state directly, so they are relayed through the shared bus.
+        .onChange(of: tabCommands.requestedTab) { _, requested in
+            guard let requested else { return }
+            selectedTab = requested
+            tabCommands.requestedTab = nil
+        }
+        // A selection carried over from a build that still had Search/Library/
+        // Calendar would match no tab at all and render an empty TabView.
+        .onAppear {
+            if !MacTabCommandBus.availableTabs.contains(selectedTab) {
+                selectedTab = .home
+            }
+        }
+        .onChange(of: selectedTab) { _, tab in
+            if !MacTabCommandBus.availableTabs.contains(tab) {
+                selectedTab = .home
+            }
+        }
+        #endif
         // Apply selected app language (locale + L10n catalog) and refresh UI on change.
         .appliesAppLocale()
         .onChange(of: profileViewModel.activeProfile?.id) { _, _ in
@@ -1423,10 +1474,10 @@ struct ContentView: View {
             if isPreparingProfile {
                 ZStack {
                     ProfileScopedRootBackground()
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .tint(.white)
-                        .scaleEffect(1.8)
+                    // Same shimmering wordmark Home shows, so splash → profile
+                    // prepare → Home is one continuous brand moment instead of
+                    // flashing a system spinner in between.
+                    TVLoadingView()
                 }
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
@@ -2158,7 +2209,9 @@ private struct ProfileScopedRootBackground: View {
 /// `alignment` controls which edge of a taller/wider image stays visible when
 /// aspect-filled (Android Modern Home uses top-trailing for hero art so faces
 /// and subjects aren't cropped off the top).
-private struct CrossfadingBackdrop: View {
+/// Shared by Home and the Calendar hero — internal (not private) so
+/// `CalendarView` can present the same crossfading backdrop.
+struct CrossfadingBackdrop: View {
     let url: String?
     let placeholder: Color
     /// Crop anchor for `.fill`. Collection folder heroes use `.topTrailing`
@@ -2308,7 +2361,11 @@ private func downsampleBackdropImage(data: Data) -> UIImage? {
 
 private extension UIImage {
     var backdropDecodedByteCost: Int {
+        #if os(macOS)
+        guard let cgImage = shimCGImage else { return 0 }
+        #else
         guard let cgImage else { return 0 }
+        #endif
         return cgImage.bytesPerRow * cgImage.height
     }
 }
@@ -2420,7 +2477,7 @@ private struct TVMainTabView: View {
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     @AppStorage(SettingsKey.discoverLocation) private var discoverLocation = "Search"
     @AppStorage(SettingsKey.searchStyle) private var searchStyle = "Netflix"
-    @AppStorage(SettingsKey.profileName) private var settingsProfileName = "Nuvio User"
+    @AppStorage(SettingsKey.profileName) private var settingsProfileName = "Omni User"
     @StateObject private var profileTabAvatar = ProfileTabAvatarRenderer()
     @State private var showingReauthSheet = false
 
@@ -2432,23 +2489,40 @@ private struct TVMainTabView: View {
     /// Name shown on the profile tab, mirroring the sidebar header's
     /// display-name logic.
     private var profileTabTitle: String {
-        guard let displayedProfile else { return "Nuvio Guest" }
+        guard let displayedProfile else { return "Omni Guest" }
         return ProfileDisplayName.resolve(profile: displayedProfile, settingsName: settingsProfileName)
     }
 
     var body: some View {
-        if #available(tvOS 18.0, *) {
+        #if os(macOS)
+        // `.sidebarAdaptable` turns the tab bar into a real NSSplitView sidebar
+        // with its own window toolbar. That chrome lives outside the scaled tvOS
+        // canvas, so it cannot be sized with the rest of the UI — and the split
+        // view was in the stack of the fullscreen-transition crash. Keep the
+        // app's own tab bar, scaled with everything else.
+        tabs
+        #else
+        if #available(tvOS 18.0, macOS 15.0, *) {
             tabs
                 .tabViewStyle(.sidebarAdaptable)
         } else {
             tabs
         }
+        #endif
     }
 
     /// Search screen chosen in Settings → Layout & Discovery → Search Style.
     @ViewBuilder
     private var searchTab: some View {
-        if searchStyle == "Classic" {
+        if searchStyle == "System" {
+            // tvOS's own search UI: system keyboard and dictation, no inline
+            // A-Z row of our own.
+            SystemSearchView(
+                viewModel: searchViewModel,
+                onContentClick: onNavigateToDetails,
+                onLongPress: onLongPressCard
+            )
+        } else if searchStyle == "Classic" {
             SearchView(
                 viewModel: searchViewModel,
                 showDiscover: discoverLocation == "Search",
@@ -2474,10 +2548,17 @@ private struct TVMainTabView: View {
             // shows who's signed in instead of a generic "Profile" entry. Its
             // content stays empty: selecting it goes straight to profile
             // switching, while editing now lives in Settings.
+            #if !os(macOS)
             Color.clear
                 .tabItem {
                     Label {
+                        // Mac shows the avatar alone: the sidebar row is narrow
+                        // and the name adds nothing next to the picture.
+                        #if os(macOS)
+                        EmptyView()
+                        #else
                         Text(profileTabTitle)
+                        #endif
                     } icon: {
                         if sessionNeedsReauthentication {
                             Image(systemName: "person.crop.circle.badge.exclamationmark")
@@ -2489,6 +2570,7 @@ private struct TVMainTabView: View {
                     }
                 }
                 .tag(TVTab.profile)
+            #endif
 
             TVHomeView(
                 store: homeStore,
@@ -2520,6 +2602,9 @@ private struct TVMainTabView: View {
                 }
                 .tag(TVTab.home)
 
+            #if !os(macOS)
+            // Parked on macOS until keyboard navigation is settled on Home and
+            // Settings; fewer surfaces to chase focus behaviour across.
             searchTab
                 .tabItem {
                     Label(TVTab.search.title, systemImage: TVTab.search.symbol)
@@ -2539,6 +2624,14 @@ private struct TVMainTabView: View {
                     Label(TVTab.library.title, systemImage: TVTab.library.symbol)
                 }
                 .tag(TVTab.library)
+
+            CalendarView(onContentClick: onNavigateToDetails)
+                .id(activeProfile?.id ?? "none")
+                .tabItem {
+                    Label(TVTab.calendar.title, systemImage: TVTab.calendar.symbol)
+                }
+                .tag(TVTab.calendar)
+            #endif
 
             SettingsView(
                 activeProfile: displayedProfile,
@@ -2606,9 +2699,22 @@ private struct TVSidebarProfileHeader: View {
     let action: () -> Void
 
     @FocusState private var isFocused: Bool
-    @AppStorage(SettingsKey.profileName) private var settingsProfileName = "Nuvio User"
+    @AppStorage(SettingsKey.profileName) private var settingsProfileName = "Omni User"
 
     var body: some View {
+        #if os(macOS)
+        // Mac shows the avatar alone, centred: the name and clock are already
+        // in the menu bar and the window is narrower than a TV sidebar.
+        TVSidebarAvatar(profile: profile, isFocused: isFocused)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, 14)
+            .contentShape(Rectangle())
+            .focusable(true)
+            .focused($isFocused)
+            .focusEffectDisabled()
+            .onTapGesture(perform: action)
+            .animation(.easeInOut(duration: 0.2), value: isFocused)
+        #else
         HStack(spacing: 12) {
             TVSidebarAvatar(profile: profile, isFocused: isFocused)
 
@@ -2649,6 +2755,7 @@ private struct TVSidebarProfileHeader: View {
         .focusEffectDisabled()
         .onTapGesture(perform: action)
         .animation(.easeInOut(duration: 0.2), value: isFocused)
+        #endif
     }
 
     private var displayName: String {
@@ -2680,7 +2787,7 @@ enum ProfileDisplayName {
             return profileName
         }
         let trimmed = settingsName.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "Nuvio User" : trimmed
+        return trimmed.isEmpty ? "Omni User" : trimmed
     }
 }
 
@@ -2702,6 +2809,21 @@ private final class TVHomeFocusWork {
     var pendingSectionId: String?
     var focusSettleTask: Task<Void, Never>?
     var enrichedHeroMetadata: [String: NuvioMeta] = [:]
+    /// Cards whose hero enrichment has been attempted, successful or not.
+    var attemptedHeroEnrichmentKeys: Set<String> = []
+    /// Rows whose artwork has already been pre-fetched, so entering a row
+    /// repeatedly does not re-issue the same metadata requests.
+    var artworkPrefetchedSectionIds: Set<String> = []
+    /// Card whose row has already had its one corrective scroll pin. Re-pinning
+    /// on every repeated focus report scrolls the row above across the lazy
+    /// mount boundary, which relayouts and re-reports focus — an endless loop.
+    var correctivelyPinnedCardKey: String?
+    /// Last card an `onFocus` actually ran to completion for. Repeat reports are
+    /// detected against this, NOT against the `focusedCardID` FocusState: SwiftUI
+    /// writes the new card into that binding before the callback fires, so a
+    /// genuine sideways move already looks "current" and would be skipped —
+    /// which stops the hero updating past the first tile in a row.
+    var lastProcessedFocusCardKey: String?
     var pendingLandscapeFocusedId: String?
     var landscapeFocusTask: Task<Void, Never>?
 
@@ -2788,6 +2910,7 @@ struct TVReauthBannerView: View {
                 .loginGlassCapsule(highlighted: isButtonFocused, prominent: true)
             }
             .buttonStyle(PosterCardButtonStyle())
+            .nuvioFocusable()
             .focused($isButtonFocused)
             .focusEffectDisabledIfAvailable()
             .scaleEffect(isButtonFocused ? 1.04 : 1)
@@ -2802,6 +2925,7 @@ struct TVReauthBannerView: View {
                         .loginGlassCapsule(highlighted: isDismissFocused)
                 }
                 .buttonStyle(PosterCardButtonStyle())
+                .nuvioFocusable()
                 .focused($isDismissFocused)
                 .focusEffectDisabledIfAvailable()
                 .scaleEffect(isDismissFocused ? 1.05 : 1)
@@ -2863,6 +2987,12 @@ struct TVHomeView: View {
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     @AppStorage(SettingsKey.heroEnabled) private var heroEnabled = true
+    @AppStorage(SettingsKey.homeFeature) private var homeFeature = true
+    /// Page shown by the featured carousel.
+    @State private var featureIndex = 0
+    /// True while the featured block itself holds focus, which is what switches
+    /// it between carousel mode and ordinary focus-following hero mode.
+    @State private var isFeatureFocused = false
     @AppStorage(SettingsKey.fullscreenHeroBackdrop) private var fullscreenHeroBackdrop = true
     @AppStorage(SettingsKey.focusedPosterBackdropEnabled) private var focusedPosterBackdropEnabled = true
     @AppStorage(SettingsKey.focusedPosterBackdropDelay) private var focusedPosterBackdropDelay = 3
@@ -3097,7 +3227,52 @@ struct TVHomeView: View {
                     // Header Hero Meta block (static, outside the rows). Folder
                     // focus swaps poster meta for emoji + folder title (browse-style).
                     if heroEnabled && homeLayout != "Grid View" {
-                        if let folder = focusedCollectionFolder {
+                        if featureHeroActive {
+                            // One always-mounted block owning every hero mode:
+                            // carousel while it holds focus, folder hero or
+                            // focus-following hero while a row does. Unmounting
+                            // it for any mode leaves nothing above the first row
+                            // for Up to reach, and the press hits the sidebar.
+                            let folderOverride = isFeatureFocused ? nil : focusedCollectionFolder
+                            let metaOverride = (isFeatureFocused || folderOverride != nil)
+                                ? nil
+                                : (visibleFocusedMeta ?? visibleHero)
+                            TVFeatureHeroView(
+                                items: featureItems,
+                                selectedIndex: $featureIndex,
+                                overrideMeta: metaOverride,
+                                overrideContinueItem: metaOverride.flatMap { heroContinueItem(for: $0) },
+                                overrideFolder: folderOverride,
+                                // Only latches on. Clearing it when the block
+                                // merely loses focus would flip to row-hero mode
+                                // the moment the sidebar opens, which reads as
+                                // Continue Watching vanishing. A row card taking
+                                // focus is what clears it.
+                                onFocusChange: { focused in
+                                    TVHomeDebugTrace.log(
+                                        "home.hero.focusChange focused=\(focused) "
+                                            + "wasFeatureFocused=\(isFeatureFocused) "
+                                            + "mode=\(metaOverride == nil && folderOverride == nil ? "carousel" : "override")"
+                                    )
+                                    if focused { isFeatureFocused = true }
+                                },
+                                onSelect: { item in
+                                    onResumePlayback(item)
+                                },
+                                onSelectOverride: { meta in
+                                    navigateToDetailsFromHome(id: meta.id, type: meta.type)
+                                },
+                                onStartFromBeginning: { item in
+                                    onStartContinueWatchingFromBeginning?(item)
+                                },
+                                onRemove: { item in
+                                    onRemoveFromContinueWatching?(item)
+                                },
+                                onOpenDetails: { meta in
+                                    navigateToDetailsFromHome(id: meta.id, type: meta.type)
+                                }
+                            )
+                        } else if let folder = focusedCollectionFolder {
                             TVCollectionFolderHeroView(folder: folder)
                         } else if let heroMeta = visibleFocusedMeta ?? visibleHero {
                             TVHeroView(meta: heroMeta, continueItem: heroContinueItem(for: heroMeta)) {
@@ -3112,7 +3287,12 @@ struct TVHomeView: View {
                     // lazy as well; rows retain their horizontal position in
                     // `rowScrollStore` while focused-row shells preserve focus.
                     GeometryReader { proxy in
-                        let sections = visibleSections.filter(\.hasContent)
+                        // The feature carousel is the Continue Watching
+                        // surface while it is on, so the row would repeat the
+                        // same titles directly beneath it.
+                        let sections = visibleSections.filter(\.hasContent).filter {
+                            !(featureHeroActive && $0.id == TVHomeSection.continueWatchingId)
+                        }
                         let horizontalEdgeInset = max(
                             0,
                             (UIScreen.main.bounds.width - proxy.size.width) / 2
@@ -3134,7 +3314,9 @@ struct TVHomeView: View {
                             // outside the viewport without changing row geometry.
                             ScrollViewReader { verticalScrollProxy in
                                 ScrollView(.vertical, showsIndicators: false) {
-                                    LazyVStack(alignment: .leading, spacing: TVHomeLayout.sectionSpacing) {
+                                    // Spacing is 0 here because each row carries its own top gap;
+                                    // see the ForEach below.
+                                    LazyVStack(alignment: .leading, spacing: 0) {
                                         if sessionNeedsReauthentication && !isBannerDismissed {
                                             TVReauthBannerView(
                                                 onSignIn: onRequestReauth,
@@ -3145,9 +3327,18 @@ struct TVHomeView: View {
                                                 }
                                             )
                                             .padding(.horizontal, horizontalEdgeInset)
+                                            .padding(.bottom, TVHomeLayout.sectionSpacing)
                                         }
 
                                         ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
+                                        // The gap above a row belongs to the row itself, not to the
+                                        // stack between them. `scrollTo(anchor: .top)` pins the top of
+                                        // *this* view, so owning the gap guarantees the previous row is
+                                        // pushed fully out of the viewport; with the gap living in the
+                                        // LazyVStack instead, any small shortfall in the pin left the
+                                        // row above showing as a sliver. The scroll id has to sit on
+                                        // this wrapper for the same reason.
+                                        Group {
                                         if section.isLoadingPlaceholder {
                                             TVLoadingCatalogRow(
                                                 title: section.title,
@@ -3178,11 +3369,43 @@ struct TVHomeView: View {
                                                     didRequestInitialCardFocus = true
                                                 },
                                                 onFocus: { folder in
+                                                    if isFeatureFocused { isFeatureFocused = false }
                                                     let cardKey = "\(section.id)\u{1}\(folder.id)"
+                                                    let changedRow = focusedRowIndex != index
+                                                    TVHomeDebugTrace.log(
+                                                        "home.folderFocus.begin section=\(section.id) folder=\(folder.id) "
+                                                            + "changedRow=\(changedRow) fromRow=\(focusedRowIndex) toRow=\(index)"
+                                                    )
                                                     if focusWork.restoringOverlayCardID == cardKey {
                                                         completeOverlayFocusRestore(for: cardKey)
+                                                    } else if !changedRow,
+                                                              focusWork.lastProcessedFocusCardKey == cardKey {
+                                                        // See the catalog row above: a repeated report on
+                                                        // the same card must not write state, but it does
+                                                        // get one corrective scroll pin — without it the
+                                                        // row's post-animation height settle leaves the
+                                                        // row above showing as a sliver.
+                                                        // The first row's "row above" is the hero itself, which has to
+                                                        // stay on screen: pinning row 0 to the top scrolls the
+                                                        // hero out of the viewport entirely, and tvOS will not
+                                                        // move focus to a view that is not visible. That is what
+                                                        // left Up from the first row unable to return to
+                                                        // Continue Watching. Rows below still get the pin, which
+                                                        // is where the sliver actually appears.
+                                                        let pinWouldHideHero = index == 0 && featureHeroActive
+                                                        if focusWork.correctivelyPinnedCardKey != cardKey, !pinWouldHideHero {
+                                                            focusWork.correctivelyPinnedCardKey = cardKey
+                                                            TVHomeDebugTrace.log(
+                                                                "home.correctivePin section=\(section.id) anchor=top"
+                                                            )
+                                                            var transaction = Transaction()
+                                                            transaction.animation = nil
+                                                            withTransaction(transaction) {
+                                                                verticalScrollProxy.scrollTo(section.id, anchor: .top)
+                                                            }
+                                                        }
+                                                        return
                                                     }
-                                                    let changedRow = focusedRowIndex != index
                                                     if changedRow {
                                                         focusedRowIndex = index
                                                         withAnimation(TVHomeLayout.verticalScrollAnimation) {
@@ -3195,6 +3418,7 @@ struct TVHomeView: View {
                                                             verticalScrollProxy.scrollTo(section.id, anchor: .top)
                                                         }
                                                     }
+                                                    focusWork.lastProcessedFocusCardKey = cardKey
                                                     focusedCardID = cardKey
                                                     settleFolderFocus(folder, in: section.id)
                                                 },
@@ -3207,7 +3431,6 @@ struct TVHomeView: View {
                                                 }
                                             )
                                             .equatable()
-                                            .id(section.id)
                                          } else {
                                             TVCatalogRow(
                                                 id: section.id,
@@ -3235,17 +3458,64 @@ struct TVHomeView: View {
                                                 },
                                                 onFocus: { meta in
                                                     let focusStarted = TVHomeDebugTrace.now()
+                                                    // A row card taking focus is what ends carousel mode.
+                                                    if isFeatureFocused { isFeatureFocused = false }
                                                     let cardKey = "\(section.id)\u{1}\(meta.id)"
                                                     let changedRow = focusedRowIndex != index
                                                     TVHomeDebugTrace.log(
                                                         "home.focus.begin section=\(section.id) meta=\(meta.id) "
-                                                            + "changedRow=\(changedRow) fromRow=\(focusedRowIndex) toRow=\(index)"
+                                                            + "changedRow=\(changedRow) fromRow=\(focusedRowIndex) toRow=\(index) "
+                                                            + "sections=\(sections.count) isLast=\(index == sections.count - 1) "
+                                                            + "below=\(sections.indices.contains(index + 1) ? sections[index + 1].id : "none")"
                                                     )
                                                     if focusWork.restoringOverlayCardID == cardKey {
                                                         completeOverlayFocusRestore(for: cardKey)
+                                                    } else if !changedRow,
+                                                              focusWork.lastProcessedFocusCardKey == cardKey {
+                                                        // The engine re-reports focus on the card we are
+                                                        // already on whenever the row remounts. Writing
+                                                        // state here would re-render the body and provoke
+                                                        // another report, which swallows D-pad presses.
+                                                        // Re-assert the scroll pin once: the row's height
+                                                        // settles after the landing animation (artwork
+                                                        // loading, landscape tiles), which leaves the row
+                                                        // above bleeding into the viewport. One corrective
+                                                        // scroll fixes that; pinning on every report
+                                                        // oscillates the row above across the lazy mount
+                                                        // boundary and loops forever.
+                                                        TVHomeDebugTrace.log(
+                                                            "home.focus.dedupe section=\(section.id) meta=\(meta.id) "
+                                                                + "pin=\(focusWork.correctivelyPinnedCardKey != cardKey)"
+                                                        )
+                                                        // The first row's "row above" is the hero itself, which has to
+                                                        // stay on screen: pinning row 0 to the top scrolls the
+                                                        // hero out of the viewport entirely, and tvOS will not
+                                                        // move focus to a view that is not visible. That is what
+                                                        // left Up from the first row unable to return to
+                                                        // Continue Watching. Rows below still get the pin, which
+                                                        // is where the sliver actually appears.
+                                                        let pinWouldHideHero = index == 0 && featureHeroActive
+                                                        if focusWork.correctivelyPinnedCardKey != cardKey, !pinWouldHideHero {
+                                                            focusWork.correctivelyPinnedCardKey = cardKey
+                                                            TVHomeDebugTrace.log(
+                                                                "home.correctivePin section=\(section.id) anchor=top"
+                                                            )
+                                                            var transaction = Transaction()
+                                                            transaction.animation = nil
+                                                            withTransaction(transaction) {
+                                                                verticalScrollProxy.scrollTo(section.id, anchor: .top)
+                                                            }
+                                                        }
+                                                        return
                                                     }
                                                     if changedRow {
                                                         focusedRowIndex = index
+                                                        // Warm the row's artwork so every card expands
+                                                        // consistently on focus, rather than only the
+                                                        // ones already passed over.
+                                                        Task(priority: .utility) {
+                                                            await prefetchSectionArtwork(sectionId: section.id)
+                                                        }
                                                         TVHomeDebugTrace.log(
                                                             "home.scrollTo section=\(section.id) anchor=top"
                                                         )
@@ -3253,12 +3523,14 @@ struct TVHomeView: View {
                                                             verticalScrollProxy.scrollTo(section.id, anchor: .top)
                                                         }
                                                     } else {
+                                                        // Keeps the row pinned while moving along it.
                                                         var transaction = Transaction()
                                                         transaction.animation = nil
                                                         withTransaction(transaction) {
                                                             verticalScrollProxy.scrollTo(section.id, anchor: .top)
                                                         }
                                                     }
+                                                    focusWork.lastProcessedFocusCardKey = cardKey
                                                     focusedCardID = cardKey
                                                     settleCatalogFocus(on: meta, in: section.id)
                                                     scheduleLandscapeFocus(cardKey: cardKey)
@@ -3311,8 +3583,21 @@ struct TVHomeView: View {
                                                 onRemoveFromContinueWatching: onRemoveFromContinueWatching
                                             )
                                             .equatable()
-                                            .id(section.id)
+                                            .onAppear {
+                                                TVHomeDebugTrace.log(
+                                                    "row.mount index=\(index) section=\(section.id) "
+                                                        + "items=\(section.items.count)"
+                                                )
+                                            }
+                                            .onDisappear {
+                                                TVHomeDebugTrace.log(
+                                                    "row.unmount index=\(index) section=\(section.id)"
+                                                )
+                                            }
                                         }  // end catalog vs collection branch
+                                        }
+                                        .padding(.top, index == 0 ? 0 : TVHomeLayout.sectionSpacing)
+                                        .id(section.id)
                                         }
                                     }
                                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -3351,6 +3636,22 @@ struct TVHomeView: View {
                     // while returning from the sidebar restores the saved card.
                     .focusSection()
                     .defaultFocusIfAvailable($focusedCardID, store.lastFocusedCardID ?? focusWork.pendingOverlayRestoreCardID)
+                    #if os(macOS)
+                    // macOS has no focus engine, so Home moves its own focus.
+                    .onMoveCommand { direction in
+                        let next = MacHomeFocus.nextCardKey(
+                            from: focusedCardID,
+                            direction: direction,
+                            sections: homeOrderedSections(store.sections)
+                        )
+                        MacDiagnostics.log(
+                            "homeFocus.move dir=\(direction) from=\(focusedCardID ?? "none") "
+                                + "to=\(next ?? "none")"
+                        )
+                        guard let next else { return }
+                        focusedCardID = next
+                    }
+                    #endif
                 }
             }
             // Ignore the bottom safe-area inset too, so the scrolling rows window
@@ -3679,7 +3980,7 @@ struct TVHomeView: View {
             store.lastFocusedCardID = successorKey
             restoreOverlayFocus(to: successorKey, generation: overlayRestoreGeneration)
         }
-        .fullScreenCover(item: $browsingSection) { section in
+        .modalCover(item: $browsingSection) { section in
             TVHomeCatalogBrowseView(
                 section: section,
                 repository: repository,
@@ -4274,6 +4575,17 @@ struct TVHomeView: View {
         return continueWatchingByMetaId[meta.id]
     }
 
+    /// Titles the featured carousel cycles.
+    private var featureItems: [ContinueWatchingItem] {
+        Array(continueWatching.prefix(20))
+    }
+
+    /// The feature only stands in for the hero when it has something to show —
+    /// a new profile with no history keeps the ordinary hero.
+    private var featureHeroActive: Bool {
+        homeFeature && homeLayout != "Grid View" && !featureItems.isEmpty
+    }
+
     private var visibleHero: NuvioMeta? {
         guard let hero = store.hero, isVisible(hero) else { return visibleSections.first?.items.first }
         return hero
@@ -4330,6 +4642,11 @@ struct TVHomeView: View {
     }
 
     private var homeBackdropURL: String? {
+        // Featured carousel owns the backdrop while it holds focus, so the art
+        // tracks the slide rather than whatever card was focused last.
+        if featureHeroActive, isFeatureFocused, featureItems.indices.contains(featureIndex) {
+            return preferredBackdropURL(for: featureItems[featureIndex].meta)
+        }
         // Collection folder focus uses its own hero backdrop (Android Modern
         // Home parity). Fall back to the focused/hero title poster otherwise.
         if let folder = focusedCollectionFolder {
@@ -4621,7 +4938,21 @@ struct TVHomeView: View {
         let remainder = sections.filter {
             !($0.isCollectionRow && $0.isPinnedCollection)
         }
-        return pinnedCollections + TVHomeCatalogOrder.apply(to: remainder)
+        let ordered = pinnedCollections + TVHomeCatalogOrder.apply(to: remainder)
+        // Home renders these in a ForEach keyed by section id, and `.id(section.id)`
+        // is also the scroll target. A repeated id therefore collapses to a single
+        // view: the extra entry occupies a row index with nothing focusable in it,
+        // so a D-pad press aimed at that index is silently swallowed and vertical
+        // navigation stalls. Keep the first occurrence of each id.
+        var seenIds: Set<String> = []
+        let deduped = ordered.filter { seenIds.insert($0.id).inserted }
+        if deduped.count != ordered.count {
+            let dropped = ordered.count - deduped.count
+            TVHomeDebugTrace.log(
+                "home.sections.dedupe dropped=\(dropped) total=\(ordered.count)"
+            )
+        }
+        return deduped
     }
 
     @MainActor
@@ -4915,13 +5246,111 @@ struct TVHomeView: View {
     /// pending focus target, and the exact item inside
     /// `store.sections[sectionId].items` — the latter being what `PosterCard`
     /// renders, so the landscape overlay gains the title logo/backdrop.
+    /// Fetches Cinemeta artwork for a row's cards up front, rather than waiting
+    /// for each to be focused.
+    ///
+    /// Catalogs that ship posters but no backdrop (Rotten Tomatoes, the
+    /// streaming-service catalogs) otherwise gain their backdrop only as the
+    /// viewer lands on each card, so the row expands on focus for some cards
+    /// and not others — visibly inconsistent. Pre-fetching makes the row behave
+    /// uniformly, and warms the poster cache at the same time.
+    @MainActor
+    private func prefetchSectionArtwork(sectionId: String) async {
+        guard focusWork.artworkPrefetchedSectionIds.insert(sectionId).inserted else { return }
+        guard let sectionIndex = store.sections.firstIndex(where: { $0.id == sectionId }) else { return }
+
+        // Only the front of the row: enough to cover what the viewer can reach
+        // before the per-card enrichment catches up, without fetching metadata
+        // for a 50-item catalog nobody scrolled through.
+        let candidates = store.sections[sectionIndex].items.prefix(14).filter { item in
+            let hasBackdrop = !(item.backgroundUrl?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
+            let hasImdb = !(item.imdbId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
+            return !hasBackdrop && hasImdb
+        }
+        guard !candidates.isEmpty else { return }
+
+        var fetched: [String: NuvioMeta] = [:]
+        await withTaskGroup(of: (String, NuvioMeta?).self) { group in
+            var running = 0
+            var iterator = candidates.makeIterator()
+
+            func addNext() {
+                guard let item = iterator.next() else { return }
+                let key = "\(item.type.lowercased())\u{1f}\(item.id)"
+                if let cached = focusWork.enrichedHeroMetadata[key] {
+                    fetched[item.id] = cached
+                    addNext()
+                    return
+                }
+                running += 1
+                group.addTask { [repository] in
+                    let meta = try? await repository.getMetadata(id: item.id, type: item.type)
+                    return (item.id, meta)
+                }
+            }
+
+            // Four at a time: enough to fill a row quickly without a burst of
+            // requests competing with whatever the viewer is actually doing.
+            for _ in 0..<min(4, candidates.count) { addNext() }
+
+            for await (id, meta) in group {
+                running -= 1
+                if let meta { fetched[id] = meta }
+                addNext()
+            }
+            _ = running
+        }
+
+        guard !fetched.isEmpty,
+              let liveIndex = store.sections.firstIndex(where: { $0.id == sectionId }) else { return }
+
+        // One pass over the row, so the whole batch costs a single re-render
+        // rather than one per card.
+        var items = store.sections[liveIndex].items
+        var changed = false
+        for (offset, item) in items.enumerated() {
+            guard let full = fetched[item.id] else { continue }
+            focusWork.enrichedHeroMetadata["\(item.type.lowercased())\u{1f}\(item.id)"] = full
+            let merged = item.fillingMissingHeroMetadata(from: full)
+            if merged != item {
+                items[offset] = merged
+                changed = true
+            }
+        }
+        if changed {
+            store.sections[liveIndex].items = items
+        }
+    }
+
     @MainActor
     private func enrichSettledCatalogMeta(_ settledMeta: NuvioMeta, in sectionId: String) async {
         let enrichmentKey = "\(settledMeta.type.lowercased())\u{1f}\(settledMeta.id)"
+
+        // The *fetch* happens once per card; re-applying a cached result is
+        // always allowed.
+        //
+        // Enrichment writes the merged record back into the section item that
+        // `PosterCard` renders, which re-renders the row and re-fires `onFocus`.
+        // When the merge cannot satisfy `needsHeroMetadataEnrichment` — routine
+        // for live sport and TV, whose `/meta` carries no runtime or status —
+        // that scheduled another enrich, giving a ~300ms
+        // publish → render → focus → publish loop.
+        //
+        // Blocking the whole function on a second visit fixed that loop but
+        // broke artwork: when the store re-publishes a row it reverts the item
+        // to the catalog's own record, and the enrichment could never be
+        // re-applied, so a card that had loaded a good backdrop dropped back to
+        // the low-quality one for good. Re-applying is cheap and idempotent —
+        // the equality check below means an unchanged value writes nothing, so
+        // it cannot restart the loop.
         let fullMeta: NuvioMeta
         if let cached = focusWork.enrichedHeroMetadata[enrichmentKey] {
             fullMeta = cached
         } else {
+            guard focusWork.attemptedHeroEnrichmentKeys.insert(enrichmentKey).inserted else {
+                // Fetched before and it failed; do not hammer it on every pass.
+                return
+            }
             guard let fetched = try? await repository.getMetadata(
                 id: settledMeta.id,
                 type: settledMeta.type
@@ -6190,6 +6619,420 @@ extension TVHeroView: Equatable {
 /// Grid View's featured carousel, matching Android TV's `HeroCarousel`: a
 /// large near-full-screen banner, local backdrop/gradients, remote paging, Select to
 /// open details, and auto-advance only while the hero is not focused.
+/// Prime-style featured carousel for the Home hero slot, cycling Continue
+/// Watching.
+///
+/// One focus target for the whole card rather than separate Watch / Info
+/// buttons: the hero sits directly above the rows, and extra focusable
+/// controls up there fight the row focus engine. Select resumes, left/right
+/// pages, and the pill is drawn as an affordance rather than being focusable
+/// in its own right.
+private struct TVFeatureHeroView: View {
+    let items: [ContinueWatchingItem]
+    @Binding var selectedIndex: Int
+    /// Title focused in the rows below. While this is set the block stops being
+    /// a carousel and behaves as the ordinary focus-following hero, so browsing
+    /// a catalog row still gets its own artwork. The block itself stays mounted
+    /// and focusable throughout — otherwise there is nothing above the first row
+    /// for Up to reach, and the press escapes to the sidebar.
+    var overrideMeta: NuvioMeta? = nil
+    var overrideContinueItem: ContinueWatchingItem? = nil
+    /// Focused collection folder, which has its own hero treatment.
+    var overrideFolder: TVCollectionFolderItem? = nil
+    var backdropBleed: CGFloat = 0
+    var onFocusChange: ((Bool) -> Void)? = nil
+    let onSelect: (ContinueWatchingItem) -> Void
+    var onSelectOverride: ((NuvioMeta) -> Void)? = nil
+    /// Hold-Select actions for the slide on screen. The Continue Watching row
+    /// used to carry these on its cards; hiding that row in favour of this
+    /// carousel took them with it, so they live here now.
+    var onStartFromBeginning: ((ContinueWatchingItem) -> Void)? = nil
+    var onRemove: ((ContinueWatchingItem) -> Void)? = nil
+    var onOpenDetails: ((NuvioMeta) -> Void)? = nil
+
+    @AppStorage(SettingsKey.amoled) private var amoled = false
+    @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
+    @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
+    @AppStorage(SettingsKey.theme) private var theme = SettingsAccent.white.rawValue
+    @FocusState private var isFocused: Bool
+    /// See `leftPagingGuard`.
+    @FocusState private var isLeftGuardFocused: Bool
+    /// Latches while focus is handed back after a left page. Without it the
+    /// guard re-acquires focus before the hero has taken it and pages again,
+    /// walking straight to the first slide on a single press.
+    ///
+    /// A reference type, not a `@State` Bool: SwiftUI captures state values into
+    /// the closure, so the latch would always read its pre-press value and never
+    /// block anything. `selectedIndex` is a Binding and does read live, which is
+    /// why every re-fire decremented and the press ran to the first slide.
+    private final class PagingGate {
+        var isPaging = false
+    }
+    @State private var pagingGate = PagingGate()
+    /// When the viewer last interacted with the block — paging by hand, or
+    /// moving focus onto it. Auto-advance waits for this to go quiet.
+    @State private var lastInteraction = Date.distantPast
+
+    private var index: Int {
+        guard !items.isEmpty else { return 0 }
+        return min(max(selectedIndex, 0), items.count - 1)
+    }
+
+    private var activeItem: ContinueWatchingItem? {
+        items.indices.contains(index) ? items[index] : nil
+    }
+
+    /// The focus engine resolves a left press before `onMoveCommand` sees it, so
+    /// with nothing focusable to our left it exits to the sidebar and the menu
+    /// opens instead of paging. An invisible button absorbs that press and hands
+    /// focus straight back, having paged. It only exists past the first slide,
+    /// so a left press there still opens the menu, which is the way out.
+    @ViewBuilder
+    private var leftPagingGuard: some View {
+        if isCarouselMode, index > 0 {
+            Button(action: {}) {
+                Color.white.opacity(0.001)
+                    .frame(width: 24, height: heroHeight * 0.5)
+            }
+            .buttonStyle(PosterCardButtonStyle())
+            .nuvioFocusable()
+            .focused($isLeftGuardFocused)
+            .focusEffectDisabledIfAvailable()
+            .offset(x: -18)
+            .accessibilityHidden(true)
+        }
+    }
+
+    private var isCarouselMode: Bool { overrideMeta == nil && overrideFolder == nil }
+
+    /// Tall like the Grid View carousel while featuring Continue Watching, but
+    /// back to the ordinary hero height as soon as a row is focused — a
+    /// permanently tall block cuts the rows off.
+    private var heroHeight: CGFloat {
+        if isCarouselMode { return homeLayout == "Compact" ? 720 : 820 }
+        return homeLayout == "Compact" ? 390 : 500
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            if let overrideFolder {
+                TVCollectionFolderHeroView(folder: overrideFolder)
+                    .id(overrideFolder.id)
+            } else if let overrideMeta {
+                overrideContent(overrideMeta)
+                    .id(overrideMeta.id)
+                    .transition(.opacity)
+            } else if let activeItem {
+                content(activeItem)
+                    .id(activeItem.meta.id)
+                    .transition(.opacity)
+            }
+
+            if isCarouselMode, items.count > 1 {
+                // Tightens as the list grows so twenty slides still read as a
+                // row of dots rather than a ruler across the screen.
+                let dense = items.count > 10
+                HStack(spacing: dense ? 7 : 12) {
+                    ForEach(items.indices, id: \.self) { dot in
+                        Capsule()
+                            .fill(
+                                dot == index
+                                    ? Color.white.opacity(0.95)
+                                    : Color.white.opacity(0.30)
+                            )
+                            .frame(
+                                width: dot == index
+                                    ? (isFocused ? (dense ? 34 : 48) : (dense ? 26 : 36))
+                                    : (dense ? 10 : 18),
+                                height: isFocused && dot == index ? 6 : 4
+                            )
+                    }
+                }
+                .animation(.easeInOut(duration: 0.30), value: index)
+                .padding(.leading, TVLayout.rowLeading)
+                .padding(.bottom, 20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: heroHeight)
+        .clipped()
+        // No backdrop of its own: this block sits inside the safe area, so
+        // artwork drawn here stops short of the screen edges. The page-level
+        // CrossfadingBackdrop is full-bleed and follows `homeBackdropURL`.
+        .contentShape(Rectangle())
+        .focusable(true)
+        .focusEffectDisabledIfAvailable()
+        .focused($isFocused)
+        .onTapGesture {
+            if let overrideMeta {
+                onSelectOverride?(overrideMeta)
+            } else if let activeItem {
+                onSelect(activeItem)
+            }
+        }
+        .onMoveCommand { direction in
+            // Paging belongs to carousel mode only.
+            // Left is deliberately absent: `leftPagingGuard` owns it. Handling
+            // it here as well meant one press paged twice, running from the
+            // third slide to the first.
+            guard isCarouselMode else { return }
+            switch direction {
+            case .right:
+                // Wraps: the last slide rolls round to the first, matching the
+                // unattended auto-advance rather than dead-ending.
+                pageManually(to: (index + 1) % max(items.count, 1))
+            default:
+                break
+            }
+        }
+        .overlay(alignment: .leading) { leftPagingGuard }
+        .contextMenu {
+            if isCarouselMode, let activeItem {
+                Button {
+                    onSelect(activeItem)
+                } label: {
+                    Label(
+                        L10n.string("action_resume", fallback: "Resume"),
+                        systemImage: "play.fill"
+                    )
+                }
+
+                if let onStartFromBeginning {
+                    Button {
+                        onStartFromBeginning(activeItem)
+                    } label: {
+                        Label(
+                            L10n.string("action_start_from_beginning", fallback: "Start from Beginning"),
+                            systemImage: "gobackward"
+                        )
+                    }
+                }
+
+                if let onOpenDetails {
+                    Button {
+                        onOpenDetails(activeItem.meta)
+                    } label: {
+                        Label(
+                            L10n.string("action_more_info", fallback: "More Info"),
+                            systemImage: "info.circle"
+                        )
+                    }
+                }
+
+                if let onRemove {
+                    Button(role: .destructive) {
+                        onRemove(activeItem)
+                    } label: {
+                        Label(
+                            L10n.string("action_remove_from_continue", fallback: "Remove from Continue Watching"),
+                            systemImage: "trash"
+                        )
+                    }
+                }
+            }
+        }
+        .focusSection()
+        .onChange(of: isLeftGuardFocused) { _, focused in
+            guard focused, !pagingGate.isPaging else { return }
+            pagingGate.isPaging = true
+            pageManually(to: max(0, index - 1))
+            DispatchQueue.main.async { isFocused = true }
+        }
+        .onChange(of: isFocused) { _, focused in
+            // Focus is back on the hero, so the press is finished with.
+            if focused {
+                pagingGate.isPaging = false
+                // Arriving here is navigation too: do not advance the instant
+                // the viewer lands on the block.
+                lastInteraction = Date()
+            }
+            onFocusChange?(focused)
+        }
+        .task(id: "\(items.map(\.meta.id).joined(separator: "|"))|\(overrideMeta?.id ?? "")") {
+            guard items.count > 1, isCarouselMode else { return }
+            // Advances whether or not the block holds focus, the way Prime's
+            // feature row does — but hand paging pauses it, and it resumes once
+            // navigation has been idle for the same interval. Ticking every
+            // second rather than every five keeps that resumption prompt; a
+            // five-second tick could leave it idle for nearly ten.
+            let interval: TimeInterval = 5
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled, isCarouselMode else { return }
+                guard Date().timeIntervalSince(lastInteraction) >= interval else { continue }
+                setIndex((index + 1) % items.count)
+                // Counts as the new baseline, so the next slide is a full
+                // interval away rather than one second later.
+                lastInteraction = Date()
+            }
+        }
+        .onChange(of: items.count) { _, count in
+            if count == 0 { selectedIndex = 0 }
+            else if selectedIndex >= count { selectedIndex = count - 1 }
+        }
+    }
+
+    private func setIndex(_ next: Int) {
+        withAnimation(.easeInOut(duration: 0.35)) { selectedIndex = next }
+    }
+
+    /// Paging driven by the remote, which also holds off the timer.
+    private func pageManually(to next: Int) {
+        lastInteraction = Date()
+        setIndex(next)
+    }
+
+    @ViewBuilder
+    private func content(_ item: ContinueWatchingItem) -> some View {
+        let meta = item.meta
+        VStack(alignment: .leading, spacing: 14) {
+            if let logoUrl = meta.logoUrl, !logoUrl.isEmpty {
+                CachedHeroLogo(url: logoUrl, title: meta.name)
+                    .frame(maxHeight: 96, alignment: .leading)
+            } else {
+                Text(meta.name)
+                    .font(.custom("Inter-Bold", size: 52))
+                    .foregroundColor(.white)
+                    .lineLimit(2)
+            }
+
+            TVHeroMetaLine(meta: meta, episodeLine: item.episodeDisplayLine)
+
+            Text(item.isUpNextEntry ? item.upNextBadgeText : item.remainingText.uppercased())
+                .font(.custom("Inter-SemiBold", size: 21))
+                .foregroundColor(.white.opacity(0.70))
+
+            if let description = item.episodeOverview?.isEmpty == false
+                ? item.episodeOverview
+                : meta.description,
+               !description.isEmpty {
+                Text(description)
+                    .font(.custom("Inter-Regular", size: 22))
+                    .foregroundColor(.white.opacity(0.80))
+                    .lineLimit(3)
+                    .lineSpacing(2)
+                    .frame(maxWidth: 860, alignment: .leading)
+            }
+
+            watchPill(item)
+                .padding(.top, 6)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+        .padding(.leading, TVLayout.rowLeading)
+        .padding(.trailing, TVLayout.rowLeading)
+        .padding(.bottom, items.count > 1 ? 54 : 28)
+    }
+
+    /// Focus-following hero content, matching `TVHeroView`, shown while a row
+    /// card below is focused.
+    @ViewBuilder
+    private func overrideContent(_ meta: NuvioMeta) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let logoUrl = meta.logoUrl, !logoUrl.isEmpty {
+                CachedHeroLogo(url: logoUrl, title: meta.name)
+                    .frame(maxHeight: 96, alignment: .leading)
+            } else {
+                Text(meta.name)
+                    .font(.custom("Inter-Bold", size: 52))
+                    .foregroundColor(.white)
+                    .lineLimit(2)
+            }
+
+            TVHeroMetaLine(meta: meta, episodeLine: overrideContinueItem?.episodeDisplayLine)
+
+            if let item = overrideContinueItem {
+                Text(item.isUpNextEntry ? item.upNextBadgeText : item.remainingText.uppercased())
+                    .font(.custom("Inter-SemiBold", size: 21))
+                    .foregroundColor(.white.opacity(0.70))
+            }
+
+            if let description = overrideContinueItem?.episodeOverview?.isEmpty == false
+                ? overrideContinueItem?.episodeOverview
+                : meta.description,
+               !description.isEmpty {
+                Text(description)
+                    .font(.custom("Inter-Regular", size: 22))
+                    .foregroundColor(.white.opacity(0.80))
+                    .lineLimit(3)
+                    .lineSpacing(2)
+                    .frame(maxWidth: 860, alignment: .leading)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+        .padding(.leading, TVLayout.rowLeading)
+        .padding(.trailing, TVLayout.rowLeading)
+        .padding(.bottom, 28)
+    }
+
+    /// Drawn, not focusable — see the note on the type.
+    private func watchPill(_ item: ContinueWatchingItem) -> some View {
+        let accent = SettingsAccent.color(for: theme)
+        return HStack(spacing: 12) {
+            Image(systemName: "play.fill")
+                .font(.system(size: 21, weight: .bold))
+            Text(
+                item.isUpNextEntry
+                    ? L10n.string("feature_watch_now", fallback: "Watch Now")
+                    : L10n.string("feature_resume", fallback: "Resume")
+            )
+            .font(.system(size: 23, weight: .semibold))
+        }
+        .foregroundColor(isFocused ? .black : .white)
+        .padding(.horizontal, 30)
+        .frame(height: 58)
+        .background(
+            Capsule().fill(isFocused ? Color.white : Color.white.opacity(0.16))
+        )
+        .overlay(
+            Capsule().strokeBorder(
+                isFocused ? accent : .clear,
+                lineWidth: isFocused ? AppFocusOutline.width : 0
+            )
+        )
+        .scaleEffect(isFocused ? 1.04 : 1)
+        .animation(.easeOut(duration: 0.16), value: isFocused)
+    }
+
+    /// Backdrop + scrims, drawn as a background so the art can bleed past the
+    /// hero's own frame without moving the focus geometry.
+    @ViewBuilder
+    private func artLayer(_ meta: NuvioMeta) -> some View {
+        let background = Color.nuvioBackground(amoled: amoled, body: bodyColor)
+        ZStack {
+            CrossfadingBackdrop(
+                url: meta.backgroundUrl ?? meta.posterUrl,
+                placeholder: background,
+                alignment: .top
+            )
+
+            LinearGradient(
+                stops: [
+                    .init(color: background.opacity(0.97), location: 0),
+                    .init(color: background.opacity(0.85), location: 0.18),
+                    .init(color: background.opacity(0.50), location: 0.38),
+                    .init(color: background.opacity(0.16), location: 0.60),
+                    .init(color: .clear, location: 0.76)
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0.32),
+                    .init(color: background.opacity(0.48), location: 0.62),
+                    .init(color: background.opacity(0.86), location: 0.82),
+                    .init(color: background, location: 1)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+        .padding(.horizontal, -backdropBleed)
+    }
+}
+
 private struct TVGridHeroSlideshowView: View {
     let items: [NuvioMeta]
     @Binding var selectedIndex: Int
@@ -6557,16 +7400,56 @@ private struct TVHeroMetaLine: View {
 }
 
 
+/// Branded loading state: the launch screen's wordmark, lit by a soft band
+/// sweeping left to right on a loop.
+///
+/// The motion *is* the progress indicator. Home publishes rows as soon as any
+/// arrive rather than waiting for a complete set, so there is no total to
+/// measure against here — a climbing percentage would be invented. A sweep says
+/// "working" honestly without claiming to know how far along it is.
 private struct TVLoadingView: View {
-    @AppStorage(SettingsKey.theme) private var theme = SettingsAccent.white.rawValue
+    /// Twice the login screen's wordmark: this sits alone on a full screen,
+    /// where the login-sized mark read as too small.
+    private let wordmarkWidth: CGFloat = 600
+    /// -1 parks the band fully left of the mark, +1 fully right.
+    @State private var phase: CGFloat = -1
 
     var body: some View {
-        ProgressView()
-            .progressViewStyle(.circular)
-            .tint(SettingsAccent.color(for: theme))
-            .scaleEffect(1.8)
+        wordmark
+            .opacity(0.22)
+            .overlay(wordmark.mask(sweepBand))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: false)) {
+                    phase = 1
+                }
+            }
             .focusable(true)
+    }
+
+    private var wordmark: some View {
+        Image("BrandWordmark")
+            .resizable()
+            .scaledToFit()
+            .frame(width: wordmarkWidth)
+    }
+
+    /// Soft-edged band: the mark fades up and back down as it passes, so the
+    /// brightening reads as partial rather than a hard wipe.
+    private var sweepBand: some View {
+        LinearGradient(
+            stops: [
+                .init(color: .clear, location: 0.00),
+                .init(color: .white.opacity(0.35), location: 0.32),
+                .init(color: .white, location: 0.50),
+                .init(color: .white.opacity(0.35), location: 0.68),
+                .init(color: .clear, location: 1.00),
+            ],
+            startPoint: .leading,
+            endPoint: .trailing
+        )
+        .frame(width: wordmarkWidth)
+        .offset(x: phase * wordmarkWidth)
     }
 }
 

@@ -5,7 +5,12 @@
 //  CoreImage-based QR code rendering (replaces Android's zxing QrCodeGenerator).
 //
 
+#if canImport(UIKit)
 import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 import CoreImage.CIFilterBuiltins
 
 enum QRCode {

@@ -1,5 +1,10 @@
 import Foundation
+#if canImport(UIKit)
 import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 import AVFoundation
 import MediaPlayer
 import Combine
@@ -1819,7 +1824,12 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        #if os(macOS)
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.black.cgColor
+        #else
         view.backgroundColor = .black
+        #endif
         playerView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(playerView)
         NSLayoutConstraint.activate([
@@ -1844,6 +1854,23 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
         )
     }
 
+    #if os(macOS)
+    override func viewWillAppear() {
+        super.viewWillAppear()
+        rebindSurface()
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        rebindSurface()
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        playerView.needsLayout = true
+        playerView.layoutSubtreeIfNeeded()
+    }
+    #else
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         rebindSurface()
@@ -1859,6 +1886,7 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
         playerView.setNeedsLayout()
         playerView.layoutIfNeeded()
     }
+    #endif
 
     func rebindSurface() {
         // `AetherPlayerView.attach` repairs a layer that AVKit/SwiftUI removed
@@ -2240,12 +2268,18 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
             && frameRateMode.caseInsensitiveCompare("Off") != .orderedSame
 
         var panelInHDR = false
-        if #available(tvOS 11.0, *) {
+        #if os(macOS)
+        // No `availableHDRModes` on macOS: EDR headroom above 1.0 means the
+        // display is currently driving values brighter than SDR white.
+        panelInHDR = (NSScreen.main?.maximumPotentialExtendedDynamicRangeColorComponentValue ?? 1.0) > 1.0
+        #else
+        if #available(tvOS 11.0, macOS 10.13, *) {
             // Prefer current EDR headroom when available; fall back to available HDR modes.
             panelInHDR = AVPlayer.availableHDRModes.contains(.hdr10)
                 || AVPlayer.availableHDRModes.contains(.hlg)
                 || AVPlayer.availableHDRModes.contains(.dolbyVision)
         }
+        #endif
 
         let options = LoadOptions(
             httpHeaders: request.httpHeaders,

@@ -1,5 +1,10 @@
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 
 /// Same poster geometry as the See All catalog and Grid Home. Seven columns fit
 /// only because of `pageInset` — the old 80pt inset left room for six.
@@ -185,6 +190,7 @@ struct SearchView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(PosterCardButtonStyle())
+            .nuvioFocusable()
             .focused($searchBarFocused)
             .focusEffectDisabledIfAvailable()
 
@@ -367,6 +373,7 @@ struct SearchView: View {
                         .modifier(GlassChipBackground(filled: clearRecentFocused))
                     }
                     .buttonStyle(PosterCardButtonStyle())
+                    .nuvioFocusable()
                     .focused($clearRecentFocused)
                     .focusEffectDisabledIfAvailable()
                     .scaleEffect(clearRecentFocused ? 1.06 : 1.0)
@@ -415,6 +422,74 @@ struct SearchView: View {
 
 // Internal (not private) so `NetflixSearchView` can reuse the same hidden
 // text field to fall back to tvOS's system keyboard for Siri dictation.
+#if os(macOS)
+/// AppKit counterpart of the off-screen field below. Search keeps the hidden
+/// field on both platforms — not to dodge a focus pill, but because the visible
+/// query text is drawn by the search bar itself while an invisible responder
+/// collects the keystrokes.
+struct HiddenSearchTextField: NSViewRepresentable {
+    @Binding var text: String
+    @Binding var isEditing: Bool
+
+    func makeNSView(context: Context) -> NSTextField {
+        let textField = NSTextField(frame: .zero)
+        textField.delegate = context.coordinator
+        textField.isBordered = false
+        textField.drawsBackground = false
+        textField.focusRingType = .none
+        textField.textColor = .clear
+        textField.cell?.usesSingleLineMode = true
+        return textField
+    }
+
+    func updateNSView(_ nsView: NSTextField, context: Context) {
+        if nsView.stringValue != text {
+            nsView.stringValue = text
+        }
+
+        guard let window = nsView.window else { return }
+        let isFirstResponder = window.firstResponder === nsView.currentEditor()
+            || window.firstResponder === nsView
+        if isEditing, !isFirstResponder {
+            DispatchQueue.main.async {
+                window.makeFirstResponder(nsView)
+            }
+        } else if !isEditing, isFirstResponder {
+            window.makeFirstResponder(nil)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text, isEditing: $isEditing)
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        private let text: Binding<String>
+        private let isEditing: Binding<Bool>
+
+        init(text: Binding<String>, isEditing: Binding<Bool>) {
+            self.text = text
+            self.isEditing = isEditing
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            text.wrappedValue = field.stringValue
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard selector == #selector(NSResponder.insertNewline(_:)) else { return false }
+            isEditing.wrappedValue = false
+            control.window?.makeFirstResponder(nil)
+            return true
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            isEditing.wrappedValue = false
+        }
+    }
+}
+#else
 struct HiddenSearchTextField: UIViewRepresentable {
     @Binding var text: String
     @Binding var isEditing: Bool
@@ -482,6 +557,7 @@ struct HiddenSearchTextField: UIViewRepresentable {
 final class HiddenSearchUITextField: UITextField {
     override var canBecomeFocused: Bool { false }
 }
+#endif
 
 // MARK: - Glass components
 
@@ -510,6 +586,7 @@ struct GlassChip: View {
             .modifier(GlassChipBackground(filled: isSelected || focused))
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($focused)
         .modifier(ExternalFocusBinding(binding: externalFocus, id: focusValue))
         .focusEffectDisabledIfAvailable()
@@ -536,7 +613,7 @@ struct GlassCapsule: ViewModifier {
 
     @ViewBuilder
     private func glassed(_ content: Content) -> some View {
-        if #available(tvOS 26.0, *) {
+        if #available(tvOS 26.0, macOS 26.0, *) {
             content.glassEffect(.regular, in: Capsule())
         } else {
             content.background(.ultraThinMaterial, in: Capsule())
@@ -564,7 +641,7 @@ struct GlassSearchBar: ViewModifier {
 
     @ViewBuilder
     private func glassed(_ content: Content) -> some View {
-        if #available(tvOS 26.0, *) {
+        if #available(tvOS 26.0, macOS 26.0, *) {
             content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         } else {
             content.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
@@ -579,7 +656,7 @@ struct GlassChipBackground: ViewModifier {
     func body(content: Content) -> some View {
         if filled {
             content.background(Color.white, in: Capsule())
-        } else if #available(tvOS 26.0, *) {
+        } else if #available(tvOS 26.0, macOS 26.0, *) {
             content.glassEffect(.regular, in: Capsule())
         } else {
             content.background(.ultraThinMaterial, in: Capsule())
@@ -592,7 +669,7 @@ extension View {
     /// "lift" card) so custom focus styling isn't drawn over. No-op below tvOS 17.
     @ViewBuilder
     func focusEffectDisabledIfAvailable() -> some View {
-        if #available(tvOS 17.0, *) {
+        if #available(tvOS 17.0, macOS 14.0, *) {
             focusEffectDisabled()
         } else {
             self
@@ -603,7 +680,7 @@ extension View {
     /// view's bounds instead of being clipped. No-op below tvOS 17.
     @ViewBuilder
     func scrollClipDisabledIfAvailable() -> some View {
-        if #available(tvOS 17.0, *) {
+        if #available(tvOS 17.0, macOS 14.0, *) {
             scrollClipDisabled()
         } else {
             self

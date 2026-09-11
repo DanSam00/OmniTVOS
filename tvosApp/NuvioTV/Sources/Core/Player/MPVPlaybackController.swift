@@ -1,5 +1,10 @@
 import Foundation
+#if canImport(UIKit)
 import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 import AVFoundation
 import AVKit
 import MediaPlayer
@@ -413,6 +418,12 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
     var durationMs: Int64 = 0
     var positionMs: Int64 = 0
     var bufferedMs: Int64 = 0
+    /// Current download rate into the demuxer cache, in megabits per second.
+    /// Zero when nothing is being fetched. Surfaced in the buffering overlay so
+    /// a stall shows *why* it is stalling.
+    var networkSpeedMbps: Double = 0
+    /// Previous `paused-for-cache`, so a stall is counted once per occurrence.
+    private var wasPausedForCache = false
     var currentSpeed: Float = 1.0
     var currentErrorMessage: String {
         errorStateLock.lock(); defer { errorStateLock.unlock() }
@@ -445,22 +456,51 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        #if os(macOS)
+        // AppKit views are not layer-backed by default, and mpv renders into a
+        // CAMetalLayer, so the backing layer has to be created explicitly.
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.black.cgColor
+        view.layer?.masksToBounds = true
+        metalLayer.contentsScale = view.window?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor
+            ?? 2
+        #else
         view.backgroundColor = .black
         view.layer.masksToBounds = true
+        metalLayer.contentsScale = UIScreen.main.nativeScale
+        #endif
 
         // `.resize` lets mpv own letterboxing/cropping via panscan/keepaspect.
         // `.resizeAspect` would re-letterbox after mpv already rendered.
         metalLayer.contentsGravity = .resize
-        metalLayer.contentsScale = UIScreen.main.nativeScale
         metalLayer.framebufferOnly = true
         metalLayer.backgroundColor = UIColor.black.cgColor
+        #if os(macOS)
+        view.layer?.addSublayer(metalLayer)
+        #else
         view.layer.addSublayer(metalLayer)
+        #endif
         layoutMetalLayer()
 
         setupMpv()
         setupNotifications()
     }
 
+    #if os(macOS)
+    // AppKit's layout and appearance callbacks are named differently and take
+    // no animation flag, so the tvOS overrides cannot simply be reused.
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        layoutMetalLayer()
+        attemptStartPendingLoad()
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        attemptStartPendingLoad()
+    }
+    #else
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         layoutMetalLayer()
@@ -471,6 +511,7 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
         super.viewDidAppear(animated)
         attemptStartPendingLoad()
     }
+    #endif
 
     private func layoutMetalLayer() {
         let bounds = view.bounds
@@ -536,9 +577,12 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
         let cache = PlaybackCacheSettings.current
         #endif
         checkError(mpv_set_option_string(mpv, "cache", "yes"))
-        // ~2 minutes of readahead intent; demuxer-max-bytes still hard-caps RAM.
-        checkError(mpv_set_option_string(mpv, "cache-secs", "120"))
-        checkError(mpv_set_option_string(mpv, "demuxer-readahead-secs", "120"))
+        // Starting point only — `applyBufferWindow` overrides both per load,
+        // from Settings → Playback → Buffer (separate values for on-demand and
+        // live). `demuxer-max-bytes` still hard-caps RAM either way.
+        let defaultBuffer = String(PlaybackBufferSettings.vodDefault)
+        checkError(mpv_set_option_string(mpv, "cache-secs", defaultBuffer))
+        checkError(mpv_set_option_string(mpv, "demuxer-readahead-secs", defaultBuffer))
         checkError(mpv_set_option_string(mpv, "demuxer-max-bytes", cache.forwardBuffer))
         checkError(mpv_set_option_string(mpv, "demuxer-max-back-bytes", cache.backBuffer))
         checkError(mpv_set_option_string(mpv, "vulkan-swap-mode", "fifo"))
@@ -708,6 +752,7 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
     }
 
     func load(_ request: PlaybackLoadRequest) {
+        applyBufferWindow(seconds: request.bufferSeconds)
         pendingLoadConfiguration = MPVLoadConfiguration(request: request)
         pendingAudioURL = request.audioURL?.absoluteString
         pendingHTTPHeaders = request.httpHeaders
@@ -723,6 +768,18 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
         } else {
             DispatchQueue.main.async { [weak self] in self?.attemptStartPendingLoad() }
         }
+    }
+
+    /// Readahead target for this stream. Set before the file loads so the
+    /// demuxer starts filling to the right depth rather than being re-tuned
+    /// mid-playback.
+    private func applyBufferWindow(seconds: Int) {
+        // A fresh playback starts with a clean slate for stall counting.
+        wasPausedForCache = false
+        guard let mpv else { return }
+        let value = String(max(1, seconds))
+        checkError(mpv_set_option_string(mpv, "cache-secs", value))
+        checkError(mpv_set_option_string(mpv, "demuxer-readahead-secs", value))
     }
 
     private func attemptStartPendingLoad() {
@@ -1266,7 +1323,7 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
 
                 // Never turn a failed lifecycle reattach into a completed
                 // watch. Keep the verified snapshot and surface an error.
-                setPlaybackError("Playback could not resume after returning to Nuvio.")
+                setPlaybackError("Playback could not resume after returning to Omni.")
                 lifecycleRestoreFailed = true
                 publishLifecycleSnapshot()
                 return
@@ -1279,6 +1336,22 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
         }
 
         hasCoherentTimeSample = duration != nil && position != nil
+
+        // Feeds Settings → Playback → Buffer "Auto": a stall means the current
+        // window was too short for this connection. Recorded on the transition
+        // only, so one stall is not counted on every property tick.
+        if bufferingCache, !wasPausedForCache {
+            PlaybackBufferSettings.recordStall()
+        }
+        wasPausedForCache = bufferingCache
+
+        // Smoothed: the raw property swings hard between ticks, and a number
+        // that flickers is worse than no number at all.
+        let sampledSpeed = getDouble("cache-speed")
+        let sampledMbps = sampledSpeed > 0 ? (sampledSpeed * 8) / 1_000_000.0 : 0
+        networkSpeedMbps = networkSpeedMbps > 0
+            ? (networkSpeedMbps * 0.7) + (sampledMbps * 0.3)
+            : sampledMbps
 
         isPlayerLoading = startupDisplayGateActive
             || (idle && !paused && !eofReached)
@@ -1495,7 +1568,9 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
     /// the binary and the selector doesn't exist at runtime (crashed on device
     /// with "unrecognized selector"). Referencing a real AVKit class forces the
     /// framework to be linked and loaded.
+    #if os(tvOS)
     private static let avKitLinkAnchor: AnyClass = AVDisplayManager.self
+    #endif
 
     /// The window we last set criteria on; doubles as the "criteria active" flag.
     private weak var displayCriteriaWindow: UIWindow?
@@ -1528,7 +1603,7 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
     }
 
     private func scheduleDisplayCriteriaProbe(after delay: TimeInterval = 0) {
-        #if !targetEnvironment(simulator)
+        #if os(tvOS) && !targetEnvironment(simulator)
         guard mpv != nil,
               !didApplyDisplayCriteria,
               !isDisplaySwitchInFlight,
@@ -1545,7 +1620,7 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
     }
 
     private func probeDisplayCriteria(generation: Int) {
-        #if !targetEnvironment(simulator)
+        #if os(tvOS) && !targetEnvironment(simulator)
         guard generation == displayCriteriaProbeGeneration else { return }
 
         switch updateDisplayCriteria() {
@@ -1588,8 +1663,8 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
     private func updateDisplayCriteria() -> DisplayCriteriaUpdateResult {
         // AVDisplayManager isn't in the simulator SDK (there's no HDMI output
         // to switch); this whole path is device-only.
-        #if !targetEnvironment(simulator)
-        guard #available(tvOS 17.0, *) else { return .finished }
+        #if os(tvOS) && !targetEnvironment(simulator)
+        guard #available(tvOS 17.0, macOS 14.0, *) else { return .finished }
         guard mpv != nil, !isDisplaySwitchInFlight else { return .finished }
 
         let gamma = (getString("video-params/gamma") ?? "").lowercased()
@@ -1734,7 +1809,7 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
         #endif
     }
 
-    #if !targetEnvironment(simulator)
+    #if os(tvOS) && !targetEnvironment(simulator)
     private func reattachVideoWhenDisplaySettled(_ manager: AVDisplayManager, attemptsLeft: Int) {
         guard mpv != nil else {
             isDisplaySwitchInFlight = false
@@ -1755,7 +1830,7 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
     #endif
 
     private func clearDisplayCriteria() {
-        #if !targetEnvironment(simulator)
+        #if os(tvOS) && !targetEnvironment(simulator)
         displayCriteriaWindow?.avDisplayManager.preferredDisplayCriteria = nil
         displayCriteriaWindow = nil
         didApplyDisplayCriteria = false

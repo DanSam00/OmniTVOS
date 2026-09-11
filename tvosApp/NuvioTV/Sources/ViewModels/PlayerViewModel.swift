@@ -25,7 +25,12 @@ struct LiveStreamFailoverPolicy {
     }
 
 }
+#if canImport(UIKit)
 import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 import AVFoundation
 import AVKit
 import CoreMedia
@@ -84,6 +89,11 @@ class PlayerViewModel: ObservableObject {
     /// Live channels use a sliding timeline rather than a finite media duration.
     /// Expose that distinction so transport chrome can avoid a misleading scrubber.
     @Published private(set) var isLiveStream = false
+    /// Current download rate, megabits per second, while a stream is fetching.
+    @Published private(set) var networkSpeedMbps: Double = 0
+    /// True while playback is stalled waiting on the network — distinct from
+    /// the ordinary startup spinner, which is not a connection problem.
+    @Published private(set) var isStalledOnNetwork = false
     /// Every external subtitle the stream offered (all languages), browsable in
     /// the player's subtitle panel and loaded into mpv on demand.
     @Published var availableExternalSubtitles: [NuvioSubtitle] = []
@@ -371,12 +381,22 @@ class PlayerViewModel: ObservableObject {
                 self?.postPlayState = state
             }
             .store(in: &cancellables)
+        #if os(macOS)
+        MacAudioRoute.startMonitoringIfNeeded()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioRouteChange),
+            name: MacAudioRoute.changeNotification,
+            object: nil
+        )
+        #else
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleAudioRouteChange),
             name: AVAudioSession.routeChangeNotification,
             object: nil
         )
+        #endif
     }
 
     private func bindSessionCoordinatorCallbacks() {
@@ -405,7 +425,11 @@ class PlayerViewModel: ObservableObject {
     }
 
     deinit {
+        #if os(macOS)
+        NotificationCenter.default.removeObserver(self, name: MacAudioRoute.changeNotification, object: nil)
+        #else
         NotificationCenter.default.removeObserver(self, name: AVAudioSession.routeChangeNotification, object: nil)
+        #endif
         let coordinator = sessionCoordinator
         let poll = pollTimer
         let hide = controlsHideTimer
@@ -593,6 +617,7 @@ class PlayerViewModel: ObservableObject {
             cacheProfile: PlaybackCacheProfile.fromSettings(
                 ProfileSettings.current.string(forKey: SettingsKey.networkCache)
             ),
+            bufferSeconds: PlaybackBufferSettings.seconds(isLive: isLiveStream),
             assMode: PlaybackASSMode.fromSettings(
                 ProfileSettings.current.string(forKey: SettingsKey.assOverrideMode)
             ),
@@ -1595,6 +1620,15 @@ class PlayerViewModel: ObservableObject {
             if clock.buffered != bufferedSeconds { clock.buffered = bufferedSeconds }
         }
 
+        // Only republish on a meaningful move, so the overlay is not redrawn
+        // for every hundredth of a megabit.
+        let speed = c.networkSpeedMbps
+        if abs(speed - networkSpeedMbps) > 0.1 { networkSpeedMbps = speed }
+        // A stall mid-playback means the connection could not keep up; the
+        // startup spinner is not that, so `didReportPlaybackStarted` gates it.
+        let stalled = c.isPlayerLoading && c.isPlayerPlaying
+        if stalled != isStalledOnNetwork { isStalledOnNetwork = stalled }
+
         let frameSize = c.videoFrameSize
         if frameSize.width > 1, frameSize.height > 1, frameSize != videoNaturalSize {
             videoNaturalSize = frameSize
@@ -2560,7 +2594,7 @@ class PlayerViewModel: ObservableObject {
         }
 
         sessionCoordinator.handoffToMPV(
-            reason: "Native HLS subtitles require Nuvio's compatibility renderer",
+            reason: "Native HLS subtitles require Omni's compatibility renderer",
             resumeSeconds: nil
         )
         activeEngineKind = sessionCoordinator.activeBackend
@@ -3484,6 +3518,10 @@ class PlayerViewModel: ObservableObject {
         return activeEpisodeNumbers
     }
 
+    /// Title/episode whose play has already been counted in this session.
+    /// See `markWatchedIfNeeded`.
+    private var countedPlayKey: String?
+
     /// Marks the current playback watched — the specific episode for series,
     /// the title itself for movies. Skips if already marked so repeated ticks
     /// past the threshold don't rewrite the store.
@@ -3492,6 +3530,16 @@ class PlayerViewModel: ObservableObject {
         let numbers = resolvedEpisodeNumbers
         let season = numbers?.season
         let episode = numbers?.episode
+
+        // Play count is recorded before the already-watched guards below, so a
+        // rewatch still counts. Keyed by title/episode so the repeated calls
+        // past the threshold only count the playback once.
+        let playKey = "\(activeMeta.id)|\(season ?? -1)|\(episode ?? -1)"
+        if countedPlayKey != playKey {
+            countedPlayKey = playKey
+            PlayCountStore.increment(metaId: activeMeta.id)
+        }
+
         if let season, let episode {
             guard !WatchedStore.containsEpisode(meta: activeMeta, season: season, episode: episode) else {
                 return

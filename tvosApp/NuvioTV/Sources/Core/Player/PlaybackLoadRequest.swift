@@ -13,6 +13,10 @@ struct PlaybackLoadRequest: Equatable {
     /// Settings → Frame Rate Matching / Match Content. `false` when Off.
     var matchContentEnabled: Bool
     var cacheProfile: PlaybackCacheProfile
+    /// Seconds of readahead the demuxer should aim for. Live streams use a
+    /// smaller window than on-demand: readahead there is latency behind the
+    /// broadcast, not a buffer against stalls.
+    var bufferSeconds: Int
     var assMode: PlaybackASSMode
     var autoplay: Bool
     /// Runtime controls that must survive an Aether → MPV handoff.
@@ -35,6 +39,7 @@ struct PlaybackLoadRequest: Equatable {
         preferredSubtitleLanguages: [String] = [],
         matchContentEnabled: Bool = true,
         cacheProfile: PlaybackCacheProfile = .auto,
+        bufferSeconds: Int = 120,
         assMode: PlaybackASSMode = .strip,
         autoplay: Bool = true,
         playbackRate: Float = 1,
@@ -45,6 +50,7 @@ struct PlaybackLoadRequest: Equatable {
         streamDescription: String? = nil,
         filename: String? = nil
     ) {
+        self.bufferSeconds = bufferSeconds
         self.videoURL = videoURL
         self.audioURL = audioURL
         self.resumePositionSeconds = resumePositionSeconds

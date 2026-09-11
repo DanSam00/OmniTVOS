@@ -468,6 +468,10 @@ final class StreamsRepository: ObservableObject {
         for url in urls {
             if let cached = await manifestCache.success(for: url) {
                 result[url] = cached
+            } else if await manifestCache.isResting(url) {
+                // Repeatedly unreachable: skip rather than pay its timeout on
+                // every stream load. It is retried when the cooldown lapses.
+                continue
             } else {
                 missing.append(url)
             }
@@ -489,6 +493,7 @@ final class StreamsRepository: ObservableObject {
                     await manifestCache.storeSuccess(manifest, for: url)
                     result[url] = manifest
                 } else {
+                    await manifestCache.storeFailure(for: url)
                     print("[StreamsRepo] manifest fetch failed url=\(url.absoluteString) (not cached)")
                 }
             }
@@ -601,17 +606,51 @@ final class StreamsRepository: ObservableObject {
 actor StreamManifestCache {
     private var successes: [URL: StreamAddonManifest] = [:]
 
+    /// Consecutive failures per manifest, with the time of the last one.
+    ///
+    /// Failures are deliberately not cached as *results* — a temporary outage
+    /// must not permanently drop an add-on. But retrying a genuinely dead one on
+    /// every stream load costs a full connection timeout each time, which is
+    /// what a stale `127.0.0.1` Stremio Desktop add-on does on an Apple TV. So
+    /// an add-on that fails repeatedly is rested rather than removed, and is
+    /// retried once the cooldown lapses so it recovers on its own.
+    private var failures: [URL: (count: Int, last: Date)] = [:]
+
+    private let failuresBeforeResting = 3
+    private let restInterval: TimeInterval = 30 * 60
+
     func success(for url: URL) -> StreamAddonManifest? {
         successes[url]
     }
 
     func storeSuccess(_ manifest: StreamAddonManifest, for url: URL) {
         successes[url] = manifest
+        failures[url] = nil
+    }
+
+    func storeFailure(for url: URL) {
+        let previous = failures[url]?.count ?? 0
+        failures[url] = (previous + 1, Date())
+    }
+
+    /// True while a repeatedly-failing add-on is resting. Never true for one
+    /// that has simply failed once or twice.
+    func isResting(_ url: URL) -> Bool {
+        guard let failure = failures[url], failure.count >= failuresBeforeResting else {
+            return false
+        }
+        return Date().timeIntervalSince(failure.last) < restInterval
+    }
+
+    /// Manifests currently being skipped, for diagnostics.
+    func restingURLs() -> [URL] {
+        failures.keys.filter { isResting($0) }
     }
 
     /// Test / diagnostics helper.
     func removeAll() {
         successes.removeAll()
+        failures.removeAll()
     }
 }
 

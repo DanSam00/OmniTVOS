@@ -39,6 +39,25 @@ enum CollectionFolderGridMetrics {
     static let posterWidth: CGFloat = 210
     static let posterHeight: CGFloat = 315
     static let posterGap: CGFloat = 28
+
+    /// Tile size for a folder's declared shape.
+    ///
+    /// Sports and live-TV catalogs carry fixture and channel artwork — two
+    /// crests, a scoreline, a channel bug — which a 2:3 poster crop destroys.
+    /// Those folders declare `LANDSCAPE`, so the browse grid has to size from
+    /// the shape rather than always laying out portrait posters.
+    static func tileSize(for shape: CollectionTileShape) -> (width: CGFloat, height: CGFloat) {
+        switch shape {
+        case .poster:
+            return (posterWidth, posterHeight)
+        case .landscape:
+            // Wider tile so a 16:9 still keeps useful detail on a 7-up grid.
+            let width: CGFloat = 340
+            return (width, (width / shape.aspectRatio).rounded())
+        case .square:
+            return (posterWidth, posterWidth)
+        }
+    }
 }
 
 /// A row whose catalog is still in flight: its real title over a lightweight
@@ -143,8 +162,21 @@ struct TVCatalogRow: View {
     @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
     @AppStorage(SettingsKey.focusHighlighter) private var focusHighlighter = false
 
+    /// Sport and live-TV catalogs carry fixture and channel artwork, which a
+    /// 2:3 poster crop mangles. Detected from the items themselves so it follows
+    /// whatever the add-on publishes rather than a hardcoded catalog list.
+    private var usesLandscapeTiles: Bool {
+        guard let type = items.first?.type.lowercased() else { return false }
+        return ["sport", "sports", "tv", "channel"].contains(type)
+    }
+
     private var compactPosterWidth: CGFloat {
-        homeLayout == "Compact" ? 170 : 210
+        if usesLandscapeTiles {
+            return homeLayout == "Compact"
+                ? PosterCard.landscapeTileCompactWidth
+                : PosterCard.landscapeTileWidth
+        }
+        return homeLayout == "Compact" ? 170 : 210
     }
 
     private var rowSpacing: CGFloat {
@@ -196,6 +228,12 @@ struct TVCatalogRow: View {
 
     private var defaultFocusCardKey: String? {
         guard !items.isEmpty else { return nil }
+        // Every row shares one FocusState, so an unfocused row that keeps
+        // offering a default can re-assert its own key on any body re-render
+        // and drag focus back off the row the user just moved to. Only offer
+        // one while this row holds focus, or while nothing is focused at all
+        // (launch, and returning from an overlay).
+        guard isRowFocused || externalFocus?.wrappedValue == nil else { return nil }
         let idx = effectiveScrollIndex
         return "\(id)\u{1}\(items[idx].id)"
     }
@@ -244,7 +282,11 @@ struct TVCatalogRow: View {
             let rowSmoothFocus = smoothFocus
             let rowFocusHighlighter = focusHighlighter
             let rowCardFocusAnimations = rowSmoothFocus && !suppressFocusAnimations
-            let rowPosterWidth: CGFloat = rowHomeLayout == "Compact" ? 170 : 210
+            // Must match the tile actually rendered: this drives the per-index
+            // scroll offset and the leading pad for materialized cards, so a
+            // portrait width in a landscape row shifts the strip by the
+            // difference on every card.
+            let rowPosterWidth: CGFloat = compactPosterWidth
             let rowCardSpacing: CGFloat = rowHomeLayout == "Compact" ? 22 : 28
             let visibleCardCount = max(1, Int(ceil(stripWidth / (rowPosterWidth + rowCardSpacing))) + 1)
             let materializedIndices = materializedCardIndices(visibleCardCount: visibleCardCount)
@@ -307,7 +349,12 @@ struct TVCatalogRow: View {
                     }
                     PosterCard(
                         meta: item,
-                        isLandscape: rowHomeLayout == "Modern" && landscapeFocusedId == cardKey,
+                        // The focus-expand effect is redundant on a tile that is
+                        // already landscape, and would fight its layout width.
+                        isLandscape: !usesLandscapeTiles
+                            && rowHomeLayout == "Modern"
+                            && landscapeFocusedId == cardKey,
+                        landscapeTile: usesLandscapeTiles,
                         continueProgress: progressItem?.progress,
                         continueRemainingText: progressItem?.remainingText,
                         continueEpisodeText: progressItem?.episodeLabel,
@@ -587,6 +634,7 @@ struct TVHomeSeeAllCard: View {
             .scaleEffect(showsFocusedAppearance ? 1.06 : 1)
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .modifier(ExternalFocusBinding(binding: externalFocus, id: externalFocusValue))
         .focusEffectDisabledIfAvailable()
@@ -874,6 +922,9 @@ struct TVCollectionFolderRow: View {
 
     private var defaultFocusFolderKey: String? {
         guard !folders.isEmpty else { return nil }
+        // See TVCatalogRow.defaultFocusCardKey — an unfocused row must not
+        // re-assert itself into the shared FocusState.
+        guard isRowFocused || externalFocus?.wrappedValue == nil else { return nil }
         let idx = effectiveScrollIndex
         return "\(id)\u{1}\(folders[idx].id)"
     }
@@ -1098,6 +1149,7 @@ struct TVCollectionFolderCard: View {
         }
         .buttonStyle(PosterCardButtonStyle())
         .disabled(!allowsFocus)
+        .nuvioFocusable()
         .focused($isFocused)
         .modifier(ExternalFocusBinding(binding: externalFocus, id: externalFocusValue ?? folder.id))
         .focusEffectDisabledIfAvailable()

@@ -1,5 +1,10 @@
 import Foundation
+#if canImport(UIKit)
 import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 import AVKit
 import AVFoundation
 import Combine
@@ -146,7 +151,7 @@ final class PictureInPictureManager: NSObject, ObservableObject {
             pip?.delegate = self
             self.pipController = pip
             bindPossibleObservation(pip)
-        } else if #available(tvOS 15.0, *), let swSource = engine.softwarePiPSource {
+        } else if #available(tvOS 15.0, macOS 12.0, *), let swSource = engine.softwarePiPSource {
             if configuredSoftwareDisplayLayer === swSource.layer, pipController != nil {
                 return
             }

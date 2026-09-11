@@ -8,7 +8,7 @@
 import CryptoKit
 import ImageIO
 import SwiftUI
-#if os(tvOS)
+#if os(tvOS) || os(macOS)
 import AVFoundation
 import AVKit
 import CoreMedia
@@ -148,6 +148,14 @@ enum AppCardStyle {
 struct PosterCard: View {
     let meta: NuvioMeta
     var isLandscape: Bool = false
+    /// Renders the whole card as a 16:9 tile rather than a 2:3 poster.
+    ///
+    /// Distinct from `isLandscape`, which is the focus-expand effect: that draws
+    /// oversized art overflowing a portrait layout frame for one focused card.
+    /// This changes the card's actual size, so a full row can be landscape —
+    /// needed for sport and live TV, whose artwork is channel bugs and fixture
+    /// cards that a portrait crop destroys.
+    var landscapeTile: Bool = false
     var continueProgress: Double? = nil
     var continueRemainingText: String? = nil
     var continueEpisodeText: String? = nil
@@ -193,7 +201,7 @@ struct PosterCard: View {
 
     private let landscapeTransitionDuration: TimeInterval = 0.3
 
-    #if os(tvOS)
+    #if os(tvOS) || os(macOS)
     @FocusState private var isFocused: Bool
     @State private var didRequestInitialFocus = false
     @State private var landscapeArtworkPrepared = false
@@ -214,12 +222,13 @@ struct PosterCard: View {
     #endif
 
     var body: some View {
-        #if os(tvOS)
+        #if os(tvOS) || os(macOS)
         Button(action: onClick) {
             posterContent
         }
         .buttonStyle(PosterCardButtonStyle())
         .disabled(!allowsFocus)
+        .nuvioFocusable()
         .focused($isFocused)
         .modifier(ExternalFocusBinding(binding: externalFocus, id: externalFocusValue ?? meta.id))
         .nuvioFocusEffectDisabledIfAvailable()
@@ -579,7 +588,7 @@ struct PosterCard: View {
 
     // MARK: - Computed Properties
 
-    #if os(tvOS)
+    #if os(tvOS) || os(macOS)
     private var effectiveHomeLayout: String {
         layoutMode
     }
@@ -597,10 +606,34 @@ struct PosterCard: View {
     }
 
     private var effectiveLandscape: Bool {
-        isLandscape && (landscapeArtworkPrepared || landscapeArtworkURL == nil)
+        // The expand effect never applies to a tile that is already landscape.
+        guard !landscapeTile else { return false }
+        // No real backdrop means nothing to expand *into*: stay a poster rather
+        // than stretching one. Previously a nil URL still expanded, which is how
+        // the poster-zoom appeared.
+        guard isLandscape, landscapeArtworkURL != nil else { return false }
+        return landscapeArtworkPrepared
+    }
+
+    /// 16:9 tile width for a landscape row.
+    ///
+    /// Sized so the tile is exactly as tall as a portrait poster (560 * 9/16 =
+    /// 315; compact 453 * 9/16 = 255). That keeps every Home row the same
+    /// height whatever tile shape it uses, and matches what collection folder
+    /// rows already do for landscape cards. `TVCatalogRow.stripHeight` assumes
+    /// the portrait height unconditionally, so a shorter tile made the row
+    /// reserve space it never filled.
+    static let landscapeTileWidth: CGFloat = 560
+    static let landscapeTileCompactWidth: CGFloat = 453
+
+    private var landscapeTileWidth: CGFloat {
+        effectiveHomeLayout == "Compact"
+            ? Self.landscapeTileCompactWidth
+            : Self.landscapeTileWidth
     }
 
     private var cardWidth: CGFloat {
+        if landscapeTile { return landscapeTileWidth }
         if effectiveLandscape {
             return 560
         }
@@ -613,11 +646,15 @@ struct PosterCard: View {
     /// vertical navigation onto the neighbouring column. The 560pt landscape art
     /// overflows this frame to the right and is drawn above siblings (zIndex).
     private var layoutWidth: CGFloat {
-        effectiveHomeLayout == "Compact" ? 170 : 210
+        // A landscape tile occupies its real width: unlike the expand effect it
+        // does not overflow, so the focus frame must match what is drawn.
+        if landscapeTile { return landscapeTileWidth }
+        return effectiveHomeLayout == "Compact" ? 170 : 210
     }
 
     private var cardHeight: CGFloat {
-        effectiveLandscape ? 315 : (effectiveHomeLayout == "Compact" ? 255 : 315)
+        if landscapeTile { return (landscapeTileWidth * 9 / 16).rounded() }
+        return effectiveLandscape ? 315 : (effectiveHomeLayout == "Compact" ? 255 : 315)
     }
 
     private var totalCardHeight: CGFloat {
@@ -636,16 +673,32 @@ struct PosterCard: View {
         AppCardStyle.cornerRadius(for: cardCornerRadiusSetting, fallback: 16)
     }
 
+    /// Genuine 16:9 artwork for the focus expansion — never the poster.
+    ///
+    /// Falling back to `posterUrl` here meant a card with no backdrop still
+    /// expanded to the 560pt landscape frame and stretched its portrait poster
+    /// into it, which looks like a crude zoom. Catalogs that ship posters but no
+    /// backdrop (Rotten Tomatoes, the streaming-service catalogs) hit this on
+    /// every card, and so did any card focused before Cinemeta enrichment had
+    /// supplied a backdrop. Returning nil instead lets `effectiveLandscape`
+    /// decline to expand at all, so the card simply stays a poster.
     private var landscapeArtworkURL: String? {
         if continueEpisodeText != nil,
            let continueEpisodeArtworkURL, !continueEpisodeArtworkURL.isEmpty {
             return continueEpisodeArtworkURL
         }
-        return meta.backgroundUrl ?? meta.posterUrl
+        guard let background = meta.backgroundUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !background.isEmpty else {
+            return nil
+        }
+        return background
     }
 
     private var imageUrl: String? {
-        effectiveLandscape ? landscapeArtworkURL : meta.posterUrl
+        // A landscape *tile* row is always 16:9, so a poster fallback there is
+        // better than an empty tile — unlike the focus expansion above.
+        if landscapeTile { return meta.backgroundUrl ?? meta.posterUrl }
+        return effectiveLandscape ? landscapeArtworkURL : meta.posterUrl
     }
 
     private var landscapePreloadURL: String? {
@@ -820,6 +873,7 @@ extension PosterCard: Equatable {
             && lhs.meta.type == rhs.meta.type
             && lhs.meta.trailerYtIds == rhs.meta.trailerYtIds
             && lhs.isLandscape == rhs.isLandscape
+            && lhs.landscapeTile == rhs.landscapeTile
             && lhs.continueProgress == rhs.continueProgress
             && lhs.continueRemainingText == rhs.continueRemainingText
             && lhs.continueEpisodeText == rhs.continueEpisodeText
@@ -845,7 +899,34 @@ extension PosterCard: Equatable {
     }
 }
 
-#if os(tvOS)
+#if os(tvOS) || os(macOS)
+#if os(macOS)
+final class TrailerPlayerLayerView: NSView {
+    // AppKit has no `layerClass`; a layer-backed view names its backing layer
+    // through `makeBackingLayer()` instead.
+    let playerLayer = AVPlayerLayer()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        commonInit()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        commonInit()
+    }
+
+    override func makeBackingLayer() -> CALayer {
+        playerLayer
+    }
+
+    private func commonInit() {
+        wantsLayer = true
+        playerLayer.videoGravity = .resizeAspectFill
+        playerLayer.backgroundColor = NSColor.clear.cgColor
+    }
+}
+#else
 final class TrailerPlayerLayerView: UIView {
     var playerLayer: AVPlayerLayer {
         layer as! AVPlayerLayer
@@ -867,6 +948,7 @@ final class TrailerPlayerLayerView: UIView {
         backgroundColor = .clear
     }
 }
+#endif
 
 struct TrailerPlayerSurface: UIViewRepresentable {
     let player: AVPlayer
@@ -876,19 +958,36 @@ struct TrailerPlayerSurface: UIViewRepresentable {
         Coordinator(onReadyForDisplay: onReadyForDisplay)
     }
 
-    func makeUIView(context: Context) -> TrailerPlayerLayerView {
+    private func makeSurface(coordinator: Coordinator) -> TrailerPlayerLayerView {
         let view = TrailerPlayerLayerView()
         view.playerLayer.player = player
-        context.coordinator.observe(layer: view.playerLayer, player: player)
+        coordinator.observe(layer: view.playerLayer, player: player)
         return view
     }
 
-    func updateUIView(_ uiView: TrailerPlayerLayerView, context: Context) {
-        if uiView.playerLayer.player !== player {
-            uiView.playerLayer.player = player
-            context.coordinator.observe(layer: uiView.playerLayer, player: player)
-        }
+    private func updateSurface(_ view: TrailerPlayerLayerView, coordinator: Coordinator) {
+        guard view.playerLayer.player !== player else { return }
+        view.playerLayer.player = player
+        coordinator.observe(layer: view.playerLayer, player: player)
     }
+
+    #if os(macOS)
+    func makeNSView(context: Context) -> TrailerPlayerLayerView {
+        makeSurface(coordinator: context.coordinator)
+    }
+
+    func updateNSView(_ nsView: TrailerPlayerLayerView, context: Context) {
+        updateSurface(nsView, coordinator: context.coordinator)
+    }
+    #else
+    func makeUIView(context: Context) -> TrailerPlayerLayerView {
+        makeSurface(coordinator: context.coordinator)
+    }
+
+    func updateUIView(_ uiView: TrailerPlayerLayerView, context: Context) {
+        updateSurface(uiView, coordinator: context.coordinator)
+    }
+    #endif
 
     final class Coordinator {
         private let onReadyForDisplay: () -> Void
@@ -1162,6 +1261,7 @@ struct PosterGridCard: View {
                 .scaleEffect(showsFocusedAppearance ? 1.06 : 1.0)
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($focused)
         .modifier(ExternalFocusBinding(binding: externalFocus, id: focusValue ?? meta.id))
         .focusEffectDisabledIfAvailable()
@@ -1219,7 +1319,7 @@ private struct OptionalMoveCommandHandler: ViewModifier {
 }
 #endif
 
-#if canImport(UIKit)
+#if canImport(UIKit) || os(macOS)
 /// Liquid Glass surface shared by collection folder covers and loading cards, so
 /// the two cannot drift apart. tvOS 26+ uses real `glassEffect`; older systems
 /// get frosted material.
@@ -1234,7 +1334,7 @@ struct LiquidGlassSurface: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
         #if os(tvOS)
-        if #available(tvOS 26.0, *) {
+        if #available(tvOS 26.0, macOS 26.0, *) {
             content
                 .background(
                     Color.white.opacity(prominent ? 0.16 : 0.08),
@@ -1276,7 +1376,7 @@ struct LiquidGlassCardModifier: ViewModifier {
                 .background {
                     #if os(tvOS)
                     if isFocused {
-                        if #available(tvOS 26.0, *) {
+                        if #available(tvOS 26.0, macOS 26.0, *) {
                             shape
                                 .fill(Color.white.opacity(0.16))
                                 .glassEffect(.regular, in: shape)
@@ -1334,7 +1434,7 @@ struct LiquidGlassBadgeModifier: ViewModifier {
     func body(content: Content) -> some View {
         if isFocused {
             #if os(tvOS)
-            if #available(tvOS 26.0, *) {
+            if #available(tvOS 26.0, macOS 26.0, *) {
                 content
                     .glassEffect(.regular, in: shape)
                     .overlay(
@@ -1787,7 +1887,11 @@ private actor PosterDiskCache {
     /// saves, so the sweep runs once per batch of new artwork.
     private var bytesWrittenSinceTrim = 0
     private let trimInterval = 20 * 1024 * 1024
-    static let freshnessTTL: TimeInterval = 24 * 60 * 60
+    /// Posters and backdrops effectively never change once published, so a
+    /// short TTL only meant re-fetching identical bytes daily — and against an
+    /// add-on that renders art on demand, re-triggering a slow generation. Two
+    /// weeks keeps repeat loads instant; the 200 MB size cap still evicts.
+    static let freshnessTTL: TimeInterval = 14 * 24 * 60 * 60
     /// Refresh artwork cached by releases that treated generated poster bytes
     /// as immutable. Future freshness is governed by `freshnessTTL`.
     private static let storageVersion = "v2"
@@ -1924,7 +2028,11 @@ private func downsamplePosterImage(data: Data, maxPixelSize: Int) -> UIImage? {
 
 private extension UIImage {
     var decodedByteCost: Int {
+        #if os(macOS)
+        guard let cgImage = shimCGImage else { return 0 }
+        #else
         guard let cgImage else { return 0 }
+        #endif
         return cgImage.bytesPerRow * cgImage.height
     }
 }
@@ -2141,11 +2249,11 @@ struct PosterCardButtonStyle: ButtonStyle {
     }
 }
 
-#if os(tvOS)
+#if os(tvOS) || os(macOS)
 private extension View {
     @ViewBuilder
     func nuvioFocusEffectDisabledIfAvailable() -> some View {
-        if #available(tvOS 17.0, *) {
+        if #available(tvOS 17.0, macOS 14.0, *) {
             focusEffectDisabled()
         } else {
             self
@@ -2161,7 +2269,7 @@ struct ExternalFocusBinding: ViewModifier {
 
     func body(content: Content) -> some View {
         if let binding {
-            content.focused(binding, equals: id)
+            content.nuvioFocusable().focused(binding, equals: id)
         } else {
             content
         }
@@ -2175,7 +2283,7 @@ struct DefaultFocusBindingModifier<V: Hashable>: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
         if let binding, let value {
-            if #available(tvOS 17.0, *) {
+            if #available(tvOS 17.0, macOS 14.0, *) {
                 content.defaultFocus(binding, value)
             } else {
                 content
@@ -2192,7 +2300,7 @@ extension View {
     /// or returning to a sidebar's selected item).
     @ViewBuilder
     func defaultFocusIfAvailable<V: Hashable>(_ binding: FocusState<V>.Binding, _ value: V) -> some View {
-        if #available(tvOS 17.0, *) {
+        if #available(tvOS 17.0, macOS 14.0, *) {
             self.defaultFocus(binding, value)
         } else {
             self

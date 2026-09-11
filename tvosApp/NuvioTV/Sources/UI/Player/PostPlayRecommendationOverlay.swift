@@ -291,6 +291,7 @@ struct PostPlayRecommendationOverlay: View {
             }
             .buttonStyle(PosterCardButtonStyle())
             .focusEffectDisabledIfAvailable()
+            .nuvioFocusable()
             .focused(focus, equals: .primaryAction)
             .scaleEffect(isPrimaryFocused ? 1.08 : 1.0)
             .animation(.easeOut(duration: 0.14), value: isPrimaryFocused)
@@ -337,6 +338,7 @@ struct PostPlayRecommendationOverlay: View {
                 }
                 .buttonStyle(PosterCardButtonStyle())
                 .focusEffectDisabledIfAvailable()
+                .nuvioFocusable()
                 .focused(focus, equals: .trailerAction)
                 .scaleEffect(isTrailerFocused ? 1.08 : 1.0)
                 .animation(.easeOut(duration: 0.14), value: isTrailerFocused)
@@ -364,6 +366,7 @@ struct PostPlayRecommendationOverlay: View {
                 .focusEffectDisabledIfAvailable()
                 .disabled(!state.canNavigatePrevious)
                 .opacity(state.canNavigatePrevious ? 1.0 : 0.35)
+                .nuvioFocusable()
                 .focused(focus, equals: .prevAction)
                 .scaleEffect(isPrevFocused ? 1.08 : 1.0)
                 .animation(.easeOut(duration: 0.14), value: isPrevFocused)
@@ -388,6 +391,7 @@ struct PostPlayRecommendationOverlay: View {
                 .focusEffectDisabledIfAvailable()
                 .disabled(!state.canNavigateNext)
                 .opacity(state.canNavigateNext ? 1.0 : 0.35)
+                .nuvioFocusable()
                 .focused(focus, equals: .nextAction)
                 .scaleEffect(isNextFocused ? 1.08 : 1.0)
                 .animation(.easeOut(duration: 0.14), value: isNextFocused)

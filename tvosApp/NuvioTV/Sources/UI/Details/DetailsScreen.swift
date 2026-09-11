@@ -7,7 +7,12 @@
 
 import Foundation
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 import ImageIO
 
 struct DetailsScreen: View {
@@ -204,7 +209,7 @@ struct DetailsScreen: View {
         // this overlay inside the details screen's vertical ScrollView ancestry
         // lets tvOS apply focus-visibility corrections to the shared host,
         // occasionally translating the filters and stream panel below screen.
-        .fullScreenCover(isPresented: $isStreamPickerPresented) {
+        .modalCover(isPresented: $isStreamPickerPresented) {
             if let meta = viewModel.uiState.meta {
                 TvStreamPickerOverlay(
                     meta: meta,
@@ -490,7 +495,13 @@ struct DetailsScreen: View {
             shareText += "\n\nhttps://www.imdb.com/title/\(imdbId)"
         }
 
-        #if !os(tvOS)
+        #if os(macOS)
+        // AppKit's share picker needs an anchor rect; the key window's content
+        // view is the closest equivalent to presenting from the root controller.
+        guard let anchor = NSApplication.shared.keyWindow?.contentView else { return }
+        let picker = NSSharingServicePicker(items: [shareText])
+        picker.show(relativeTo: .zero, of: anchor, preferredEdge: .minY)
+        #elseif !os(tvOS)
         let activityVC = UIActivityViewController(
             activityItems: [shareText],
             applicationActivities: nil
@@ -1713,6 +1724,8 @@ enum SmartPlaybackSelector {
         let compatible = playable.filter { isPlatformPlaybackCompatible($0.stream) }
         var candidates = compatible.filter { !isPromotionalStream($0.stream) }
         if candidates.isEmpty { candidates = compatible }
+        let realLinks = candidates.filter { !isPaywallPlaceholderStream($0.stream) }
+        if !realLinks.isEmpty { candidates = realLinks }
         if cachedOnly {
             candidates = candidates.filter { $0.stream.isLikelyCached }
         }
@@ -1779,6 +1792,10 @@ enum SmartPlaybackSelector {
         let compatible = playable.filter(isPlatformPlaybackCompatible)
         let nonPromotional = compatible.filter { !isPromotionalStream($0) }
         var result = nonPromotional.isEmpty ? compatible : nonPromotional
+        // Prefer real links. Only fall back to placeholders when nothing else
+        // exists, so the list explains itself instead of going blank.
+        let withoutPaywalls = result.filter { !isPaywallPlaceholderStream($0) }
+        if !withoutPaywalls.isEmpty { result = withoutPaywalls }
         if cachedOnly {
             result = result.filter(\.isLikelyCached)
         }
@@ -1883,6 +1900,30 @@ enum SmartPlaybackSelector {
         return 0
     }
 
+    /// Paywall placeholders: add-ons advertising premium channels return a dummy
+    /// link rather than a stream. Verified against a Premier League fixture —
+    /// nine of ten streams pointed at `https://www.google.com` with a lock in
+    /// the label, and the single real feed was the *lowest* resolution of the
+    /// set. Ranking on quality alone therefore surfaced an unplayable 4K
+    /// placeholder and buried the one stream that worked.
+    static func isPaywallPlaceholderStream(_ stream: NuvioStream) -> Bool {
+        let label = [stream.name, stream.description]
+            .compactMap { $0 }
+            .joined(separator: " ")
+        if label.contains("🔒") { return true }
+        let lowered = label.lowercased()
+        if lowered.contains("upgrade to premium")
+            || lowered.contains("upgrade to watch")
+            || lowered.contains("upgrade to") {
+            return true
+        }
+        // A placeholder host is never a media origin.
+        guard let raw = stream.url,
+              let host = URL(string: raw)?.host?.lowercased() else { return false }
+        let placeholderHosts = ["google.com", "www.google.com", "example.com", "www.example.com"]
+        return placeholderHosts.contains(host)
+    }
+
     private static func isPromotionalStream(_ stream: NuvioStream) -> Bool {
         let text = ([stream.name, stream.description, stream.addonName, stream.url])
             .compactMap { $0 }
@@ -1950,6 +1991,43 @@ enum SmartPlaybackSelector {
 
 /// How the stream picker orders results. `.default` keeps the add-ons' own
 /// order (usually already best-first); the others re-rank across all sources.
+/// Resolution filter for the stream picker. Values are the minimum height the
+/// stream must report; `any` disables the filter.
+enum StreamResolutionFilter: String, CaseIterable, Identifiable {
+    case any = "Any"
+    case uhd = "4K"
+    case qhd = "2K"
+    case fhd = "1080p"
+    case hd = "720p"
+    case sd = "SD"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .any: return L10n.string("details_res_any", fallback: "Any")
+        case .uhd: return "4K"
+        case .qhd: return "2K"
+        case .fhd: return "1080p"
+        case .hd:  return "720p"
+        case .sd:  return L10n.string("details_res_sd", fallback: "SD")
+        }
+    }
+
+    /// True when a stream of this height belongs in the filter. Bands rather
+    /// than a floor, so picking 1080p does not also list every 4K release.
+    func matches(resolution: Int) -> Bool {
+        switch self {
+        case .any: return true
+        case .uhd: return resolution >= 2160
+        case .qhd: return resolution >= 1440 && resolution < 2160
+        case .fhd: return resolution >= 1080 && resolution < 1440
+        case .hd:  return resolution >= 720 && resolution < 1080
+        case .sd:  return resolution > 0 && resolution < 720
+        }
+    }
+}
+
 enum StreamSortOption: String, CaseIterable, Identifiable {
     case `default` = "Default"
     case quality = "Quality"
@@ -2024,7 +2102,8 @@ enum StreamPickerListBuilder {
         selectedAddonId: String?,
         sortOption: StreamSortOption,
         includeDebrid: Bool,
-        cachedOnly: Bool = false
+        cachedOnly: Bool = false,
+        resolutionFilter: StreamResolutionFilter = .any
     ) -> [NuvioStream] {
         let playable = playableStreams(
             streams: streams,
@@ -2033,7 +2112,7 @@ enum StreamPickerListBuilder {
             includeDebrid: includeDebrid,
             cachedOnly: cachedOnly
         )
-        return sorted(playable, by: sortOption)
+        return sorted(filtered(playable, resolution: resolutionFilter), by: sortOption)
     }
 
     /// Constant-size cache key. Repository revision captures every publication,
@@ -2043,9 +2122,11 @@ enum StreamPickerListBuilder {
         selectedAddonId: String?,
         sortOption: StreamSortOption,
         includeDebrid: Bool,
-        cachedOnly: Bool = false
+        cachedOnly: Bool = false,
+        resolutionFilter: StreamResolutionFilter = .any
     ) -> StreamPickerListCacheKey {
         StreamPickerListCacheKey(
+            resolutionFilter: resolutionFilter,
             revision: revision,
             selectedAddonId: selectedAddonId,
             sortOption: sortOption,
@@ -2151,6 +2232,42 @@ enum StreamPickerListBuilder {
         return SmartPlaybackSelector.inferredResolution(for: stream)
     }
 
+    /// Release year scraped from the stream's own text, or nil when nothing in
+    /// it looks like a year.
+    ///
+    /// Best-effort by nature: release names are full of numbers that are not
+    /// years. Only 19xx/20xx inside token boundaries count, resolutions and
+    /// sizes are excluded, and anything past next year is discarded. Shown as a
+    /// badge rather than used for filtering or sorting, so a wrong guess costs
+    /// the viewer nothing.
+    static func releaseYear(for stream: NuvioStream) -> Int? {
+        let text = "\(stream.name ?? "") \(stream.description ?? "") \(stream.filename ?? "")"
+        let pattern = #"(?:^|[^0-9a-zA-Z])((?:19|20)[0-9]{2})(?:[^0-9a-zA-Z]|$)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(text.startIndex..., in: text)
+        let maxYear = Calendar.current.component(.year, from: Date()) + 1
+        var found: Int?
+        regex.enumerateMatches(in: text, range: range) { match, _, stop in
+            guard let match, let r = Range(match.range(at: 1), in: text),
+                  let value = Int(text[r]), value <= maxYear else { return }
+            // The first plausible year wins: release names lead with the title
+            // and its year, and trail with encoder tags that can contain others.
+            found = value
+            stop.pointee = true
+        }
+        return found
+    }
+
+    /// Applies the resolution band, keeping unknown-resolution streams only
+    /// when no filter is set — they cannot be placed in a band honestly.
+    static func filtered(
+        _ streams: [NuvioStream],
+        resolution filter: StreamResolutionFilter
+    ) -> [NuvioStream] {
+        guard filter != .any else { return streams }
+        return streams.filter { filter.matches(resolution: resolution(for: $0)) }
+    }
+
     /// Release quality tier matching Android TV's `DebridStreamQuality`.
     static func streamQuality(for stream: NuvioStream) -> DebridStreamQuality {
         let text = "\(stream.name ?? "") \(stream.description ?? "") \(stream.filename ?? "")"
@@ -2186,6 +2303,8 @@ enum StreamPickerListBuilder {
 /// Small Equatable key used by the picker cache. It deliberately contains no
 /// stream URLs, descriptions, or subtitle payloads, so focus changes are O(1).
 struct StreamPickerListCacheKey: Equatable {
+    /// Part of the key: changing the filter must rebuild the list.
+    var resolutionFilter: StreamResolutionFilter = .any
     let revision: UInt64
     let selectedAddonId: String?
     let sortOption: StreamSortOption
@@ -3034,6 +3153,7 @@ private struct TvDetailsActionButton: View {
             .shadow(color: .black.opacity(isFocused ? 0.35 : 0.18), radius: isFocused ? 18 : 7, y: 8)
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused(focus, equals: tag)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(isFocused ? 1.08 : 1)
@@ -3406,6 +3526,7 @@ private struct TvDetailsSectionButton: View {
                 .frame(height: 64)
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused(focus, equals: tag)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(isFocused ? 1.035 : 1)
@@ -3602,6 +3723,7 @@ private struct TvDetailsCompanyCard: View {
             }
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(isFocused ? 1.05 : 1)
@@ -3715,6 +3837,7 @@ private struct TvDetailsCommentCard: View {
             )
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(isFocused ? 1.03 : 1)
@@ -3761,6 +3884,7 @@ private struct CommentDetailOverlay: View {
                             )
                     }
                         .buttonStyle(PosterCardButtonStyle())
+                        .nuvioFocusable()
                         .focused($closeFocused)
                 }
 
@@ -3879,6 +4003,7 @@ private struct TvDetailsPersonCard: View {
             .frame(width: 220)
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(isFocused ? 1.08 : 1)
@@ -3975,6 +4100,10 @@ private struct TvDetailsEpisodes: View {
     @State private var episodeScrollIndex: Int
     @State private var watchedEpisodeKeys: Set<String>
     @State private var userDidSelectSeason = false
+    /// Episodes before the one just marked watched that are still unwatched,
+    /// awaiting the viewer's decision. Empty dismisses the prompt.
+    @State private var pendingCatchUpEpisodes: [NuvioVideo] = []
+    @State private var showCatchUpPrompt = false
     @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
     @AppStorage(SettingsKey.smartStreamSelection) private var smartStreamSelection = false
 
@@ -4033,6 +4162,22 @@ private struct TvDetailsEpisodes: View {
         .onReceive(NotificationCenter.default.publisher(for: WatchedStore.changedNotification)) { _ in
             watchedEpisodeKeys = WatchedStore.watchedEpisodeKeys(meta: meta)
         }
+        .confirmationDialog(
+            L10n.format(
+                "details_catch_up_title",
+                fallback: "Mark %@ earlier episode(s) as watched too?",
+                String(pendingCatchUpEpisodes.count)
+            ),
+            isPresented: $showCatchUpPrompt,
+            titleVisibility: .visible
+        ) {
+            Button(L10n.string("details_catch_up_confirm", fallback: "Mark them watched")) {
+                markCatchUpEpisodesWatched()
+            }
+            Button(L10n.string("action_cancel", fallback: "Cancel"), role: .cancel) {
+                pendingCatchUpEpisodes = []
+            }
+        }
         .onChange(of: episodes) { _, newEpisodes in
             let watchedKeys = WatchedStore.watchedEpisodeKeys(meta: meta)
             let targetEpisode = Self.initialEpisode(
@@ -4064,6 +4209,46 @@ private struct TvDetailsEpisodes: View {
                 .filter { $0.season == newSeason }
                 .sorted { $0.episode < $1.episode }
         }
+    }
+
+    /// Every unwatched episode released before this one, across seasons —
+    /// season 0 specials excluded, since they are rarely part of a linear
+    /// catch-up and marking them would surprise.
+    private func unwatchedEpisodesBefore(_ video: NuvioVideo) -> [NuvioVideo] {
+        let all = episodes.isEmpty ? seasonEpisodes : episodes
+        return all
+            .filter { candidate in
+                guard candidate.season > 0 else { return false }
+                let isEarlier = candidate.season < video.season
+                    || (candidate.season == video.season && candidate.episode < video.episode)
+                guard isEarlier else { return false }
+                return !WatchedStore.containsEpisode(
+                    meta: meta,
+                    season: candidate.season,
+                    episode: candidate.episode
+                )
+            }
+            .sorted {
+                $0.season == $1.season ? $0.episode < $1.episode : $0.season < $1.season
+            }
+    }
+
+    private func markCatchUpEpisodesWatched() {
+        let episodesToMark = pendingCatchUpEpisodes
+        pendingCatchUpEpisodes = []
+        guard !episodesToMark.isEmpty else { return }
+        // Grouped per season so each write covers a whole season at once
+        // rather than re-encoding the store for every episode.
+        let bySeason = Dictionary(grouping: episodesToMark, by: \.season)
+        for (season, videos) in bySeason {
+            WatchedStore.setSeasonWatched(
+                meta: meta,
+                season: season,
+                episodes: videos.map(\.episode),
+                isWatched: true
+            )
+        }
+        watchedEpisodeKeys = WatchedStore.watchedEpisodeKeys(meta: meta)
     }
 
     private func materializedEpisodeIndices(visibleCardCount: Int) -> [Int] {
@@ -4107,11 +4292,20 @@ private struct TvDetailsEpisodes: View {
                             onFocus()
                         },
                         onToggleWatched: {
-                            _ = WatchedStore.toggleEpisode(
+                            let nowWatched = WatchedStore.toggleEpisode(
                                 meta: meta,
                                 season: video.season,
                                 episode: video.episode
                             )
+                            // Only offer catch-up when marking watched. The
+                            // episode the viewer picked is marked either way —
+                            // Cancel declines the extras, it does not undo the
+                            // action they actually took.
+                            guard nowWatched else { return }
+                            let earlier = unwatchedEpisodesBefore(video)
+                            guard !earlier.isEmpty else { return }
+                            pendingCatchUpEpisodes = earlier
+                            showCatchUpPrompt = true
                         },
                         onToggleSeasonWatched: {
                             WatchedStore.setSeasonWatched(
@@ -4302,6 +4496,7 @@ private struct TvSeasonPill: View {
                 .modifier(TvDetailsGlassBackground(filled: isSelected || isFocused, shape: Capsule()))
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(isFocused ? 1.06 : 1)
@@ -4319,6 +4514,7 @@ private struct TvSeasonPill: View {
 }
 
 private struct TvEpisodeCard: View {
+    @AppStorage(SettingsKey.blurUnwatchedArtwork) private var blurUnwatchedArtwork = false
     let video: NuvioVideo
     let fallbackRating: Double?
     let continueProgress: Double?
@@ -4434,7 +4630,7 @@ private struct TvEpisodeCard: View {
                 .background {
                     if liquidGlassCards {
                         #if os(tvOS)
-                        if #available(tvOS 26.0, *) {
+                        if #available(tvOS 26.0, macOS 26.0, *) {
                             shape
                                 .fill(isFocused ? Color.white.opacity(0.18) : Color.white.opacity(0.08))
                                 .glassEffect(.regular, in: shape)
@@ -4476,6 +4672,7 @@ private struct TvEpisodeCard: View {
                 )
             }
             .buttonStyle(PosterCardButtonStyle())
+            .nuvioFocusable()
             .focused(focus, equals: cardKey)
             .focusEffectDisabledIfAvailable()
             .disabled(restrictFocusToKey != nil && restrictFocusToKey != cardKey)
@@ -4549,14 +4746,28 @@ private struct TvEpisodeCard: View {
     }
 
     private var episodeArtwork: some View {
-        CachedPosterArtwork(
+        // Episode stills routinely spoil the episode they belong to, so an
+        // unwatched one can be blurred out. Watched episodes are never blurred
+        // — there is nothing left to spoil.
+        let shouldBlur = blurUnwatchedArtwork && !isWatched
+        return CachedPosterArtwork(
             urlString: video.thumbnail,
             width: cardWidth,
             height: cardHeight,
             placeholder: { placeholderThumb }
         )
         .frame(width: cardWidth, height: cardHeight)
+        .blur(radius: shouldBlur ? 22 : 0)
+        // Blur samples past the frame, so clip after it or the haze bleeds
+        // over neighbouring cards.
         .clipped()
+        .overlay {
+            if shouldBlur {
+                Image(systemName: "eye.slash.fill")
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.55))
+            }
+        }
     }
 
     @ViewBuilder
@@ -4660,14 +4871,14 @@ struct TvDetailsGlassBackground<S: InsettableShape>: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
         if filled {
-            if #available(tvOS 26.0, *) {
+            if #available(tvOS 26.0, macOS 26.0, *) {
                 content
                     .background(Color.white.opacity(0.96), in: shape)
                     .glassEffect(.regular, in: shape)
             } else {
                 content.background(Color.white, in: shape)
             }
-        } else if #available(tvOS 26.0, *) {
+        } else if #available(tvOS 26.0, macOS 26.0, *) {
             content
                 .background(Color.white.opacity(0.10), in: shape)
                 .glassEffect(.regular, in: shape)
@@ -4686,7 +4897,7 @@ private struct TvStreamGlass<S: InsettableShape>: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if #available(tvOS 26.0, *) {
+        if #available(tvOS 26.0, macOS 26.0, *) {
             content
                 .background(tint, in: shape)
                 .glassEffect(.regular, in: shape)
@@ -4737,8 +4948,13 @@ private struct TvStreamPickerOverlay: View {
     /// on the All chip; this drives the hand-off once results exist, once.
     @State private var didSeedStreamFocus = false
     @State private var streamBadgeSettings = StreamBadgeSettingsStore.snapshot
+    @AppStorage(SettingsKey.streamResolutionFilter)
+    private var resolutionFilter: StreamResolutionFilter = .any
+    @State private var showResolutionOptions = false
+    @State private var showProviderOptions = false
 
     private let filterAllKey = "filter::all"
+    private let resolutionKey = "filter::resolution"
     private let sortKey = "filter::sort"
     private let cachedKey = "filter::cached"
     private func filterKey(_ addonId: String) -> String { "filter::\(addonId)" }
@@ -4750,7 +4966,8 @@ private struct TvStreamPickerOverlay: View {
             selectedAddonId: selectedAddonId,
             sortOption: sortOption,
             includeDebrid: includeDebrid,
-            cachedOnly: cachedOnly
+            cachedOnly: cachedOnly,
+            resolutionFilter: resolutionFilter
         )
     }
 
@@ -4866,7 +5083,8 @@ private struct TvStreamPickerOverlay: View {
             selectedAddonId: selectedAddonId,
             sortOption: sortOption,
             includeDebrid: includeDebrid,
-            cachedOnly: cachedOnly
+            cachedOnly: cachedOnly,
+            resolutionFilter: resolutionFilter
         )
         displayedStreams = refreshedStreams
         displayedStreamsCacheKey = key
@@ -4930,35 +5148,49 @@ private struct TvStreamPickerOverlay: View {
         }
     }
 
+    /// Label for the provider dropdown: the chosen add-on, or All.
+    private var selectedProviderLabel: String {
+        guard let selectedAddonId else {
+            return L10n.string("action_all", fallback: "All")
+        }
+        return filterGroups.first { $0.addonId == selectedAddonId }?.displayName
+            ?? L10n.string("action_all", fallback: "All")
+    }
+
     private var filterRow: some View {
         HStack(spacing: 18) {
-            // Only add-on filters scroll. Vertical/edge padding gives the 1.06x
-            // focused scale room to draw without the ScrollView clipping it.
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 18) {
-                    TvStreamFilterButton(
-                        title: L10n.string("action_all", fallback: "All"),
-                        isSelected: selectedAddonId == nil,
-                        focusBinding: $focusedItem,
-                        focusValue: filterAllKey,
-                        action: { selectedAddonId = nil }
-                    )
-
-                    // Preserve configured add-on order from discovery groups.
-                    ForEach(filterGroups) { group in
-                        TvStreamFilterButton(
-                            title: group.isLoading ? "\(group.displayName)…" : group.displayName,
-                            isSelected: selectedAddonId == group.addonId,
-                            focusBinding: $focusedItem,
-                            focusValue: filterKey(group.addonId),
-                            action: { selectedAddonId = group.addonId }
-                        )
+            // A dropdown rather than a chip scroller: the provider list grows
+            // with every installed add-on, and a long row pushed the sort and
+            // filter controls off the edge.
+            TvStreamFilterButton(
+                title: L10n.format(
+                    "details_provider_format",
+                    fallback: "Provider: %@",
+                    selectedProviderLabel
+                ),
+                isSelected: selectedAddonId != nil,
+                focusBinding: $focusedItem,
+                focusValue: filterAllKey,
+                action: { showProviderOptions = true }
+            )
+            .fixedSize(horizontal: true, vertical: false)
+            .confirmationDialog(
+                L10n.string("details_filter_provider", fallback: "Provider"),
+                isPresented: $showProviderOptions,
+                titleVisibility: .visible
+            ) {
+                Button(L10n.string("action_all", fallback: "All")) {
+                    selectedAddonId = nil
+                }
+                // Preserve configured add-on order from discovery groups.
+                ForEach(filterGroups) { group in
+                    Button(group.isLoading ? "\(group.displayName)…" : group.displayName) {
+                        selectedAddonId = group.addonId
                     }
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 12)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Spacer(minLength: 0)
 
             if includeDebrid {
                 TvStreamFilterButton(
@@ -4971,6 +5203,28 @@ private struct TvStreamPickerOverlay: View {
                     action: { cachedOnly.toggle() }
                 )
                 .fixedSize(horizontal: true, vertical: false)
+            }
+
+            TvStreamFilterButton(
+                title: L10n.format(
+                    "details_resolution_format",
+                    fallback: "Res: %@",
+                    resolutionFilter.title
+                ),
+                isSelected: resolutionFilter != .any,
+                focusBinding: $focusedItem,
+                focusValue: resolutionKey,
+                action: { showResolutionOptions = true }
+            )
+            .fixedSize(horizontal: true, vertical: false)
+            .confirmationDialog(
+                L10n.string("details_filter_resolution", fallback: "Resolution"),
+                isPresented: $showResolutionOptions,
+                titleVisibility: .visible
+            ) {
+                ForEach(StreamResolutionFilter.allCases) { option in
+                    Button(option.title) { resolutionFilter = option }
+                }
             }
 
             // Sort remains pinned to the trailing edge instead of moving with
@@ -5244,6 +5498,7 @@ private struct TvStreamFilterButton: View {
                 .modifier(TvDetailsGlassBackground(filled: isSelected || isFocused, shape: Capsule()))
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused(focusBinding, equals: focusValue)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(isFocused ? 1.06 : 1)
@@ -5260,10 +5515,12 @@ private struct TvStreamCardPresentationCacheKey: Equatable {
 private struct TvStreamCardPresentation {
     let importedBadges: [StreamBadgeFilter]
     let fileSizeLabel: String?
+    let releaseYear: Int?
     let badgePlacement: StreamBadgePlacement
     let showAddonLogo: Bool
 
     init(stream: NuvioStream, badgeSettings: StreamBadgeSettingsSnapshot) {
+        releaseYear = StreamPickerListBuilder.releaseYear(for: stream)
         importedBadges = StreamBadgeMatcher.matchedBadges(
             for: stream,
             rules: badgeSettings.rules
@@ -5278,6 +5535,7 @@ private struct TvStreamCardPresentation {
     init(pending badgeSettings: StreamBadgeSettingsSnapshot) {
         importedBadges = []
         fileSizeLabel = nil
+        releaseYear = nil
         badgePlacement = badgeSettings.badgePlacement
         showAddonLogo = badgeSettings.showAddonLogo
     }
@@ -5307,6 +5565,7 @@ private struct TvStreamCard: View {
     let stream: NuvioStream
     private let importedBadges: [StreamBadgeFilter]
     private let fileSizeLabel: String?
+    private let releaseYear: Int?
     private let badgePlacement: StreamBadgePlacement
     private let showAddonLogo: Bool
     let externalFocus: FocusState<String?>.Binding
@@ -5331,6 +5590,7 @@ private struct TvStreamCard: View {
         self.stream = stream
         self.importedBadges = presentation.importedBadges
         self.fileSizeLabel = presentation.fileSizeLabel
+        self.releaseYear = presentation.releaseYear
         self.badgePlacement = presentation.badgePlacement
         self.showAddonLogo = presentation.showAddonLogo
         self.externalFocus = externalFocus
@@ -5343,7 +5603,7 @@ private struct TvStreamCard: View {
     }
 
     var body: some View {
-        let showImportedBadges = !importedBadges.isEmpty || fileSizeLabel != nil
+        let showImportedBadges = !importedBadges.isEmpty || fileSizeLabel != nil || releaseYear != nil
 
         Button(action: action) {
             HStack(alignment: .center, spacing: 34) {
@@ -5352,6 +5612,7 @@ private struct TvStreamCard: View {
                         TvStreamImportedBadgeRow(
                             badges: importedBadges,
                             fileSizeLabel: fileSizeLabel,
+                            releaseYear: releaseYear,
                             isScrolling: isFocused
                         )
                     }
@@ -5383,6 +5644,7 @@ private struct TvStreamCard: View {
                         TvStreamImportedBadgeRow(
                             badges: importedBadges,
                             fileSizeLabel: fileSizeLabel,
+                            releaseYear: releaseYear,
                             isScrolling: isFocused
                         )
                             .padding(.top, 4)
@@ -5425,6 +5687,7 @@ private struct TvStreamCard: View {
             )
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .modifier(ExternalFocusBinding(binding: externalFocus, id: stream.id))
         .focusEffectDisabledIfAvailable()
@@ -5491,6 +5754,9 @@ private struct TvStreamBadgeRowWidthKey: PreferenceKey {
 private struct TvStreamImportedBadgeRow: View {
     let badges: [StreamBadgeFilter]
     let fileSizeLabel: String?
+    /// Best-effort year scraped from the release name. Shown so a same-titled
+    /// release from another year is obvious without the app hiding anything.
+    var releaseYear: Int? = nil
     let isScrolling: Bool
 
     @State private var contentWidth: CGFloat = 0
@@ -5555,6 +5821,16 @@ private struct TvStreamImportedBadgeRow: View {
         HStack(spacing: 10) {
             ForEach(Array(badges.enumerated()), id: \.offset) { _, badge in
                 TvStreamImportedBadge(badge: badge)
+            }
+
+            if let releaseYear {
+                Text(String(releaseYear))
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundColor(.white.opacity(0.9))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Capsule().fill(Color.white.opacity(0.12)))
+                    .overlay(Capsule().stroke(Color.white.opacity(0.20), lineWidth: 1))
             }
 
             if let fileSizeLabel {

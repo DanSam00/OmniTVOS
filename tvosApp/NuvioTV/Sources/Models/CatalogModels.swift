@@ -214,9 +214,25 @@ struct NuvioMeta: Identifiable, Codable, Equatable, Hashable {
     /// carries TMDB artwork when that integration/artwork option is enabled, so
     /// a disabled TMDB can never inject or suppress logos here.
     func fillingMissingHeroMetadata(from fullMeta: NuvioMeta) -> NuvioMeta {
-        let resolvedPoster = trimmedNonEmpty(posterUrl) ?? fullMeta.posterUrl
-        let resolvedBackground = trimmedNonEmpty(backgroundUrl) ?? fullMeta.backgroundUrl
-        let resolvedLogo = trimmedNonEmpty(logoUrl) ?? fullMeta.logoUrl
+        // Cinemeta's artwork (metahub) beats what most catalogs ship for the
+        // same title — Rotten Tomatoes and the streaming-service catalogs send
+        // small posters and often no backdrop at all, which is why those rows
+        // looked worse than Cinemeta ones for identical titles.
+        //
+        // Only for titles carrying an IMDb id, since that is what metahub is
+        // keyed on. Without one, `fullMeta` is not a metahub record and the
+        // catalog's own art is the better source, so it is kept.
+        let preferFullArtwork = trimmedNonEmpty(fullMeta.imdbId) != nil
+
+        let resolvedPoster = preferFullArtwork
+            ? (trimmedNonEmpty(fullMeta.posterUrl) ?? posterUrl)
+            : (trimmedNonEmpty(posterUrl) ?? fullMeta.posterUrl)
+        let resolvedBackground = preferFullArtwork
+            ? (trimmedNonEmpty(fullMeta.backgroundUrl) ?? backgroundUrl)
+            : (trimmedNonEmpty(backgroundUrl) ?? fullMeta.backgroundUrl)
+        let resolvedLogo = preferFullArtwork
+            ? (trimmedNonEmpty(fullMeta.logoUrl) ?? logoUrl)
+            : (trimmedNonEmpty(logoUrl) ?? fullMeta.logoUrl)
         let resolvedRuntime = trimmedNonEmpty(runtime) ?? fullMeta.runtime
         let resolvedStatus = trimmedNonEmpty(status) ?? fullMeta.status
 
@@ -703,15 +719,24 @@ struct NuvioSubtitle: Identifiable, Codable, Equatable {
 }
 
 struct NuvioStream: Identifiable, Codable {
-    /// Stable identity for lists and focus. Prefer URL / torrent key; never mint a
-    /// fresh UUID on each access (that forces full SwiftUI list rebuilds).
+    /// Stable identity for lists and focus. Deterministic — never mint a fresh
+    /// UUID on each access, which would force full SwiftUI list rebuilds.
+    ///
+    /// The playable key alone is *not* unique: live-sports add-ons routinely
+    /// return many differently-labelled streams behind one URL (verified: a
+    /// Premier League fixture returned 10 streams sharing 2 URLs, 9 of them
+    /// identical). Keying only on the URL silently collapsed those into a
+    /// single row, so the label is part of the identity.
     var id: String {
-        if let url, !url.isEmpty { return url }
-        if let infoHash, !infoHash.isEmpty {
-            return "\(infoHash):\(fileIdx ?? -1)"
+        let playableKey: String
+        if let url, !url.isEmpty {
+            playableKey = url
+        } else if let infoHash, !infoHash.isEmpty {
+            playableKey = "\(infoHash):\(fileIdx ?? -1)"
+        } else {
+            playableKey = "shell"
         }
-        // Deterministic content fallback for rare shells with no playable key.
-        return "stream:\(name ?? "")|\(description ?? "")|\(addonName ?? "")|\(filename ?? "")"
+        return "\(playableKey)|\(name ?? "")|\(description ?? "")|\(addonName ?? "")|\(filename ?? "")"
     }
     let url: String?
     let name: String?
@@ -2009,9 +2034,21 @@ enum ContinueWatchingStore {
 
     /// Installs a freshly derived list. `ContinueWatchingBuilder` owns the
     /// derivation; this store only persists and publishes the result.
-    static func replaceAll(_ newItems: [ContinueWatchingItem]) {
+    /// Why the store changed.
+    ///
+    /// A rebuild is derived from what was just read out of this same store, so
+    /// it has to refresh the UI without being pushed back to the account — that
+    /// round trip re-entered the builder and span a sync loop. Suppressing the
+    /// notification outright fixed the loop but also hid the Continue Watching
+    /// row, because Home learns about new items from exactly that notification.
+    enum ChangeOrigin {
+        case user
+        case rematerialisation
+    }
+
+    static func replaceAll(_ newItems: [ContinueWatchingItem], origin: ChangeOrigin = .user) {
         let ordered = Array(newItems.sorted { $0.lastWatchedAt > $1.lastWatchedAt }.prefix(maxItems))
-        guard persist(ordered) else { return }
+        guard persist(ordered, origin: origin) else { return }
 
         // Keep per-episode resume points in step so opening an episode directly
         // still resumes where the account left it.
@@ -2168,7 +2205,16 @@ enum ContinueWatchingStore {
     }
 
     @discardableResult
-    private static func persist(_ items: [ContinueWatchingItem]) -> Bool {
+    /// - Parameter notify: pass `false` for a write that only re-materialises
+    ///   what was already derived from this store. `ContinueWatchingBuilder`
+    ///   reads the store, rebuilds, and writes back — so notifying there makes
+    ///   the change observer trigger the very rebuild that caused it, and Home
+    ///   loops forever, dragging a full account sync push round with it.
+    private static func persist(
+        _ items: [ContinueWatchingItem],
+        notify: Bool = true,
+        origin: ChangeOrigin = .user
+    ) -> Bool {
         let storedItems = Array(items.prefix(maxItems))
         let data: Data
         do {
@@ -2211,7 +2257,11 @@ enum ContinueWatchingStore {
             cachedKey = key
             cachedData = data
             persistenceDiagnostic = "Caches: \(storedItems.count) item(s), \(data.count) bytes"
-            NotificationCenter.default.post(name: changedNotification, object: nil)
+            if notify {
+                // The origin rides on the notification so observers can tell a
+                // user-driven change from a derived rebuild.
+                NotificationCenter.default.post(name: changedNotification, object: origin)
+            }
             writeTopShelfFeed()
             return true
         } catch {
@@ -4253,6 +4303,38 @@ struct WatchedSnapshot {
             }
         }
         return result
+    }
+}
+
+/// Play counts per title, for the Library's "Most Watched" sort.
+///
+/// Counting starts from when this shipped: nothing historical exists to
+/// backfill from, since watch marks record only that something was seen, not
+/// how many times. Profile-scoped like the other stores.
+enum PlayCountStore {
+    static let changedNotification = Notification.Name("nuvio.tv.playcount.changed")
+
+    private static let baseKey = "nuvio.tv.playcount.byMetaId"
+
+    private static var storageKey: String {
+        guard let id = WatchedStore.activeProfileId, !id.isEmpty else { return baseKey }
+        return "\(baseKey).\(id)"
+    }
+
+    static func counts() -> [String: Int] {
+        ProfileSettings.current.dictionary(forKey: storageKey) as? [String: Int] ?? [:]
+    }
+
+    static func count(for metaId: String) -> Int {
+        counts()[metaId] ?? 0
+    }
+
+    static func increment(metaId: String) {
+        guard !metaId.isEmpty else { return }
+        var current = counts()
+        current[metaId, default: 0] += 1
+        ProfileSettings.current.set(current, forKey: storageKey)
+        NotificationCenter.default.post(name: changedNotification, object: nil)
     }
 }
 

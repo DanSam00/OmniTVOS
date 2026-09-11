@@ -90,12 +90,20 @@ protocol CatalogRepository {
     /// Get available genres for content type
     func getGenres(contentType: String) async throws -> [String]
 
+    /// Every catalog exposed by the installed add-ons. Drives the Discover type
+    /// and catalog filters, which would otherwise be hardcoded to Cinemeta's
+    /// movie/series pair and hide sport, anime, tv and the rest.
+    func availableAddonCatalogs() async -> [AddonCatalogOption]
+
     /// Resolve a synced collection folder's add-on catalog sources into items.
     /// Unresolvable sources (unknown add-on ids, TMDB/Trakt) are skipped.
     func getCollectionFolderItems(sources: [NuvioCollectionCatalogSource], limit: Int) async -> [NuvioMeta]
 }
 
 extension CatalogRepository {
+    /// Conformers without add-on awareness (the mock) expose no catalogs.
+    func availableAddonCatalogs() async -> [AddonCatalogOption] { [] }
+
     var homeCatalogLoadWasPartial: Bool { false }
 
     var homeCatalogFailureSignature: String? { nil }

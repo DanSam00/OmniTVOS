@@ -293,7 +293,7 @@ private struct CompanyBrowseScrollTracker: ViewModifier {
     @Binding var offset: CGFloat
 
     func body(content: Content) -> some View {
-        if #available(tvOS 18.0, *) {
+        if #available(tvOS 18.0, macOS 15.0, *) {
             content.onScrollGeometryChange(for: CGFloat.self) { geometry in
                 geometry.contentOffset.y
             } action: { _, newOffset in
@@ -436,6 +436,7 @@ struct PersonBrowseView: View {
                                 ProductionBrowseCard(title: title) {
                                     onSelect(title)
                                 }
+                                .nuvioFocusable()
                                 .focused($focusedId, equals: title.id)
                             }
                         }
@@ -585,6 +586,7 @@ private struct ProductionBrowseCard: View {
             }
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .titleActionsContextMenu(

@@ -1,6 +1,11 @@
 import Foundation
 import CoreGraphics
+#if canImport(UIKit)
 import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 import AVFoundation
 import Darwin
 
@@ -169,6 +174,11 @@ protocol PlaybackEngineControlling: AnyObject {
     var audioTracks: [PlaybackTrackInfo] { get }
     var subtitleTracks: [PlaybackTrackInfo] { get }
 
+    /// Current download rate into the player's buffer, megabits per second.
+    /// Zero when unknown — an engine that cannot report it opts out via the
+    /// default below rather than reporting a fabricated figure.
+    var networkSpeedMbps: Double { get }
+
     var isPlayerLoading: Bool { get }
     var isPlayerPlaying: Bool { get }
     var isPlayerEnded: Bool { get }
@@ -250,7 +260,12 @@ enum PlaybackSystemMonitor {
             }
         }
         let resident = basicKerr == KERN_SUCCESS ? Double(basicInfo.resident_size) / (1024.0 * 1024.0) : footprint
+        #if os(macOS)
+        let physical = Double(ProcessInfo.processInfo.physicalMemory) / (1024.0 * 1024.0)
+        let available = max(0, physical - resident)
+        #else
         let available = Double(os_proc_available_memory()) / (1024.0 * 1024.0)
+        #endif
         return (resident, available, footprint)
     }
 
@@ -304,6 +319,9 @@ enum PlaybackSystemMonitor {
 
     /// Active audio route description.
     static func audioRouteInfo() -> String {
+        #if os(macOS)
+        return MacAudioRoute.outputDeviceName.map { "\($0) · 0 changes" } ?? "System Output · 0 changes"
+        #else
         let route = AVAudioSession.sharedInstance().currentRoute
         if let output = route.outputs.first {
             let portType = output.portType
@@ -328,10 +346,14 @@ enum PlaybackSystemMonitor {
             }
         }
         return "HDMI · 0 changes"
+        #endif
     }
 
     /// Clean, user-facing active audio route title (e.g. "HomePod", "TV Speakers", "AirPods").
     static func currentAudioOutputTitle() -> String {
+        #if os(macOS)
+        return MacAudioRoute.outputDeviceName ?? "System Output"
+        #else
         let route = AVAudioSession.sharedInstance().currentRoute
         if let output = route.outputs.first {
             let portType = output.portType
@@ -351,5 +373,13 @@ enum PlaybackSystemMonitor {
             }
         }
         return "TV Speakers / HDMI"
+        #endif
     }
+}
+
+
+extension PlaybackEngineControlling {
+    /// Engines that do not expose a download rate report zero, which the
+    /// buffering overlay reads as "no figure to show".
+    var networkSpeedMbps: Double { 0 }
 }

@@ -157,6 +157,7 @@ struct PinButton: View {
         }
         .buttonStyle(PosterCardButtonStyle())
         .disabled(isDisabled)
+        .nuvioFocusable()
         .focused(focus, equals: focusKey)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(isFocused ? 1.06 : 1)

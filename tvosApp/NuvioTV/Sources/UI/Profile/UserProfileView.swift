@@ -70,6 +70,7 @@ public struct UserProfileView: View {
 
                         Button("Retry", action: onRetryAccountSync)
                             .buttonStyle(.bordered)
+                            .nuvioFocusable()
                             .focused($focusedItem, equals: Self.retryFocusId)
                     }
                     .frame(maxWidth: 900)
@@ -86,6 +87,7 @@ public struct UserProfileView: View {
                         ) {
                             handleProfileSelection(profile)
                         }
+                        .nuvioFocusable()
                         .focused($focusedItem, equals: profile.id)
                     }
 
@@ -94,6 +96,7 @@ public struct UserProfileView: View {
                     ) {
                         showingAddProfile = true
                     }
+                    .nuvioFocusable()
                     .focused($focusedItem, equals: Self.addProfileFocusId)
                 }
                 .padding(.horizontal, 80)
@@ -778,6 +781,7 @@ private struct AddProfilePinButton: View {
             .modifier(GlassCapsule(focused: isFocused))
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
     }
@@ -874,6 +878,7 @@ private struct AvatarCategoryTab: View {
                 .loginGlassCapsule(highlighted: isSelected || isFocused)
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(isFocused ? 1.05 : 1)
@@ -920,6 +925,7 @@ private struct AvatarGridCell: View {
             .frame(width: 118)
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
     }
@@ -1068,6 +1074,7 @@ private struct ProfileAvatarPickerButton: View {
         }
         .buttonStyle(PosterCardButtonStyle())
         .disabled(disabled)
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .animation(.easeOut(duration: 0.12), value: isFocused)

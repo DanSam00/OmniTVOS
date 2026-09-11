@@ -79,7 +79,7 @@ struct LoginView: View {
                 .scaledToFit()
                 .frame(width: 300)
 
-            Text(auth.isAuthenticated ? "You're signed in" : "Sign in to Nuvio")
+            Text(auth.isAuthenticated ? "You're signed in" : "Sign in")
                 .font(.system(size: 40, weight: .bold))
                 .foregroundColor(.white)
 
@@ -233,7 +233,7 @@ struct LoginView: View {
             }
 
             LoginLinkButton(
-                title: isSignUp ? "Already have an account? Sign in" : "New to Nuvio? Create an account"
+                title: isSignUp ? "Already have an account? Sign in" : "New here? Create an account"
             ) {
                 isSignUp.toggle()
                 auth.errorMessage = nil
@@ -288,6 +288,7 @@ struct MethodTab: View {
                 .loginGlassCapsule(highlighted: isSelected || focused)
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($focused)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(focused ? 1.05 : 1)
@@ -322,6 +323,7 @@ struct LoginButton: View {
         // white focus platter on tvOS even with focusEffectDisabled().
         .buttonStyle(PosterCardButtonStyle())
         .disabled(disabled)
+        .nuvioFocusable()
         .focused($focused)
         .focusEffectDisabledIfAvailable()
         .animation(.easeOut(duration: 0.12), value: focused)
@@ -352,6 +354,19 @@ struct LoginGlassField: View {
             isEditing = true
         } label: {
             ZStack(alignment: .leading) {
+                #if os(macOS)
+                Group {
+                    if isSecure {
+                        SecureField(placeholder, text: $text)
+                    } else {
+                        TextField(placeholder, text: $text)
+                    }
+                }
+                .textFieldStyle(.plain)
+                .font(.system(size: 22, weight: .medium))
+                .foregroundColor(.white)
+                .padding(.horizontal, 24)
+                #else
                 HiddenLoginTextField(
                     text: $text,
                     isEditing: $isEditing,
@@ -369,12 +384,14 @@ struct LoginGlassField: View {
                     .lineLimit(1)
                     .padding(.horizontal, 24)
                     .allowsHitTesting(false)
+                #endif
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: 58)
             .modifier(GlassCapsule(focused: focused || isEditing))
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($focused)
         .focusEffectDisabledIfAvailable()
     }
@@ -388,6 +405,7 @@ struct LoginGlassField: View {
 /// Off-screen UITextField that drives editing for LoginGlassField. Mirrors the
 /// Settings tab's private helper: never focusable itself, invisible, and only
 /// used to summon the keyboard and receive text.
+#if !os(macOS)
 struct HiddenLoginTextField: UIViewRepresentable {
     @Binding var text: String
     @Binding var isEditing: Bool
@@ -462,6 +480,7 @@ struct HiddenLoginTextField: UIViewRepresentable {
 final class HiddenLoginUITextField: UITextField {
     override var canBecomeFocused: Bool { false }
 }
+#endif
 
 /// Small text-link button (e.g. sign-in/sign-up toggle) with the shared glass
 /// capsule focus treatment instead of the system's white platter.
@@ -480,6 +499,7 @@ struct LoginLinkButton: View {
                 .modifier(GlassCapsule(focused: focused))
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($focused)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(focused ? 1.04 : 1)
@@ -509,7 +529,7 @@ extension View {
     /// primary call-to-action.
     @ViewBuilder
     func loginGlassCapsule(highlighted: Bool, prominent: Bool = false) -> some View {
-        if #available(tvOS 26.0, *) {
+        if #available(tvOS 26.0, macOS 26.0, *) {
             glassEffect(
                 highlighted
                     ? Glass.regular.tint(.white.opacity(0.92))
@@ -530,7 +550,7 @@ extension View {
     /// fallback for tvOS < 26 that keeps the previous translucent look.
     @ViewBuilder
     func loginGlassPanel() -> some View {
-        if #available(tvOS 26.0, *) {
+        if #available(tvOS 26.0, macOS 26.0, *) {
             glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         } else {
             background(.ultraThinMaterial)

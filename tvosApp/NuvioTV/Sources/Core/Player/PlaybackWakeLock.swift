@@ -1,5 +1,10 @@
 import AVFoundation
+#if canImport(UIKit)
 import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 
 /// `AVAudioSession` category and activation changes can block while the system
 /// reconfigures audio routes. Keep them off the main actor so a preview or
@@ -8,6 +13,11 @@ enum PlaybackAudioSession {
     private static let queue = DispatchQueue(label: "tv.nuvio.audio-session")
 
     static func activateMoviePlayback() {
+        // macOS has no AVAudioSession: routing, category and activation are all
+        // handled by the system, so there is nothing to configure here.
+        #if os(macOS)
+        return
+        #else
         queue.async {
             let session = AVAudioSession.sharedInstance()
             do {
@@ -21,6 +31,7 @@ enum PlaybackAudioSession {
                 print("[PlaybackAudioSession] activate failed: \(error.localizedDescription)")
             }
         }
+        #endif
     }
 }
 
@@ -64,9 +75,15 @@ enum PlaybackWakeLock {
     }
 
     private static func apply(disabled: Bool) {
+        #if os(macOS)
+        // No idle timer on macOS — display sleep is held off with an IOKit
+        // power assertion instead. See `MacIdleSleep`.
+        MacIdleSleep.setPrevented(disabled)
+        #else
         if UIApplication.shared.isIdleTimerDisabled != disabled {
             UIApplication.shared.isIdleTimerDisabled = disabled
         }
+        #endif
     }
 
     private static func startReassertTimerIfNeeded() {

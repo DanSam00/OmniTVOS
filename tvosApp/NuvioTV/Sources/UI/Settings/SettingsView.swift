@@ -1,5 +1,10 @@
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 import Security
 import AetherEngineSMB
 
@@ -146,10 +151,14 @@ enum SettingsKey {
     static let homeCatalogSyncedOrder = "nuvio.tv.settings.layout.homeCatalogSyncedOrder"
     static let homeCatalogShowType = "nuvio.tv.settings.layout.homeCatalogShowType"
     static let heroEnabled = "nuvio.tv.settings.layout.heroEnabled"
+    /// Prime-style featured carousel of Continue Watching in the hero slot.
+    static let homeFeature = "nuvio.tv.settings.layout.homeFeature"
     /// JSON `[String]` of Home section ids selected as Grid View hero sources.
     /// Empty means all available catalog rows.
     static let heroCatalogs = "nuvio.tv.settings.layout.heroCatalogs"
     static let fullscreenHeroBackdrop = "nuvio.tv.settings.layout.fullscreenHeroBackdrop"
+    /// Calendar tab presentation: "List" (day-by-day rows) or "Month" (grid).
+    static let calendarViewMode = "nuvio.tv.settings.layout.calendarViewMode"
     static let posterLabels = "nuvio.tv.settings.layout.posterLabels"
     static let catalogAddonNames = "nuvio.tv.settings.layout.catalogAddonNames"
     static let discoverLocation = "nuvio.tv.settings.layout.discoverLocation"
@@ -240,6 +249,7 @@ enum SettingsKey {
     static let cachedOnlyStreams = "nuvio.tv.settings.playback.cachedOnlyStreams"
     static let preferHardwareDecodedStreams = "nuvio.tv.settings.playback.preferHardwareDecodedStreams"
     static let streamSortOption = "nuvio.tv.settings.playback.streamSortOption"
+    static let streamResolutionFilter = "nuvio.tv.settings.playback.streamResolutionFilter"
     static let streamBadgeRules = "nuvio.tv.settings.playback.streamBadgeRules"
     static let showFileSizeBadges = "nuvio.tv.settings.playback.showFileSizeBadges"
     static let showAddonLogo = "nuvio.tv.settings.playback.showAddonLogo"
@@ -260,7 +270,15 @@ enum SettingsKey {
     static let forcedSubtitles = "nuvio.tv.settings.playback.forcedSubtitles"
     static let subtitleSize = "nuvio.tv.settings.playback.subtitleSize"
     static let frameRateMatching = "nuvio.tv.settings.playback.frameRateMatching"
+    /// Blurs episode stills for episodes not yet watched, so thumbnails do not
+    /// give away what happens.
+    static let blurUnwatchedArtwork = "nuvio.tv.settings.layout.blurUnwatchedArtwork"
     static let networkCache = "nuvio.tv.settings.playback.networkCache"
+    /// Seconds of readahead for on-demand movies and episodes.
+    static let bufferSecondsVOD = "nuvio.tv.settings.playback.bufferSecondsVOD"
+    /// Separate, deliberately smaller window for live streams, where readahead
+    /// is latency behind the broadcast rather than protection against stalls.
+    static let bufferSecondsLive = "nuvio.tv.settings.playback.bufferSecondsLive"
     static let playbackTrackSelections = "nuvio.tv.settings.playback.trackSelections"
     static let externalPlayerForwardSubtitles = "nuvio.tv.settings.playback.externalPlayerForwardSubtitles"
     static let assOverrideMode = "nuvio.tv.settings.playback.assOverrideMode"
@@ -287,10 +305,10 @@ enum SettingsKey {
         profileName, profilePinEnabled, profileAutoSelectLast, profileRequireSelectionAfterBackground,
         accountSyncWatchState,
         theme, bodyColor, font, language, amoled, amoledSurfaces, reduceMotion,
-        homeLayout, heroEnabled, heroCatalogs, fullscreenHeroBackdrop, posterLabels, catalogAddonNames, discoverLocation,
+        homeLayout, heroEnabled, homeFeature, heroCatalogs, fullscreenHeroBackdrop, posterLabels, catalogAddonNames, discoverLocation,
         searchStyle,
         continueWatchingSort, upNextFromFurthestEpisode, showUnairedNextUp,
-        cardCornerRadius, cardSize, liquidGlassCards,
+        cardCornerRadius, cardSize, liquidGlassCards, blurUnwatchedArtwork,
         hideUnreleased, showFullDates,
         traktConnected, traktClientID, traktClientSecret,
         traktContinueWatchingDaysCap, traktShowMetaComments,
@@ -315,7 +333,7 @@ enum SettingsKey {
         autoPlayNext, autoPlayNextCountdown, postPlayRecommendationsEnabled, trailersEnabled, trailerPreviewSound, trailerDelay,
         focusedPosterBackdropEnabled, focusedPosterBackdropDelay, audioLanguage,
         subtitleLanguages, subtitleLanguage, subtitleLanguageSecondary, subtitleLanguageTertiary,
-        forcedSubtitles, subtitleSize, frameRateMatching, networkCache, playbackTrackSelections,
+        forcedSubtitles, subtitleSize, frameRateMatching, networkCache, bufferSecondsVOD, bufferSecondsLive, playbackTrackSelections,
         externalPlayerForwardSubtitles, assOverrideMode,
         playerShowPiP, playerShowEpisodes, playerShowSources,
         fastNavigation, smoothFocus, playbackDiagnostics, playbackDebug, focusHighlighter
@@ -1293,7 +1311,15 @@ struct SettingsView: View {
                     // so up/down still moves between every category. Disabling is safe
                     // visually here: PosterCardButtonStyle ignores isEnabled, so a
                     // non-focusable pill looks identical to a focusable one.
+                    // The narrowing above is a directional-focus trick and it is
+                    // actively wrong for a pointer: with nothing focused yet,
+                    // `focusedCategory` is nil, so every unselected pill would be
+                    // disabled and a click on it would do nothing at all.
+                    #if os(macOS)
+                    let isFocusable = true
+                    #else
                     let isFocusable = isSelectedCategory || focusedCategory != nil
+                    #endif
 
                     SettingsCategoryPill(
                         category: category,
@@ -1303,6 +1329,7 @@ struct SettingsView: View {
                     ) {
                         selectedCategory = category
                     }
+                    .nuvioFocusable()
                     .focused($focusedCategory, equals: category)
                     .disabled(!isFocusable)
                 }
@@ -1470,7 +1497,7 @@ private struct AccountSettingsView: View {
     let onSignOut: (() -> Void)?
     let onPresentPin: (ProfilePinSheetMode) -> Void
 
-    @AppStorage(SettingsKey.profileName) private var profileName = "Nuvio User"
+    @AppStorage(SettingsKey.profileName) private var profileName = "Omni User"
     @AppStorage(SettingsKey.profileAutoSelectLast) private var autoSelectLastProfile = true
     @AppStorage(SettingsKey.profileRequireSelectionAfterBackground)
     private var requireProfileSelectionAfterBackground = false
@@ -1553,7 +1580,7 @@ private struct AccountSettingsView: View {
                     title: L10n.string("profile_choose_avatar", fallback: "Choose Avatar"),
                     subtitle: L10n.string(
                         "tvos_profile_avatar_subtitle",
-                        fallback: "Choose the avatar shown across Nuvio"
+                        fallback: "Choose the avatar shown across Omni"
                     ),
                     value: L10n.string("profile_edit_label", fallback: "Edit"),
                     accentColor: accentColor
@@ -1596,7 +1623,7 @@ private struct AccountSettingsView: View {
                     ),
                     subtitle: L10n.string(
                         "profile_select_on_return_subtitle",
-                        fallback: "Ask who's watching whenever Nuvio returns from the background"
+                        fallback: "Ask who's watching whenever Omni returns from the background"
                     ),
                     isOn: $requireProfileSelectionAfterBackground,
                     accentColor: accentColor
@@ -1718,7 +1745,7 @@ private struct AccountSettingsView: View {
     }
 
     private var displayProfileName: String {
-        if !isAuthenticated, activeProfile == nil { return L10n.string("tvos_settings_nuvio_guest", fallback: "Nuvio Guest") }
+        if !isAuthenticated, activeProfile == nil { return L10n.string("tvos_settings_nuvio_guest", fallback: "Omni Guest") }
         return ProfileDisplayName.resolve(profile: activeProfile, settingsName: profileName)
     }
 
@@ -1950,6 +1977,7 @@ struct PinDeleteButton: View {
                 .loginGlassCapsule(highlighted: isFocused)
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(isFocused ? 1.06 : 1)
@@ -1972,6 +2000,7 @@ struct PinSheetActionButton: View {
                 .loginGlassCapsule(highlighted: isFocused)
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(isFocused ? 1.04 : 1)
@@ -2112,6 +2141,7 @@ private struct AppearanceSettingsView: View {
                 ) {
                     onAppLanguage()
                 }
+                .nuvioFocusable()
                 .focused(languageFocus, equals: .appLanguage)
             }
         }
@@ -2761,8 +2791,11 @@ private struct LayoutDiscoverySettingsView: View {
 
     @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
     @AppStorage(SettingsKey.heroEnabled) private var heroEnabled = true
+    @AppStorage(SettingsKey.homeFeature) private var homeFeature = true
+    @AppStorage(SettingsKey.blurUnwatchedArtwork) private var blurUnwatchedArtwork = false
     @AppStorage(SettingsKey.heroCatalogs) private var heroCatalogsData = Data()
     @AppStorage(SettingsKey.fullscreenHeroBackdrop) private var fullscreenHeroBackdrop = true
+    @AppStorage(SettingsKey.calendarViewMode) private var calendarViewMode = CalendarViewMode.list.rawValue
     @AppStorage(SettingsKey.posterLabels) private var posterLabels = false
     @AppStorage(SettingsKey.catalogAddonNames) private var catalogAddonNames = true
     @AppStorage(SettingsKey.discoverLocation) private var discoverLocation = "Search"
@@ -2777,10 +2810,11 @@ private struct LayoutDiscoverySettingsView: View {
 
     /// Classic was never a distinct layout (behaved like Modern).
     private let layouts = ["Modern", "Compact", "Grid View"]
+    private let calendarModes = CalendarViewMode.allCases.map(\.rawValue)
     // Search is the only screen that currently hosts the full Discover surface.
     // Do not offer Home/Library as dead selections that merely hide Discover.
     private let discoverLocations = ["Search", "Off"]
-    private let searchStyles = ["Netflix", "Classic"]
+    private let searchStyles = ["System", "Netflix", "Classic"]
     private let continueWatchingSorts = ["Default", "Streaming Style", "Separate Upcoming Row"]
 
     var body: some View {
@@ -2826,6 +2860,19 @@ private struct LayoutDiscoverySettingsView: View {
                     accentColor: accentColor
                 )
 
+                if heroEnabled && homeLayout != "Grid View" {
+                    SettingsToggleRow(
+                        title: L10n.string("tvos_layout_feature", fallback: "Featured Carousel"),
+                        subtitle: L10n.string(
+                            "tvos_layout_feature_subtitle",
+                            fallback: "Show Continue Watching as a large featured carousel in the hero, instead of artwork that follows the selected card."
+                        ),
+                        isOn: $homeFeature,
+                        accentColor: accentColor
+                    )
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+
                 if homeLayout == "Grid View" {
                     HeroCatalogSelectionRow(
                         selectionData: $heroCatalogsData,
@@ -2833,6 +2880,16 @@ private struct LayoutDiscoverySettingsView: View {
                     )
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
+
+                SettingsToggleRow(
+                    title: L10n.string("tvos_layout_blur_unwatched", fallback: "Blur Unwatched Artwork"),
+                    subtitle: L10n.string(
+                        "tvos_layout_blur_unwatched_sub",
+                        fallback: "Blurs episode stills you have not watched yet, so thumbnails do not spoil what happens."
+                    ),
+                    isOn: $blurUnwatchedArtwork,
+                    accentColor: accentColor
+                )
 
                 SettingsToggleRow(
                     title: L10n.string(
@@ -2844,6 +2901,17 @@ private struct LayoutDiscoverySettingsView: View {
                         fallback: "Expand the hero backdrop to fill the entire screen."
                     ),
                     isOn: $fullscreenHeroBackdrop,
+                    accentColor: accentColor
+                )
+
+                SettingsOptionRow(
+                    title: L10n.string("tvos_layout_calendar_view", fallback: "Calendar View"),
+                    subtitle: L10n.string(
+                        "tvos_layout_calendar_view_subtitle",
+                        fallback: "List groups releases by day; Month shows a browsable month grid. Both follow the Hero Section setting above."
+                    ),
+                    selection: $calendarViewMode,
+                    options: calendarModes,
                     accentColor: accentColor
                 )
 
@@ -3124,6 +3192,18 @@ private struct HeroCatalogSelectionRow: View {
 /// The Home snapshot intentionally keeps hidden rows so they can be restored.
 /// Add-on rows need one extra filter here: disabling an add-on removes its Home
 /// rows, but does not mark every row individually as disabled.
+/// Drops repeats, keeping first appearance so the user's ordering survives.
+///
+/// The persisted snapshot can legitimately contain the same catalog twice — a
+/// sync merge, or Home writing its rows more than once — and callers key on
+/// `id`, so duplicates crashed Layout via `Dictionary(uniqueKeysWithValues:)`.
+private func uniqueByID(
+    _ rows: [TVHomeCatalogOrder.SnapshotRow]
+) -> [TVHomeCatalogOrder.SnapshotRow] {
+    var seen: Set<String> = []
+    return rows.filter { seen.insert($0.id).inserted }
+}
+
 private func layoutVisibleHomeCatalogRows() -> [TVHomeCatalogOrder.SnapshotRow] {
     let rows = TVHomeCatalogOrder.snapshotRows()
     let disabledAddonIDs = TVHomeCatalogOrder.disabledAddonIDs()
@@ -3140,7 +3220,7 @@ private func layoutVisibleHomeCatalogRows() -> [TVHomeCatalogOrder.SnapshotRow] 
     }
     let cinemetaPrefix = "\(CinemetaCatalogRepository.cinemetaAddonId)_"
     guard CinemetaCatalogRepository.isCinemetaEnabled else {
-        return sourceRows.filter { !($0.settingsKey?.hasPrefix(cinemetaPrefix) ?? false) }
+        return uniqueByID(sourceRows.filter { !($0.settingsKey?.hasPrefix(cinemetaPrefix) ?? false) })
     }
 
     // Home normally records these rows after its catalog request completes.
@@ -3171,7 +3251,7 @@ private func layoutVisibleHomeCatalogRows() -> [TVHomeCatalogOrder.SnapshotRow] 
             )
         )
     }
-    return merged
+    return uniqueByID(merged)
 }
 
 private struct IntegrationSettingsView: View {
@@ -3204,6 +3284,78 @@ private struct IntegrationSettingsView: View {
     @State private var showingMdbListOptions = false
     @State private var showingAISubtitleOptions = false
     @StateObject private var debridConnection = DebridAccountConnectionViewModel()
+    @State private var stremioEmailDraft = ""
+    @State private var stremioPasswordDraft = ""
+    @State private var stremioStatus = ""
+    @State private var stremioBusy = false
+    /// Bumped after sign-in/out so the rows re-read the service's stored state.
+    @State private var stremioRevision = 0
+
+    private var stremioLastImportSubtitle: String {
+        guard let date = StremioAccountService.lastImportDate else {
+            return L10n.string(
+                "tvos_settings_stremio_never_imported",
+                fallback: "Not imported yet"
+            )
+        }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return L10n.format(
+            "tvos_settings_stremio_last_import",
+            fallback: "Last imported %@",
+            formatter.string(from: date)
+        )
+    }
+
+    private func runStremioSignIn() {
+        let email = stremioEmailDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let password = stremioPasswordDraft
+        guard !email.isEmpty, !password.isEmpty, !stremioBusy else { return }
+        stremioBusy = true
+        stremioStatus = ""
+        Task { @MainActor in
+            defer { stremioBusy = false }
+            do {
+                try await StremioAccountService.signIn(email: email, password: password)
+                // Not kept around any longer than the request needs it.
+                stremioPasswordDraft = ""
+                stremioRevision += 1
+                let summary = try await StremioAccountService.importLibrary()
+                stremioStatus = stremioSummaryText(summary)
+                stremioRevision += 1
+            } catch {
+                stremioStatus = error.localizedDescription
+                stremioRevision += 1
+            }
+        }
+    }
+
+    private func runStremioImport() {
+        guard !stremioBusy else { return }
+        stremioBusy = true
+        stremioStatus = ""
+        Task { @MainActor in
+            defer { stremioBusy = false }
+            do {
+                let summary = try await StremioAccountService.importLibrary()
+                stremioStatus = stremioSummaryText(summary)
+            } catch {
+                stremioStatus = error.localizedDescription
+            }
+            stremioRevision += 1
+        }
+    }
+
+    private func stremioSummaryText(_ summary: StremioAccountService.ImportSummary) -> String {
+        L10n.format(
+            "tvos_settings_stremio_import_summary",
+            fallback: "Imported %@ titles, marked %@ watched (%@ found)",
+            String(summary.libraryAdded),
+            String(summary.watchedMarked),
+            String(summary.total)
+        )
+    }
 
     init(accentColor: Color, profileID: String?) {
         self.accentColor = accentColor
@@ -3242,6 +3394,87 @@ private struct IntegrationSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             AddonsSettingsSection(accentColor: accentColor)
+
+            SettingsGroup(
+                title: L10n.string("settings_stremio_title", fallback: "Stremio"),
+                subtitle: L10n.string(
+                    "tvos_settings_stremio_subtitle",
+                    fallback: "Import your Stremio library and watch history. Import only — nothing is written back to Stremio."
+                )
+            ) {
+                let _ = stremioRevision
+                if StremioAccountService.isSignedIn {
+                    SettingsInfoRow(
+                        title: L10n.string("tvos_settings_stremio_account", fallback: "Signed in as"),
+                        value: StremioAccountService.signedInEmail ?? "—"
+                    )
+
+                    SettingsActionRow(
+                        title: L10n.string("tvos_settings_stremio_import", fallback: "Import Library"),
+                        subtitle: stremioStatus.isEmpty
+                            ? stremioLastImportSubtitle
+                            : stremioStatus,
+                        value: stremioBusy
+                            ? L10n.string("tvos_common_working", fallback: "Working…")
+                            : L10n.string("tvos_settings_stremio_import_action", fallback: "Import"),
+                        accentColor: accentColor
+                    ) {
+                        runStremioImport()
+                    }
+
+                    SettingsActionRow(
+                        title: L10n.string("tvos_settings_stremio_sign_out", fallback: "Sign Out"),
+                        subtitle: L10n.string(
+                            "tvos_settings_stremio_sign_out_sub",
+                            fallback: "Removes the stored Stremio key from this Apple TV. Imported titles stay in your library."
+                        ),
+                        value: L10n.string("tvos_settings_stremio_sign_out_action", fallback: "Sign Out"),
+                        accentColor: accentColor
+                    ) {
+                        StremioAccountService.signOut()
+                        stremioStatus = ""
+                        stremioPasswordDraft = ""
+                        stremioRevision += 1
+                    }
+                } else {
+                    SettingsTextFieldRow(
+                        title: L10n.string("tvos_settings_stremio_email", fallback: "Stremio Email"),
+                        subtitle: L10n.string(
+                            "tvos_settings_stremio_email_sub",
+                            fallback: "The email address for your Stremio account"
+                        ),
+                        placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
+                        text: $stremioEmailDraft
+                    )
+
+                    SettingsTextFieldRow(
+                        title: L10n.string("tvos_settings_stremio_password", fallback: "Stremio Password"),
+                        subtitle: L10n.string(
+                            "tvos_settings_stremio_password_sub",
+                            fallback: "Used once to sign in. Only the returned key is stored — never the password."
+                        ),
+                        placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
+                        text: $stremioPasswordDraft,
+                        isSecure: true
+                    )
+
+                    SettingsActionRow(
+                        title: L10n.string("tvos_settings_stremio_sign_in", fallback: "Sign In"),
+                        subtitle: stremioStatus.isEmpty
+                            ? L10n.string(
+                                "tvos_settings_stremio_sign_in_sub",
+                                fallback: "Signs in and imports your library straight away"
+                            )
+                            : stremioStatus,
+                        value: stremioBusy
+                            ? L10n.string("tvos_common_working", fallback: "Working…")
+                            : L10n.string("tvos_settings_stremio_sign_in_action", fallback: "Sign In"),
+                        accentColor: accentColor
+                    ) {
+                        runStremioSignIn()
+                    }
+                }
+            }
 
             SettingsGroup(
                 title: L10n.string("settings_simkl_title", fallback: "Simkl"),
@@ -4574,7 +4807,7 @@ private struct TraktConnectedSettingsSheet: View {
 
                     SettingsGroup(
                         title: L10n.string("tvos_settings_trakt_features", fallback: "Trakt Features"),
-                        subtitle: L10n.string("tvos_settings_trakt_features_subtitle", fallback: "Choose how Trakt is used throughout Nuvio")
+                        subtitle: L10n.string("tvos_settings_trakt_features_subtitle", fallback: "Choose how Trakt is used throughout Omni")
                     ) {
                         SettingsChoiceRow(
                             title: L10n.string("trakt_library_source_dialog_title", fallback: "Library Source"),
@@ -5129,7 +5362,7 @@ private struct SimklConnectedSettingsSheet: View {
 
                         SettingsGroup(
                             title: L10n.string("tvos_settings_simkl_features", fallback: "Simkl Features"),
-                            subtitle: L10n.string("tvos_settings_simkl_features_subtitle", fallback: "Choose how Simkl is used throughout Nuvio")
+                            subtitle: L10n.string("tvos_settings_simkl_features_subtitle", fallback: "Choose how Simkl is used throughout Omni")
                         ) {
                             SettingsChoiceRow(
                                 title: L10n.string("trakt_library_source_dialog_title", fallback: "Library Source"),
@@ -5699,6 +5932,7 @@ private struct ProviderLoginGlassButton: View {
                 .scaleEffect(isFocused ? 1.04 : 1)
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .animation(.easeOut(duration: 0.12), value: isFocused)
@@ -5754,6 +5988,28 @@ private struct PlaybackSettingsView: View {
     /// Buffer profiles: Auto scales to RAM; Conservative/Large match product names;
     /// legacy Small/Medium/Large keys still work via PlaybackCacheSettings.
     private let cacheModes = ["Auto", "Conservative", "Medium", "Large", "Max"]
+    @AppStorage(SettingsKey.bufferSecondsVOD)
+    private var bufferSecondsVOD = PlaybackBufferSettings.autoValue
+    @AppStorage(SettingsKey.bufferSecondsLive)
+    private var bufferSecondsLive = PlaybackBufferSettings.autoValue
+    private var autoBufferLabel: String {
+        L10n.string("tvos_settings_buffer_auto", fallback: "Auto")
+    }
+    private var vodBufferLabels: [String] {
+        [autoBufferLabel] + PlaybackBufferSettings.vodChoices.map { "\($0)s" }
+    }
+    private var liveBufferLabels: [String] {
+        [autoBufferLabel] + PlaybackBufferSettings.liveChoices.map { "\($0)s" }
+    }
+
+    private func bufferLabel(for stored: Int) -> String {
+        stored == PlaybackBufferSettings.autoValue ? autoBufferLabel : "\(stored)s"
+    }
+
+    private func bufferValue(for label: String, fallback: Int) -> Int {
+        guard label != autoBufferLabel else { return PlaybackBufferSettings.autoValue }
+        return Int(label.dropLast()) ?? fallback
+    }
     private let assModes = ["Strip", "Scale", "Force"]
     private let streamSortModes = StreamSortOption.allCases.map(\.rawValue)
 
@@ -5834,6 +6090,43 @@ private struct PlaybackSettingsView: View {
                     accentColor: accentColor
                 )
 
+                SettingsChoiceRow(
+                    title: L10n.string("tvos_settings_buffer_vod", fallback: "Buffer — Movies & TV"),
+                    subtitle: L10n.string(
+                        "tvos_settings_buffer_vod_sub",
+                        fallback: "How far ahead to buffer on-demand playback. Auto adapts to your connection and to how often playback has been stalling."
+                    ),
+                    selection: Binding(
+                        get: { bufferLabel(for: bufferSecondsVOD) },
+                        set: { label in
+                            bufferSecondsVOD = bufferValue(
+                                for: label,
+                                fallback: PlaybackBufferSettings.vodDefault
+                            )
+                        }
+                    ),
+                    options: vodBufferLabels,
+                    accentColor: accentColor
+                )
+
+                SettingsChoiceRow(
+                    title: L10n.string("tvos_settings_buffer_live", fallback: "Buffer — Live TV"),
+                    subtitle: L10n.string(
+                        "tvos_settings_buffer_live_sub",
+                        fallback: "Kept shorter than on-demand: every buffered second on a live stream is a second further behind the broadcast. Auto adapts to your connection."
+                    ),
+                    selection: Binding(
+                        get: { bufferLabel(for: bufferSecondsLive) },
+                        set: { label in
+                            bufferSecondsLive = bufferValue(
+                                for: label,
+                                fallback: PlaybackBufferSettings.liveDefault
+                            )
+                        }
+                    ),
+                    options: liveBufferLabels,
+                    accentColor: accentColor
+                )
             }
 
             SettingsGroup(
@@ -5954,6 +6247,7 @@ private struct PlaybackSettingsView: View {
                 ) {
                     onAudioLanguage()
                 }
+                .nuvioFocusable()
                 .focused(languageFocus, equals: .audio)
 
                 SettingsActionRow(
@@ -5970,6 +6264,7 @@ private struct PlaybackSettingsView: View {
                 ) {
                     onSubtitleLanguages()
                 }
+                .nuvioFocusable()
                 .focused(languageFocus, equals: .subtitles)
 
                 SettingsToggleRow(
@@ -6582,6 +6877,7 @@ private struct SubtitleColorSwatchButton: View {
                 )
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .entryLockable()
@@ -6650,6 +6946,7 @@ private struct LanguagePickerWindow: View {
                             ) {
                                 toggle(language)
                             }
+                            .nuvioFocusable()
                             .focused($focusedControl, equals: .language(language))
                         }
                     }
@@ -6663,6 +6960,7 @@ private struct LanguagePickerWindow: View {
                             .frame(width: 24, height: 390)
                     }
                     .buttonStyle(PosterCardButtonStyle())
+                    .nuvioFocusable()
                     .focused($focusedControl, equals: .leftGuard)
                     .focusEffectDisabledIfAvailable()
                     .offset(x: -18)
@@ -6690,6 +6988,7 @@ private struct LanguagePickerWindow: View {
                         )
                     }
                     .buttonStyle(PosterCardButtonStyle())
+                    .nuvioFocusable()
                     .focused($focusedControl, equals: .done)
                     .focusEffectDisabledIfAvailable()
                     .scaleEffect(focusedControl == .done ? 1.06 : 1)
@@ -7025,7 +7324,7 @@ private struct AboutSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
-            SettingsGroup(title: L10n.string("tvos_settings_nuviotv", fallback: "NuvioTV"), subtitle: L10n.string("tvos_settings_build_and_runtime_information", fallback: "Build and runtime information")) {
+            SettingsGroup(title: L10n.string("tvos_settings_nuviotv", fallback: "Omni"), subtitle: L10n.string("tvos_settings_build_and_runtime_information", fallback: "Build and runtime information")) {
                 SettingsInfoRow(title: L10n.string("tvos_settings_app_version", fallback: "App Version"), value: appVersion)
                 SettingsInfoRow(title: L10n.string("tvos_settings_engine_core", fallback: "Engine Core"), value: L10n.string("tvos_settings_pure_swift", fallback: "Pure Swift"))
                 SettingsInfoRow(title: L10n.string("tvos_settings_playback_stack", fallback: "Playback Stack"), value: "AetherEngine / MPVKit")
@@ -7087,7 +7386,7 @@ private struct LicensesAttributionsSheet: View {
     private let appEntries: [LicenseEntry] = [
         LicenseEntry(
             id: "nuvio",
-            title: L10n.string("tvos_settings_nuviotv", fallback: "NuvioTV"),
+            title: L10n.string("tvos_settings_nuviotv", fallback: "Omni"),
             body: "Native Apple TV app for browsing Stremio-compatible catalogs and playing streams.",
             license: "GPL-3.0"
         )
@@ -7189,6 +7488,7 @@ private struct LicensesAttributionsSheet: View {
                         )
                 }
                 .buttonStyle(PosterCardButtonStyle())
+                .nuvioFocusable()
                 .focused($closeFocused)
                 .focusEffectDisabledIfAvailable()
             }
@@ -7346,6 +7646,7 @@ private struct SMBServerRow: View {
                 }
             }
             .buttonStyle(PosterCardButtonStyle())
+            .nuvioFocusable()
             .focused($isFocused)
             .focusEffectDisabledIfAvailable()
             .entryLockable()
@@ -7451,6 +7752,7 @@ private struct SMBRowButton: View {
         }
         .buttonStyle(PosterCardButtonStyle())
         .focusEffectDisabledIfAvailable()
+        .nuvioFocusable()
         .focused($isFocused)
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.5)
@@ -7472,6 +7774,7 @@ private struct SMBDeleteButton: View {
         }
         .buttonStyle(PosterCardButtonStyle())
         .focusEffectDisabledIfAvailable()
+        .nuvioFocusable()
         .focused($isFocused)
     }
 }
@@ -7501,6 +7804,7 @@ private struct SMBDialogButton: View {
                 )
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .disabled(isPrimary && !enabled)
@@ -7921,6 +8225,7 @@ private struct JellyfinServerRow: View {
                 }
             }
             .buttonStyle(PosterCardButtonStyle())
+            .nuvioFocusable()
             .focused($isFocused)
             .focusEffectDisabledIfAvailable()
             .entryLockable()
@@ -8886,6 +9191,7 @@ private struct SyncedAddonSettingsRow: View {
             }
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .entryLockable()
@@ -8962,6 +9268,7 @@ private struct StreamBadgePackSettingsRow: View {
                 }
             }
             .buttonStyle(PosterCardButtonStyle())
+            .nuvioFocusable()
             .focused($isFocused)
             .focusEffectDisabledIfAvailable()
             .entryLockable()
@@ -8987,7 +9294,7 @@ private struct StreamBadgePackSettingsRow: View {
 /// Chevron button for moving an add-on up/down in the priority order.
 private struct AddonReorderButton: View {
     let systemImage: String
-    let disabled: Bool
+    var disabled: Bool = false
     let action: () -> Void
 
     @FocusState private var focused: Bool
@@ -9005,6 +9312,7 @@ private struct AddonReorderButton: View {
         }
         .buttonStyle(PosterCardButtonStyle())
         .disabled(disabled)
+        .nuvioFocusable()
         .focused($focused)
         .focusEffectDisabledIfAvailable()
         .animation(.easeOut(duration: 0.12), value: focused)
@@ -9041,7 +9349,8 @@ private struct HomeCatalogOrderSection: View {
                         canMoveUp: index > 0,
                         canMoveDown: index < rows.count - 1,
                         onToggle: { setEnabled(row, isEnabled: !(enabledByRowId[row.id] ?? true)) },
-                        onMove: { up in move(index, up: up) }
+                        onMove: { up in move(index, up: up) },
+                        onMoveToEdge: { top in moveToEdge(index, top: top) }
                     )
                 }
             }
@@ -9064,7 +9373,8 @@ private struct HomeCatalogOrderSection: View {
     private func reload() {
         rows = layoutVisibleHomeCatalogRows()
         enabledByRowId = Dictionary(
-            uniqueKeysWithValues: rows.map { ($0.id, TVHomeCatalogOrder.isRowEnabled($0)) }
+            rows.map { ($0.id, TVHomeCatalogOrder.isRowEnabled($0)) },
+            uniquingKeysWith: { first, _ in first }
         )
     }
 
@@ -9081,6 +9391,21 @@ private struct HomeCatalogOrderSection: View {
         let target = up ? index - 1 : index + 1
         guard rows.indices.contains(index), rows.indices.contains(target) else { return }
         rows.swapAt(index, target)
+        persistOrder()
+    }
+
+    /// Jumps a row to the very top or bottom. With a long catalog list, stepping
+    /// one position at a time is the slowest possible way to reorder.
+    private func moveToEdge(_ index: Int, top: Bool) {
+        guard rows.indices.contains(index) else { return }
+        var updated = rows
+        let row = updated.remove(at: index)
+        updated.insert(row, at: top ? 0 : updated.count)
+        rows = updated
+        persistOrder()
+    }
+
+    private func persistOrder() {
         TVHomeCatalogOrder.save(rows.map(\.id))
         TVHomeCatalogOrder.writeSnapshotRows(rows)
         NuvioSyncManager.current?.noteHomeCatalogSettingsChangedLocally()
@@ -9099,6 +9424,8 @@ private struct HomeCatalogOrderRow: View {
     let canMoveDown: Bool
     let onToggle: () -> Void
     let onMove: (Bool) -> Void
+    /// true = jump to top, false = jump to bottom.
+    let onMoveToEdge: (Bool) -> Void
 
     @FocusState private var isFocused: Bool
 
@@ -9129,12 +9456,22 @@ private struct HomeCatalogOrderRow: View {
             }
             .buttonStyle(PosterCardButtonStyle())
             .disabled(!canToggle)
+            .nuvioFocusable()
             .focused($isFocused)
             .focusEffectDisabledIfAvailable()
             .entryLockable()
 
+            // Selecting the row already toggles visibility; this makes the
+            // affordance explicit rather than hidden behind the row press.
+            AddonReorderButton(
+                systemImage: isEnabled ? "eye" : "eye.slash",
+                disabled: !canToggle,
+                action: onToggle
+            )
+            AddonReorderButton(systemImage: "arrow.up.to.line", disabled: !canMoveUp) { onMoveToEdge(true) }
             AddonReorderButton(systemImage: "chevron.up", disabled: !canMoveUp) { onMove(true) }
             AddonReorderButton(systemImage: "chevron.down", disabled: !canMoveDown) { onMove(false) }
+            AddonReorderButton(systemImage: "arrow.down.to.line", disabled: !canMoveDown) { onMoveToEdge(false) }
         }
     }
 
@@ -9428,6 +9765,7 @@ private struct CollectionsGlassButton: View {
         }
         .buttonStyle(PosterCardButtonStyle())
         .disabled(disabled)
+        .nuvioFocusable()
         .focused($focused)
         .focusEffectDisabledIfAvailable()
         .animation(.easeOut(duration: 0.12), value: focused)
@@ -9606,6 +9944,7 @@ private struct StreamingServicesTemplateCard: View {
             .scaleEffect(isFocused ? 1.015 : 1)
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .animation(.easeOut(duration: 0.12), value: isFocused)
@@ -9719,6 +10058,7 @@ private struct CollectionTemplateSummaryCard: View {
             .scaleEffect(isFocused ? 1.015 : 1)
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .animation(.easeOut(duration: 0.12), value: isFocused)
@@ -10264,6 +10604,7 @@ private struct CollectionSettingsRow: View {
                 }
             }
             .buttonStyle(PosterCardButtonStyle())
+            .nuvioFocusable()
             .focused($isFocused)
             .focusEffectDisabledIfAvailable()
             .entryLockable()
@@ -10675,6 +11016,7 @@ private struct SettingsSearchStyleField: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(PosterCardButtonStyle())
+            .nuvioFocusable()
             .focused($isFocused)
             .focusEffectDisabledIfAvailable()
 
@@ -10746,6 +11088,7 @@ private struct CollectionChipButton: View {
                 )
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($focused)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(focused ? 1.05 : 1)
@@ -11163,6 +11506,7 @@ private struct CollectionEmojiChip: View {
                 .scaleEffect(focused ? 1.08 : 1)
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($focused)
         .focusEffectDisabledIfAvailable()
         .animation(.easeOut(duration: 0.12), value: focused)
@@ -11776,6 +12120,7 @@ private struct AddonSettingsRow: View {
             }
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .entryLockable()
@@ -11889,6 +12234,7 @@ private struct SettingsToggleRow: View {
             }
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .entryLockable()
@@ -11928,6 +12274,7 @@ private struct SettingsOptionRow: View {
             }
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .entryLockable()
@@ -11979,6 +12326,7 @@ private struct SettingsChoiceRow: View {
             }
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .entryLockable()
@@ -12034,6 +12382,7 @@ private struct SettingsStepperRow: View {
                 }
             }
         }
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
     }
@@ -12115,7 +12464,9 @@ private struct SettingsNativeTextFieldRow: View {
                 .focused($isFocused)
                 .focusEffectDisabledIfAvailable()
                 .submitLabel(.done)
+                #if !os(macOS)
                 .textInputAutocapitalization(.never)
+                #endif
                 .autocorrectionDisabled()
                 .onSubmit(onCommit)
                 .frame(width: fieldWidth, height: 48)
@@ -12163,6 +12514,9 @@ struct SettingsGlassTextField: View {
 
     var body: some View {
         ZStack(alignment: .leading) {
+            #if os(macOS)
+            macInlineField
+            #else
             HiddenSettingsTextField(
                 text: $text,
                 isEditing: $isEditing,
@@ -12184,10 +12538,30 @@ struct SettingsGlassTextField: View {
                 )
                 .padding(.horizontal, displayTextIsCentered ? 0 : 16)
                 .allowsHitTesting(false)
+            #endif
         }
         .frame(width: fieldWidth, height: 48)
         .modifier(GlassCapsule(focused: focused || isEditing))
     }
+
+    #if os(macOS)
+    @ViewBuilder
+    private var macInlineField: some View {
+        Group {
+            if isSecure {
+                SecureField(placeholder, text: $text, onCommit: onCommit)
+            } else {
+                TextField(placeholder, text: $text, onCommit: onCommit)
+            }
+        }
+        .textFieldStyle(.plain)
+        .font(.system(size: 20, weight: .semibold))
+        .foregroundColor(.white)
+        .multilineTextAlignment(centerDisplayText ? .center : .leading)
+        .frame(width: fieldWidth - (centerDisplayText ? 0 : 32))
+        .padding(.horizontal, centerDisplayText ? 0 : 16)
+    }
+    #endif
 
     private var displayText: String {
         guard !text.isEmpty else { return placeholder }
@@ -12199,6 +12573,94 @@ struct SettingsGlassTextField: View {
     }
 }
 
+#if os(macOS)
+/// AppKit counterpart of the off-screen field below. Search-style rows still
+/// need an invisible responder to collect keystrokes while the row itself draws
+/// the visible text.
+private struct HiddenSettingsTextField: NSViewRepresentable {
+    @Binding var text: String
+    @Binding var isEditing: Bool
+    var isSecure: Bool = false
+    var keyboardType: UIKeyboardType = .default
+    var onCommit: () -> Void = {}
+
+    func makeNSView(context: Context) -> NSTextField {
+        let textField = isSecure ? NSSecureTextField(frame: .zero) : NSTextField(frame: .zero)
+        textField.delegate = context.coordinator
+        textField.isBordered = false
+        textField.drawsBackground = false
+        textField.focusRingType = .none
+        textField.textColor = .clear
+        textField.cell?.usesSingleLineMode = true
+        return textField
+    }
+
+    func updateNSView(_ nsView: NSTextField, context: Context) {
+        context.coordinator.onCommit = onCommit
+        if nsView.stringValue != text {
+            nsView.stringValue = text
+        }
+
+        guard let window = nsView.window else { return }
+        let isFirstResponder = window.firstResponder === nsView.currentEditor()
+            || window.firstResponder === nsView
+        if isEditing, !isFirstResponder {
+            DispatchQueue.main.async {
+                window.makeFirstResponder(nsView)
+            }
+        } else if !isEditing, isFirstResponder {
+            window.makeFirstResponder(nil)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text, isEditing: $isEditing, onCommit: onCommit)
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        private let text: Binding<String>
+        private let isEditing: Binding<Bool>
+        var onCommit: () -> Void
+        private var committedCurrentEditingSession = false
+
+        init(text: Binding<String>, isEditing: Binding<Bool>, onCommit: @escaping () -> Void) {
+            self.text = text
+            self.isEditing = isEditing
+            self.onCommit = onCommit
+        }
+
+        func controlTextDidBeginEditing(_ notification: Notification) {
+            committedCurrentEditingSession = false
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            text.wrappedValue = field.stringValue
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard selector == #selector(NSResponder.insertNewline(_:)) else { return false }
+            commit(control as? NSTextField)
+            control.window?.makeFirstResponder(nil)
+            return true
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            commit(notification.object as? NSTextField)
+        }
+
+        private func commit(_ field: NSTextField?) {
+            if let field {
+                text.wrappedValue = field.stringValue
+            }
+            isEditing.wrappedValue = false
+            guard !committedCurrentEditingSession else { return }
+            committedCurrentEditingSession = true
+            onCommit()
+        }
+    }
+}
+#else
 private struct HiddenSettingsTextField: UIViewRepresentable {
     @Binding var text: String
     @Binding var isEditing: Bool
@@ -12290,6 +12752,7 @@ private struct HiddenSettingsTextField: UIViewRepresentable {
 private final class HiddenSettingsUITextField: UITextField {
     override var canBecomeFocused: Bool { false }
 }
+#endif
 
 private struct SettingsActionRow: View {
     let title: String
@@ -12318,6 +12781,7 @@ private struct SettingsActionRow: View {
             }
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .entryLockable()
@@ -12416,6 +12880,7 @@ private struct SettingsSwatchButton: View {
             }
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .entryLockable()
@@ -12496,6 +12961,7 @@ private struct SettingsMiniButton: View {
                 )
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .disabled(isAtBound)
@@ -12506,7 +12972,7 @@ private struct SettingsMiniButton: View {
 private extension View {
     @ViewBuilder
     func settingsGlass<S: InsettableShape>(shape: S, isProminent: Bool) -> some View {
-        if #available(tvOS 26.0, *) {
+        if #available(tvOS 26.0, macOS 26.0, *) {
             self
                 .background(isProminent ? Color.white.opacity(0.13) : Color.white.opacity(0.045), in: shape)
                 .glassEffect(.regular, in: shape)
@@ -12544,7 +13010,7 @@ private struct SettingsSearchGlassBackground<S: InsettableShape>: ViewModifier {
     func body(content: Content) -> some View {
         if filled {
             content.background(Color.white, in: shape)
-        } else if #available(tvOS 26.0, *) {
+        } else if #available(tvOS 26.0, macOS 26.0, *) {
             content.glassEffect(.regular, in: shape)
         } else {
             content.background(.ultraThinMaterial, in: shape)

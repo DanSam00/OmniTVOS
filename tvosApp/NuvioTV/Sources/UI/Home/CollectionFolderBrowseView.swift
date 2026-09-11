@@ -109,9 +109,17 @@ struct CollectionFolderBrowseView: View {
         return []
     }
 
+    /// Sports and live-TV folders declare LANDSCAPE, and their artwork is
+    /// fixture/channel imagery that a portrait crop ruins.
+    private var tileShape: CollectionTileShape { folder.tileShape }
+
+    private var tileSize: (width: CGFloat, height: CGFloat) {
+        CollectionFolderGridMetrics.tileSize(for: tileShape)
+    }
+
     private var columns: [GridItem] {
         [GridItem(
-            .adaptive(minimum: CollectionFolderGridMetrics.posterWidth, maximum: CollectionFolderGridMetrics.posterWidth),
+            .adaptive(minimum: tileSize.width, maximum: tileSize.width),
             spacing: CollectionFolderGridMetrics.posterGap,
             alignment: .top
         )]
@@ -475,6 +483,7 @@ struct CollectionFolderBrowseView: View {
                 ForEach(displayedGridItems) { item in
                     CollectionFolderResultCard(
                         meta: item,
+                        tileShape: tileShape,
                         externalFocus: $focusedItemID,
                         isWatched: isTitleWatched(item),
                         onLongPress: { onLongPress(item) }
@@ -995,6 +1004,7 @@ private struct CollectionFolderTabButton: View {
                 )
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(isFocused ? 1.08 : 1.0)
@@ -1020,6 +1030,7 @@ private struct CollectionFolderTabButton: View {
 /// Poster card chrome matching Search / Library grids (Tabs view mode).
 struct CollectionFolderResultCard: View {
     let meta: NuvioMeta
+    var tileShape: CollectionTileShape = .poster
     var externalFocus: FocusState<String?>.Binding? = nil
     var isWatched: Bool? = nil
     var onLongPress: (() -> Void)? = nil
@@ -1040,14 +1051,22 @@ struct CollectionFolderResultCard: View {
         RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
     }
 
+    private var tileSize: (width: CGFloat, height: CGFloat) {
+        CollectionFolderGridMetrics.tileSize(for: tileShape)
+    }
+
     var body: some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 12) {
                 CachedPosterArtwork(
-                    urlString: meta.posterUrl,
-                    width: CollectionFolderGridMetrics.posterWidth,
-                    height: CollectionFolderGridMetrics.posterHeight,
-                    maximumWidth: CollectionFolderGridMetrics.posterWidth
+                    // A landscape tile wants wide art: the fixture/channel
+                    // backdrop first, with the poster only as a last resort.
+                    urlString: tileShape == .landscape
+                        ? (meta.backgroundUrl ?? meta.posterUrl)
+                        : meta.posterUrl,
+                    width: tileSize.width,
+                    height: tileSize.height,
+                    maximumWidth: tileSize.width
                 ) {
                     ZStack {
                         Rectangle().fill(Color.white.opacity(0.07))
@@ -1056,10 +1075,7 @@ struct CollectionFolderResultCard: View {
                             .foregroundColor(.white.opacity(0.25))
                     }
                 }
-                .frame(
-                    width: CollectionFolderGridMetrics.posterWidth,
-                    height: CollectionFolderGridMetrics.posterHeight
-                )
+                .frame(width: tileSize.width, height: tileSize.height)
                 .clipShape(shape)
                 .modifier(
                     LiquidGlassCardModifier(
@@ -1097,12 +1113,13 @@ struct CollectionFolderResultCard: View {
                             .foregroundColor(.white.opacity(0.45))
                             .lineLimit(1)
                     }
-                    .frame(width: CollectionFolderGridMetrics.posterWidth, alignment: .leading)
+                    .frame(width: tileSize.width, alignment: .leading)
                 }
             }
             .scaleEffect(focused ? 1.06 : 1.0)
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($focused)
         .modifier(ExternalFocusBinding(binding: externalFocus, id: meta.id))
         .focusEffectDisabledIfAvailable()

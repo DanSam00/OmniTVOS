@@ -148,7 +148,11 @@ enum ContinueWatchingBuilder {
         }
 
         // Only the first page is persisted; it is what a cold start renders.
-        ContinueWatchingStore.replaceAll(page.items)
+        // Derived re-materialisation of what was just read from this store. It
+        // must still reach the UI — Home builds its row from this notification —
+        // but must not be pushed back to the account, which re-entered this
+        // builder and span a sync loop.
+        ContinueWatchingStore.replaceAll(page.items, origin: .rematerialisation)
         diagnostic = "\(reason): ledger \(WatchProgressLedger.records().count), "
             + "candidates \(candidates.count), seeds \(seeds.count), plan \(plan.count), "
             + "page 1 built \(page.items.count), showing \(ContinueWatchingStore.items().count), "

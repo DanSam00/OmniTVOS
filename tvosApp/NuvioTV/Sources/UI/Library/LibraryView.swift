@@ -160,6 +160,16 @@ public struct LibraryView: View {
                         }
 
                         FilterMenu(
+                            label: "\(L10n.string("library_filter_watched_label", fallback: "Watched")): \(viewModel.watchedFilter.localizedTitle)"
+                        ) {
+                            ForEach(LibraryViewModel.WatchedFilter.allCases) { option in
+                                Button { viewModel.watchedFilter = option } label: {
+                                    menuItem(option.localizedTitle, selected: viewModel.watchedFilter == option)
+                                }
+                            }
+                        }
+
+                        FilterMenu(
                             label: "\(L10n.string("library_filter_genre", fallback: "Genre")): \(viewModel.genreFilter ?? L10n.string("library_type_all", fallback: "All"))"
                         ) {
                             Button { viewModel.genreFilter = nil } label: {
@@ -692,6 +702,7 @@ struct LibraryItemButton: View {
             .scaleEffect(showsFocusedAppearance ? 1.06 : 1.0)
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .modifier(ExternalFocusBinding(binding: externalFocus, id: item.id))
         .focusEffectDisabledIfAvailable()
@@ -777,6 +788,7 @@ struct SourceModeChip: View {
                 )
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($focused)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(focused ? 1.05 : 1.0)

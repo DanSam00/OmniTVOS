@@ -14,7 +14,7 @@ import SwiftUI
 import UIKit
 #endif
 
-#if os(tvOS)
+#if os(tvOS) || os(macOS)
 /// Plays a remote animated image (GIF) when `isActive` is true.
 struct AnimatedRemoteGIFView: View {
     let urlString: String
@@ -100,6 +100,120 @@ private final class DecodedAnimatedImage {
 /// Advances frames with a display-linked timer using each frame's real delay.
 /// Avoids `UIImage.animatedImage`, which equalizes frame times and was also
 /// padded with a `max(total, count * 0.1)` floor that made GIFs play slow.
+#if os(macOS)
+/// AppKit has no `UIImageView`, and `CADisplayLink` is constructed from the
+/// hosting view rather than directly. Frames are pushed straight to the backing
+/// layer's `contents`, which is what `UIImageView` does internally anyway.
+private final class FrameAccurateGIFUIView: NSView {
+    var contentMode: NSView.ContentMode = .scaleAspectFill {
+        didSet { layer?.contentsGravity = contentMode.contentsGravity }
+    }
+
+    private var decoded: DecodedAnimatedImage?
+    private var frameIndex = 0
+    private var displayLink: CADisplayLink?
+    private var frameElapsed: CFTimeInterval = 0
+    private var lastTimestamp: CFTimeInterval = 0
+    private var wantsPlaying = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.masksToBounds = true
+        layer?.contentsGravity = contentMode.contentsGravity
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        wantsLayer = true
+        layer?.masksToBounds = true
+        layer?.contentsGravity = contentMode.contentsGravity
+    }
+
+    func setDecoded(_ decoded: DecodedAnimatedImage?, playing: Bool) {
+        let sameInstance = self.decoded === decoded
+        self.decoded = decoded
+        wantsPlaying = playing
+
+        if !sameInstance {
+            frameIndex = 0
+            frameElapsed = 0
+            lastTimestamp = 0
+            show(decoded?.frames.first)
+        }
+
+        if playing, let decoded, decoded.isAnimated {
+            startDisplayLink()
+        } else {
+            stopDisplayLink()
+            if let decoded, !decoded.frames.isEmpty {
+                // Freeze on first frame when not playing.
+                show(decoded.frames[0])
+                frameIndex = 0
+                frameElapsed = 0
+            }
+        }
+    }
+
+    deinit {
+        displayLink?.invalidate()
+    }
+
+    private func show(_ image: NSImage?) {
+        layer?.contents = image?.shimCGImage
+    }
+
+    private func startDisplayLink() {
+        guard displayLink == nil, window != nil else { return }
+        let link = displayLink(target: self, selector: #selector(tick(_:)))
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+        lastTimestamp = 0
+    }
+
+    private func stopDisplayLink() {
+        displayLink?.invalidate()
+        displayLink = nil
+        lastTimestamp = 0
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // The link can only be created once the view has a window to drive it.
+        if window == nil {
+            stopDisplayLink()
+        } else if wantsPlaying, let decoded, decoded.isAnimated {
+            startDisplayLink()
+        }
+    }
+
+    @objc private func tick(_ link: CADisplayLink) {
+        guard wantsPlaying, let decoded, decoded.isAnimated else { return }
+        let frames = decoded.frames
+        let delays = decoded.delays
+        guard frames.count == delays.count, !frames.isEmpty else { return }
+
+        if lastTimestamp == 0 {
+            lastTimestamp = link.timestamp
+            return
+        }
+        let dt = link.timestamp - lastTimestamp
+        lastTimestamp = link.timestamp
+        // Ignore huge gaps (backgrounding / hitch) so we don't skip a full loop.
+        frameElapsed += min(dt, 0.25)
+
+        var safety = 0
+        while safety < frames.count {
+            safety += 1
+            let delay = max(delays[frameIndex], 0.01)
+            if frameElapsed < delay { break }
+            frameElapsed -= delay
+            frameIndex = (frameIndex + 1) % frames.count
+            show(frames[frameIndex])
+        }
+    }
+}
+#else
 private final class FrameAccurateGIFUIView: UIImageView {
     private var decoded: DecodedAnimatedImage?
     private var frameIndex = 0
@@ -179,11 +293,33 @@ private final class FrameAccurateGIFUIView: UIImageView {
     }
 }
 
+#endif
+
 private struct FrameAccurateGIFView: UIViewRepresentable {
     let decoded: DecodedAnimatedImage
     var isPlaying: Bool
     var contentMode: UIView.ContentMode = .scaleAspectFill
 
+    #if os(macOS)
+    func makeNSView(context: Context) -> FrameAccurateGIFUIView {
+        let view = FrameAccurateGIFUIView()
+        view.contentMode = contentMode
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.setContentHuggingPriority(.defaultLow, for: .vertical)
+        return view
+    }
+
+    func updateNSView(_ nsView: FrameAccurateGIFUIView, context: Context) {
+        nsView.contentMode = contentMode
+        nsView.setDecoded(decoded, playing: isPlaying)
+    }
+
+    static func dismantleNSView(_ nsView: FrameAccurateGIFUIView, coordinator: ()) {
+        nsView.setDecoded(nil, playing: false)
+    }
+    #else
     func makeUIView(context: Context) -> FrameAccurateGIFUIView {
         let view = FrameAccurateGIFUIView()
         view.contentMode = contentMode
@@ -204,6 +340,7 @@ private struct FrameAccurateGIFView: UIViewRepresentable {
     static func dismantleUIView(_ uiView: FrameAccurateGIFUIView, coordinator: ()) {
         uiView.setDecoded(nil, playing: false)
     }
+    #endif
 }
 
 // MARK: - Cache + decode

@@ -348,7 +348,7 @@ public class ProfileManager {
 
     private static func sanitizedProfileName(_ name: String) -> String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let value = trimmed.isEmpty ? "Nuvio User" : trimmed
+        let value = trimmed.isEmpty ? "Omni User" : trimmed
         return String(value.prefix(maxProfileNameCharacters))
     }
 
@@ -672,7 +672,7 @@ public class ProfileViewModel: ObservableObject {
                 profiles = [
                     Profile(
                         id: "guest",
-                        name: "Nuvio Guest",
+                        name: "Omni Guest",
                         isPinProtected: false,
                         isAdmin: true,
                         avatarId: ""
@@ -690,7 +690,7 @@ public class ProfileViewModel: ObservableObject {
                 try manager.replaceProfiles([
                     Profile(
                         id: "guest",
-                        name: "Nuvio Guest",
+                        name: "Omni Guest",
                         isPinProtected: false,
                         isAdmin: true,
                         avatarId: ""
@@ -990,7 +990,7 @@ public class ProfileViewModel: ObservableObject {
     public func resetForSignedOut() {
         let guest = Profile(
             id: "guest",
-            name: "Nuvio Guest",
+            name: "Omni Guest",
             isPinProtected: false,
             isAdmin: true,
             avatarId: ""

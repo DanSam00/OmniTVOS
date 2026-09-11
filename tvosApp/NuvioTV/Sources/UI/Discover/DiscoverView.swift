@@ -145,20 +145,24 @@ struct DiscoverSection: View {
                 label: viewModel.type.title,
                 onFocusChange: { updateDiscoverFocus("filter:type", isFocused: $0) }
             ) {
-                ForEach(DiscoverType.allCases) { type in
+                ForEach(viewModel.availableTypes) { type in
                     Button { viewModel.setType(type) } label: {
                         menuItem(type.title, selected: viewModel.type == type)
                     }
                 }
             }
 
-            FilterMenu(
-                label: viewModel.sort.title,
-                onFocusChange: { updateDiscoverFocus("filter:sort", isFocused: $0) }
-            ) {
-                ForEach(DiscoverSort.allCases) { sort in
-                    Button { viewModel.setSort(sort) } label: {
-                        menuItem(sort.title, selected: viewModel.sort == sort)
+            // Catalogs come from the installed add-ons, so this list changes
+            // with the selected type (and is empty until manifests load).
+            if !viewModel.catalogs.isEmpty {
+                FilterMenu(
+                    label: viewModel.catalog?.name ?? L10n.string("tvos_discover_popular", fallback: "Popular"),
+                    onFocusChange: { updateDiscoverFocus("filter:sort", isFocused: $0) }
+                ) {
+                    ForEach(viewModel.catalogs) { catalog in
+                        Button { viewModel.setCatalog(catalog) } label: {
+                            menuItem(catalog.title, selected: viewModel.catalog == catalog)
+                        }
                     }
                 }
             }
@@ -324,6 +328,7 @@ struct FilterMenu<MenuContent: View>: View {
     var body: some View {
         Button { showOptions = true } label: { chipLabel }
             .buttonStyle(PosterCardButtonStyle())
+            .nuvioFocusable()
             .focused($focused)
             .focusEffectDisabledIfAvailable()
             .scaleEffect(focused ? 1.05 : 1.0)
@@ -449,6 +454,7 @@ private struct DiscoverCard: View {
             .scaleEffect(showsFocusedAppearance ? 1.06 : 1.0)
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($focused)
         .modifier(ExternalFocusBinding(binding: externalFocus, id: meta.id))
         .focusEffectDisabledIfAvailable()

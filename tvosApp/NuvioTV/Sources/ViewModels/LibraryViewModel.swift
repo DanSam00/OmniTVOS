@@ -8,6 +8,7 @@ public class LibraryViewModel: ObservableObject {
     @Published public var groupOption: GroupOption = .none
     @Published public var contentTypeFilter: String?
     @Published public var genreFilter: String?
+    @Published public var watchedFilter: WatchedFilter = .all
     /// Last focused card, kept here (outside the view, like
     /// `TVHomeStore.lastFocusedCardID`) so it survives the details push and
     /// returning restores that card instead of snapping to the top.
@@ -23,7 +24,10 @@ public class LibraryViewModel: ObservableObject {
     
     public enum SortOption: String, CaseIterable, Identifiable {
         case dateAdded = "Date Added"
+        case lastWatched = "Last Watched"
+        case mostWatched = "Most Watched"
         case title = "Title"
+        case titleDescending = "Title Descending"
         case year = "Year"
         
         public var id: String { self.rawValue }
@@ -33,10 +37,36 @@ public class LibraryViewModel: ObservableObject {
             switch self {
             case .dateAdded:
                 return L10n.string("library_sort_added_desc", fallback: "Date Added")
+            case .lastWatched:
+                return L10n.string("library_sort_last_watched", fallback: "Last Watched")
+            case .mostWatched:
+                return L10n.string("library_sort_most_watched", fallback: "Most Watched")
             case .title:
-                return L10n.string("library_sort_title_asc", fallback: "Title")
+                return L10n.string("library_sort_title_asc", fallback: "A-Z")
+            case .titleDescending:
+                return L10n.string("library_sort_title_desc", fallback: "Z-A")
             case .year:
                 return L10n.string("library_filter_year", fallback: "Year")
+            }
+        }
+    }
+
+    /// Watched-state filter, mirroring the Watched / Not Watched tabs.
+    public enum WatchedFilter: String, CaseIterable, Identifiable {
+        case all = "All"
+        case watched = "Watched"
+        case notWatched = "Not Watched"
+
+        public var id: String { self.rawValue }
+
+        public var localizedTitle: String {
+            switch self {
+            case .all:
+                return L10n.string("library_type_all", fallback: "All")
+            case .watched:
+                return L10n.string("library_filter_watched", fallback: "Watched")
+            case .notWatched:
+                return L10n.string("library_filter_not_watched", fallback: "Not Watched")
             }
         }
     }
@@ -215,23 +245,66 @@ public class LibraryViewModel: ObservableObject {
         }
     }
     
+    /// Latest watch timestamp per meta id. An episode mark counts for its show,
+    /// so a series reads as watched from any episode.
+    private static func latestWatchedDates() -> [String: Date] {
+        var result: [String: Date] = [:]
+        for entry in WatchedStore.items() {
+            let id = entry.meta.id
+            if let existing = result[id], existing >= entry.watchedAt { continue }
+            result[id] = entry.watchedAt
+        }
+        return result
+    }
+
     public var sortedAndGroupedItems: [String: [StremioMeta]] {
         var result: [String: [StremioMeta]] = [:]
         
+        // Most recent watch per title, for the Last Watched sort and the
+        // watched filter. Built once per pass rather than per comparison.
+        let watchedAtByMetaId = Self.latestWatchedDates()
+
         let filtered = items.filter { item in
             let matchesType = contentTypeFilter == nil || item.contentType == contentTypeFilter
             let matchesGenre = genreFilter == nil || item.genres?.contains(where: {
                 $0.caseInsensitiveCompare(genreFilter ?? "") == .orderedSame
             }) == true
-            return matchesType && matchesGenre
+            let isWatched = watchedAtByMetaId[item.id] != nil
+            let matchesWatched: Bool
+            switch watchedFilter {
+            case .all:        matchesWatched = true
+            case .watched:    matchesWatched = isWatched
+            case .notWatched: matchesWatched = !isWatched
+            }
+            return matchesType && matchesGenre && matchesWatched
         }
 
         let sorted: [StremioMeta]
         switch sortOption {
         case .dateAdded:
             sorted = filtered
+        case .lastWatched:
+            // Never-watched titles sort last rather than jumbling in at epoch.
+            sorted = filtered.sorted {
+                let lhs = watchedAtByMetaId[$0.id] ?? .distantPast
+                let rhs = watchedAtByMetaId[$1.id] ?? .distantPast
+                if lhs == rhs { return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                return lhs > rhs
+            }
+        case .mostWatched:
+            // Counting began when this shipped, so untouched titles tie at zero
+            // and fall back to alphabetical rather than arbitrary order.
+            let counts = PlayCountStore.counts()
+            sorted = filtered.sorted {
+                let lhs = counts[$0.id] ?? 0
+                let rhs = counts[$1.id] ?? 0
+                if lhs == rhs { return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                return lhs > rhs
+            }
         case .title:
-            sorted = filtered.sorted { $0.name < $1.name }
+            sorted = filtered.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        case .titleDescending:
+            sorted = filtered.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedDescending }
         case .year:
             sorted = filtered.sorted { ($0.releaseInfo ?? "") > ($1.releaseInfo ?? "") }
         }

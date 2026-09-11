@@ -207,6 +207,7 @@ struct CloudRow: View {
             .scaleEffect(showsFocusedAppearance ? 1.015 : 1)
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($isFocused)
         .modifier(ExternalFocusBinding(binding: externalFocus, id: focusId))
         .focusEffectDisabledIfAvailable()

@@ -157,6 +157,7 @@ struct PlayerEpisodesPanel: View {
                             }
                             .buttonStyle(PosterCardButtonStyle())
                             .focusEffectDisabledIfAvailable()
+                            .nuvioFocusable()
                             .focused($focusedID, equals: "empty")
                             .id("empty")
                         } else {
@@ -169,6 +170,7 @@ struct PlayerEpisodesPanel: View {
                                 }
                                 .buttonStyle(PosterCardButtonStyle())
                                 .focusEffectDisabledIfAvailable()
+                                .nuvioFocusable()
                                 .focused($focusedID, equals: episode.id)
                                 .id(episode.id)
                             }
@@ -294,6 +296,7 @@ struct PlayerSourcesPanel: View {
                             }
                             .buttonStyle(PosterCardButtonStyle())
                             .focusEffectDisabledIfAvailable()
+                            .nuvioFocusable()
                             .focused($focusedID, equals: "empty")
                             .id("empty")
                         } else {
@@ -312,6 +315,7 @@ struct PlayerSourcesPanel: View {
                                 }
                                 .buttonStyle(PosterCardButtonStyle())
                                 .focusEffectDisabledIfAvailable()
+                                .nuvioFocusable()
                                 .focused($focusedID, equals: stream.id)
                                 .id(stream.id)
                             }

@@ -8,7 +8,12 @@
 //
 
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
+#if canImport(AppKit)
+import AppKit
+#endif
 import Security
 
 @MainActor
@@ -406,7 +411,11 @@ final class AuthManager: ObservableObject {
     }
 
     private static var deviceName: String {
+        #if os(macOS)
+        Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+        #else
         UIDevice.current.name
+        #endif
     }
 
     private static func makeNonce() -> String {

@@ -301,6 +301,7 @@ struct NetflixSearchView: View {
                 .foregroundColor(dictateFocused ? .black : .white.opacity(0.75))
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($dictateFocused)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(dictateFocused ? 1.05 : 1.0)
@@ -602,6 +603,7 @@ struct NetflixSearchView: View {
                             .modifier(GlassChipBackground(filled: isFocused))
                     }
                     .buttonStyle(PosterCardButtonStyle())
+                    .nuvioFocusable()
                     .focused($focusedItemID, equals: focusID)
                     .focusEffectDisabledIfAvailable()
                     .disabled(overlayRestoreItemID != nil && overlayRestoreItemID != focusID)
@@ -719,6 +721,7 @@ struct NetflixSearchView: View {
                         .modifier(GlassChipBackground(filled: clearRecentFocused))
                     }
                     .buttonStyle(PosterCardButtonStyle())
+                    .nuvioFocusable()
                     .focused($clearRecentFocused)
                     .modifier(ExternalFocusBinding(binding: $focusedRecentSearchID, id: "recent:clear"))
                     .focusEffectDisabledIfAvailable()
@@ -795,6 +798,7 @@ private struct NetflixKeyboardKey: View {
             .modifier(GlassChipBackground(filled: focused))
         }
         .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
         .focused($focused)
         .modifier(ExternalFocusBinding(binding: externalFocus, id: focusID))
         .focusEffectDisabledIfAvailable()
