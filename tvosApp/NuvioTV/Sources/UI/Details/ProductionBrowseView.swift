@@ -139,8 +139,7 @@ private struct CompanyBrowseContent: View {
                     hero
 
                     if isLoading {
-                        ProgressView()
-                            .scaleEffect(1.6)
+                        BrandLoadingView(wordmarkWidth: 360)
                             .frame(maxWidth: .infinity, minHeight: 260)
                     } else if let errorMessage {
                         Text(errorMessage)
@@ -418,8 +417,7 @@ struct PersonBrowseView: View {
 
                 if isLoading {
                     Spacer()
-                    ProgressView()
-                        .scaleEffect(1.6)
+                    BrandLoadingView(wordmarkWidth: 360)
                         .frame(maxWidth: .infinity)
                     Spacer()
                 } else if titles.isEmpty {

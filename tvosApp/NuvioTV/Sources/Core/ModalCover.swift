@@ -1,8 +1,18 @@
 import SwiftUI
 
-/// `fullScreenCover` is unavailable on macOS, where a window-filling modal is
-/// spelled as a sheet. Both presentations are modal and dismiss the same way,
-/// so the shared UI names the intent and each platform supplies its own.
+/// `fullScreenCover` is unavailable on macOS, so the shared UI names the intent
+/// and each platform supplies its own presentation.
+///
+/// macOS cannot use a sheet here. A sheet is attached to the `NSWindow`, which
+/// puts it *outside* `MacTVCanvas` — so this app's fixed tvOS layouts, written
+/// for 1920×1080 points, are presented at neither the canvas's scale nor its
+/// size. The stream picker came out as a small floating panel showing nothing
+/// but one add-on's logo. An in-place overlay stays inside the canvas and fills
+/// it, which is what `fullScreenCover` does on tvOS.
+///
+/// Both call sites drive dismissal through their own closure and binding rather
+/// than `@Environment(\.dismiss)`, so nothing depends on this being a real
+/// presentation.
 extension View {
     @ViewBuilder
     func modalCover<Item: Identifiable, Content: View>(
@@ -11,7 +21,14 @@ extension View {
         @ViewBuilder content: @escaping (Item) -> Content
     ) -> some View {
         #if os(macOS)
-        sheet(item: item, onDismiss: onDismiss, content: content)
+        modifier(MacModalCover(isPresented: Binding(
+            get: { item.wrappedValue != nil },
+            set: { if !$0 { item.wrappedValue = nil } }
+        ), onDismiss: onDismiss) {
+            if let value = item.wrappedValue {
+                content(value)
+            }
+        })
         #else
         fullScreenCover(item: item, onDismiss: onDismiss, content: content)
         #endif
@@ -24,12 +41,37 @@ extension View {
         @ViewBuilder content: @escaping () -> Content
     ) -> some View {
         #if os(macOS)
-        sheet(isPresented: isPresented, onDismiss: onDismiss, content: content)
+        modifier(MacModalCover(isPresented: isPresented, onDismiss: onDismiss, content: content))
         #else
         fullScreenCover(isPresented: isPresented, onDismiss: onDismiss, content: content)
         #endif
     }
 }
+
+#if os(macOS)
+private struct MacModalCover<Cover: View>: ViewModifier {
+    @Binding var isPresented: Bool
+    var onDismiss: (() -> Void)?
+    @ViewBuilder var content: () -> Cover
+
+    func body(content base: Content) -> some View {
+        ZStack {
+            base
+
+            if isPresented {
+                content()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black.ignoresSafeArea())
+                    .transition(.opacity)
+                    .zIndex(1)
+            }
+        }
+        .onChange(of: isPresented) { _, presented in
+            if !presented { onDismiss?() }
+        }
+    }
+}
+#endif
 
 extension View {
     /// Opts a view into keyboard focus.

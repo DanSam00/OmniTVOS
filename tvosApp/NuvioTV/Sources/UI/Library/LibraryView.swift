@@ -354,10 +354,7 @@ public struct LibraryView: View {
     private var cloudContent: some View {
         if cloudViewModel.isLoading && cloudViewModel.items.isEmpty {
             centeredMessage {
-                ProgressView()
-                    .progressViewStyle(.circular)
-                    .tint(.white)
-                    .scaleEffect(1.6)
+                BrandLoadingView(wordmarkWidth: 360)
             }
         } else if let openItem = openCloudItem {
             cloudFileList(for: openItem)

@@ -95,7 +95,9 @@ struct DetailsScreen: View {
     var body: some View {
         ZStack {
             if viewModel.uiState.isLoading {
-                ProgressView()
+                // A bare ProgressView here was a single blue dot on a black
+                // screen. Use the wordmark sweep the rest of the app loads on.
+                BrandLoadingView(wordmarkWidth: 420)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let error = viewModel.uiState.error {
                 ErrorView(
@@ -157,12 +159,27 @@ struct DetailsScreen: View {
                     onCommentSelect: { comment in
                         expandedComment = comment
                     },
-                    onBack: handleBack
+                    onBack: handleBack,
+                    isStreamsPresented: $isStreamPickerPresented,
+                    onSelectStream: { stream, player in
+                        guard let meta = viewModel.uiState.meta else { return }
+                        PlaybackStartupTiming.start(title: meta.name)
+                        isStreamPickerPresented = false
+                        isPreparingPlayback = true
+                        playStream(stream, meta: meta, player: player)
+                    },
+                    streamsSubtitle: macStreamsSubtitle,
+                    includeDebrid: DebridResolver(store: ProfileSettings.current).isEnabled
                 )
                 // While the stream picker is open it sits on top as a full-screen
                 // overlay; disable the details content so the focus engine can't
-                // route focus to the (hidden) buttons behind it.
+                // route focus to the (hidden) buttons behind it. macOS shows the
+                // streams in this page's own rail, so it must stay live.
+                #if os(macOS)
+                .disabled(expandedComment != nil || isSmartPlaybackPending || isResolvingDebrid || isPreparingPlayback)
+                #else
                 .disabled(isStreamPickerPresented || expandedComment != nil || isSmartPlaybackPending || isResolvingDebrid || isPreparingPlayback)
+                #endif
                 #else
                 MobileDetailsContent(
                     uiState: viewModel.uiState,
@@ -204,11 +221,14 @@ struct DetailsScreen: View {
             #endif
         }
         .animation(.easeInOut(duration: 0.18), value: isStreamPickerPresented)
-        #if os(tvOS) || os(macOS)
+        #if os(tvOS)
         // Present sources in an isolated full-screen focus hierarchy. Keeping
         // this overlay inside the details screen's vertical ScrollView ancestry
         // lets tvOS apply focus-visibility corrections to the shared host,
         // occasionally translating the filters and stream panel below screen.
+        //
+        // macOS has no equivalent step: the same streams appear in the details
+        // rail, so the title stays on screen while you pick one.
         .modalCover(isPresented: $isStreamPickerPresented) {
             if let meta = viewModel.uiState.meta {
                 TvStreamPickerOverlay(
@@ -337,6 +357,14 @@ struct DetailsScreen: View {
             return "\(metaStreamId):\(video.season):\(video.episode)"
         }
         return video.id
+    }
+
+    /// Names what the rail's streams belong to, so a series does not just say
+    /// "Streams" with no indication of which episode.
+    private var macStreamsSubtitle: String? {
+        guard let episode = pendingEpisode else { return viewModel.uiState.meta?.name }
+        let number = "S\(episode.season)E\(episode.episode)"
+        return episode.title.isEmpty ? number : "\(number) · \(episode.title)"
     }
 
     private func startStreamFlow(streamId: String, type: String, reload: Bool, forceManualPicker: Bool = false) {
@@ -2346,7 +2374,36 @@ struct TvDetailsContent: View {
     @FocusState private var episodeFocus: String?
     /// The section that currently owns focus. Other sections expose only their
     /// remembered entry anchor, matching Settings' pre-spatial focus lock.
+    /// macOS shows streams in the rail rather than on a separate screen, so the
+    /// details page needs the picker's data and its selection callback.
+    var isStreamsPresented: Binding<Bool>? = nil
+    var onSelectStream: ((NuvioStream, ExternalPlayer?) -> Void)? = nil
+    var streamsSubtitle: String? = nil
+    var includeDebrid: Bool = false
+
     @State private var focusedDetailsSection: TvDetailsFocusSection = .actions
+    #if os(macOS)
+    /// macOS drives its own focus; see `MacDetailsFocus`.
+    @ObservedObject private var macFocus = MacDetailsFocus.shared
+    /// The rail's own state. The season lives here because the rail owns the
+    /// episode list on macOS; the tvOS episode strip is not rendered at all.
+    @State private var macRailSeason: Int?
+    /// The rail stays closed until Play opens it, so a series lands on the same
+    /// uncluttered page a movie does.
+    @State private var macRailOpen = false
+    @State private var macRailOptions: MacPickerOptionList?
+    @State private var macRailOptionIndex = 0
+    @AppStorage(SettingsKey.streamSortOption) private var macSortOption: StreamSortOption = .quality
+    @AppStorage(SettingsKey.streamResolutionFilter) private var macResolutionFilter: StreamResolutionFilter = .any
+    @AppStorage(SettingsKey.cachedOnlyStreams) private var macCachedOnly = false
+    @State private var macSelectedAddonId: String?
+    /// The scroll proxy lives inside the reader, but the key handler has to sit
+    /// on an ancestor of every control to receive the arrows at all.
+    @State private var macScrollProxy: ScrollViewProxy?
+    @ObservedObject private var keyRouter = MacKeyRouter.shared
+    /// This page's place in the router's stack.
+    @State private var macKeyToken: UUID?
+    #endif
     @State private var detailsFocusMoveGeneration = 0
     @State private var pendingPlayFocusGeneration: Int?
     /// Episode control to re-focus once the stream picker closes, captured when
@@ -2454,6 +2511,9 @@ struct TvDetailsContent: View {
 
                                 TvDetailsSummary(meta: meta, simkl: uiState.simklRatings)
 
+                                #if !os(macOS)
+                                // macOS lists episodes in the rail beside this
+                                // column instead, so both are on one page.
                                 if !episodes.isEmpty {
                                     TvDetailsEpisodes(
                                         meta: meta,
@@ -2483,6 +2543,7 @@ struct TvDetailsContent: View {
                                     .id(TvDetailsScrollID.episodesSection)
                                     .disabled(!isDetailsFocusReachable(.episodes))
                                 }
+                                #endif
 
                                 TvDetailsCastAndTrailer(
                                     meta: meta,
@@ -2513,6 +2574,7 @@ struct TvDetailsContent: View {
                                         title: L10n.string("settings_tmdb_module_more_like_this", fallback: "More Like This"),
                                         items: uiState.moreLikeThis,
                                         entryLocked: focusedDetailsSection != .related,
+                                        macFocusedIndex: macFocusedIndex(in: .related),
                                         onSelect: { item in
                                             onOpenTitle?(item.id, item.type)
                                         },
@@ -2616,6 +2678,9 @@ struct TvDetailsContent: View {
                         }
                         .scrollClipDisabledIfAvailable()
                         .coordinateSpace(name: "tv-details-scroll")
+                        #if os(macOS)
+                        .onAppear { macScrollProxy = scrollProxy }
+                        #endif
                     }
                 }
                 .onPreferenceChange(TvDetailsScrollOffsetKey.self) { minY in
@@ -2625,8 +2690,62 @@ struct TvDetailsContent: View {
                     }
                 }
             }
+            #if os(macOS)
+            .overlay(alignment: .trailing) { macRail() }
+            .overlay {
+                if let list = macRailOptions {
+                    MacPickerOptionsPanel(list: list, highlighted: macRailOptionIndex) { index in
+                        guard list.options.indices.contains(index) else { return }
+                        list.options[index].apply()
+                        macRailOptions = nil
+                    } onDismiss: {
+                        macRailOptions = nil
+                    }
+                    .transition(.opacity)
+                }
+            }
+            #endif
             .background(Color.black.ignoresSafeArea())
             .onExitCommand(perform: onBack)
+            #if os(macOS)
+            // Keys come from `MacKeyRouter`: this page is an overlay above a
+            // still-mounted Home, and nothing here holds SwiftUI focus, so
+            // `onMoveCommand` never fired for it.
+            .onAppear {
+                keyRouter.release(macKeyToken)
+                macKeyToken = keyRouter.claim()
+            }
+            .onDisappear {
+                keyRouter.release(macKeyToken)
+                macKeyToken = nil
+            }
+            .onChange(of: keyRouter.latest) { _, press in
+                guard let press, keyRouter.isFront(macKeyToken) else { return }
+                handleMacKey(press.key)
+            }
+            .onChange(of: macFocus.row) { _, row in
+                guard let anchor = macScrollAnchor(for: row) else { return }
+                withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
+                    macScrollProxy?.scrollTo(anchor, anchor: .top)
+                }
+            }
+            // The rail's lengths move under the caret: streams arrive
+            // progressively, a filter narrows the list, a season swaps it.
+            .onChange(of: uiState.streamsRevision) { _, _ in macPublishRailCounts() }
+            .onChange(of: uiState.streams.count) { _, _ in macPublishRailCounts() }
+            .onChange(of: macRailSeason) { _, _ in macPublishRailCounts() }
+            .onChange(of: macSelectedAddonId) { _, _ in macPublishRailCounts() }
+            .onChange(of: macResolutionFilter) { _, _ in macPublishRailCounts() }
+            .onChange(of: macSortOption) { _, _ in macPublishRailCounts() }
+            .onChange(of: macCachedOnly) { _, _ in macPublishRailCounts() }
+            .onChange(of: isStreamsPresented?.wrappedValue ?? false) { _, showingStreams in
+                macPublishRailCounts()
+                // Opening the streams should put the caret on them; closing
+                // them hands it back to the episode list it came from.
+                macFocus.focusRail()
+                MacDiagnostics.log("rail.mode \(showingStreams ? "streams" : "episodes")")
+            }
+            #endif
             // tvOS doesn't re-run default-focus when this content swaps in after
             // the async load finishes, so focus lands nowhere / off the Play
             // button. Move it onto Play explicitly once the content appears
@@ -2634,6 +2753,23 @@ struct TvDetailsContent: View {
             .onAppear {
                 focusedDetailsSection = .actions
                 DispatchQueue.main.async { actionFocus = .play }
+                #if os(macOS)
+                macFocus.begin(page: uiState.meta?.id ?? "")
+                macFocus.setCount(MacDetailsActionSlot.allCases.count, for: .actions)
+                macFocus.register(.actions) { index in
+                    switch MacDetailsActionSlot(rawValue: index) {
+                    case .play: macHandlePlay()
+                    case .watchlist: onWatchlistClick()
+                    case .watched: onWatchedClick()
+                    case .trailer: onTrailerClick()
+                    case nil: break
+                    }
+                }
+                macRailOpen = false
+                macFocus.register(.railHeader, activate: macActivateRailHeader)
+                macFocus.register(.railList, activate: macActivateRailRow)
+                macPublishRailCounts()
+                #endif
             }
             // Opening the stream picker disables this content, and on the way
             // back tvOS re-places focus geometrically — which is how leaving an
@@ -2649,6 +2785,17 @@ struct TvDetailsContent: View {
                     restoreEpisodeFocus(to: target, generation: restoreGeneration)
                 }
             }
+            #if os(macOS)
+            .onChange(of: uiState.moreLikeThis.count, initial: true) { _, count in
+                macFocus.begin(page: uiState.meta?.id ?? "")
+                macFocus.setCount(count, for: .related)
+                macFocus.register(.related) { index in
+                    guard uiState.moreLikeThis.indices.contains(index) else { return }
+                    let item = uiState.moreLikeThis[index]
+                    onOpenTitle?(item.id, item.type)
+                }
+            }
+            #endif
             .onChange(of: episodeFocus) { _, newValue in
                 // Restoration landed — lift the restriction.
                 if let newValue, newValue == restoreEpisodeKey {
@@ -2776,6 +2923,427 @@ struct TvDetailsContent: View {
         return order
     }
 
+    /// The caret's position within a row, or nil when it is elsewhere — and
+    /// always nil off macOS, where the focus engine does this itself.
+    private func macFocusedIndex(in row: MacDetailsRow) -> Int? {
+        #if os(macOS)
+        return macFocus.row == row ? macFocus.index : nil
+        #else
+        return nil
+        #endif
+    }
+
+    #if os(macOS)
+    // MARK: - Rail
+
+    private var macRailMode: MacRailMode {
+        (isStreamsPresented?.wrappedValue ?? false) ? .streams : .episodes
+    }
+
+    private var macSeasons: [Int] {
+        guard let meta = uiState.meta else { return [] }
+        return Array(Set(sortedEpisodes(meta).map(\.season))).sorted {
+            (seasonSortKey($0), $0) < (seasonSortKey($1), $1)
+        }
+    }
+
+    /// The season showing in the rail. Defaults to where the viewer left off.
+    private var macActiveSeason: Int {
+        if let macRailSeason, macSeasons.contains(macRailSeason) { return macRailSeason }
+        guard let meta = uiState.meta else { return 1 }
+        let episodes = sortedEpisodes(meta)
+        let continueItem = currentContinueWatchingItem(for: meta, revision: progressRevision)
+        let target = playTarget(for: meta, episodes: episodes, continueItem: continueItem)
+        return target.episode?.season ?? macSeasons.first ?? 1
+    }
+
+    private var macSeasonEpisodes: [NuvioVideo] {
+        guard let meta = uiState.meta else { return [] }
+        return sortedEpisodes(meta)
+            .filter { $0.season == macActiveSeason }
+            .sorted { $0.episode < $1.episode }
+    }
+
+    private var macDisplayedStreams: [NuvioStream] {
+        StreamPickerListBuilder.displayedStreams(
+            streams: uiState.streams,
+            groups: uiState.streamGroups,
+            selectedAddonId: macSelectedAddonId,
+            sortOption: macSortOption,
+            includeDebrid: includeDebrid,
+            cachedOnly: macCachedOnly,
+            resolutionFilter: macResolutionFilter
+        )
+    }
+
+    /// Add-ons that actually returned something, so the filter never offers a
+    /// provider with nothing behind it.
+    private var macProviderGroups: [AddonStreamGroup] {
+        uiState.streamGroups.filter { !$0.streams.isEmpty || $0.isLoading }
+    }
+
+    private var macRailHeaderItems: [MacRailHeaderItem] {
+        switch macRailMode {
+        case .episodes:
+            var items = [MacRailHeaderItem(symbol: "chevron.left")]
+            guard macSeasons.count > 1 else { return items }
+            items += macSeasons.map { season in
+                MacRailHeaderItem(
+                    label: macSeasonTitle(season),
+                    isActive: season == macActiveSeason
+                )
+            }
+            return items
+        case .streams:
+            var items = [MacRailHeaderItem(symbol: "chevron.left")]
+            items.append(MacRailHeaderItem(
+                label: L10n.format(
+                    "details_provider_format",
+                    fallback: "Provider: %@",
+                    macSelectedAddonId.flatMap { id in
+                        macProviderGroups.first { $0.addonId == id }?.displayName
+                    } ?? L10n.string("action_all", fallback: "All")
+                ),
+                isActive: macSelectedAddonId != nil
+            ))
+            items.append(MacRailHeaderItem(
+                label: L10n.format("details_resolution_format", fallback: "Res: %@", macResolutionFilter.title),
+                isActive: macResolutionFilter != .any
+            ))
+            items.append(MacRailHeaderItem(
+                label: L10n.format("details_sort_format", fallback: "Sort: %@", L10n.optionLabel(macSortOption.rawValue)),
+                isActive: macSortOption != .quality
+            ))
+            return items
+        }
+    }
+
+    private var macRailRows: [MacRailRow] {
+        switch macRailMode {
+        case .episodes:
+            return macSeasonEpisodes.map(macEpisodeRow)
+        case .streams:
+            return macDisplayedStreams.map(macStreamRow)
+        }
+    }
+
+    /// What the rail is actually about to draw, as opposed to what the filter
+    /// thinks it selected — the two disagreed in testing.
+    private func macTraceRails() {
+        switch macRailMode {
+        case .episodes:
+            let all = uiState.meta.map(sortedEpisodes) ?? []
+            MacDiagnostics.log(
+                "rail.episodes season=\(macActiveSeason) stored=\(macRailSeason.map(String.init) ?? "nil")"
+                    + " seasons=\(macSeasons) allSeasons=\(all.map(\.season))"
+                    + " shown=\(macSeasonEpisodes.count)"
+                    + " titles=\(macSeasonEpisodes.prefix(3).map(\.title))"
+            )
+        case .streams:
+            let rows = macRailRows
+            MacDiagnostics.log(
+                "rail.streams res=\(macResolutionFilter.rawValue) in=\(uiState.streams.count)"
+                    + " out=\(rows.count)"
+                    + " rows=\(rows.prefix(4).map { "\($0.badge ?? "-")|\($0.title.prefix(28))" })"
+            )
+        }
+    }
+
+    private func macEpisodeRow(_ video: NuvioVideo) -> MacRailRow {
+        let isWatched = uiState.meta.map {
+            WatchedStore.containsEpisode(meta: $0, season: video.season, episode: video.episode)
+        } ?? false
+        let hasAired = EpisodeReleasePolicy.hasAired(video.released)
+        return MacRailRow(
+            id: video.id,
+            thumbnailURL: video.thumbnail.flatMap(URL.init(string:)),
+            title: "\(video.episode). \(video.title)",
+            subtitle: macReleaseLabel(video.released),
+            badge: isWatched
+                ? L10n.string("details_watched", fallback: "Watched")
+                : (hasAired ? nil : L10n.string("calendar_upcoming", fallback: "Upcoming")),
+            badgeTint: isWatched ? Color.yellow : Color.green.opacity(0.8),
+            progress: macContinueProgress(for: video)
+        )
+    }
+
+    private func macStreamRow(_ stream: NuvioStream) -> MacRailRow {
+        let resolution = StreamPickerListBuilder.resolution(for: stream)
+        return MacRailRow(
+            id: stream.id,
+            leading: stream.addonName,
+            title: stream.name?.replacingOccurrences(of: "\n", with: " ") ?? "Stream",
+            subtitle: stream.filename ?? stream.description?.replacingOccurrences(of: "\n", with: " "),
+            badge: resolution > 0 ? macResolutionLabel(resolution) : nil
+        )
+    }
+
+    private func macSeasonTitle(_ season: Int) -> String {
+        season <= 0
+            ? L10n.string("details_specials", fallback: "Specials")
+            : L10n.format("details_season_format", fallback: "Season %@", String(season))
+    }
+
+    private func macContinueProgress(for video: NuvioVideo) -> Double? {
+        guard let meta = uiState.meta,
+              let item = currentContinueWatchingItem(for: meta, revision: progressRevision),
+              !item.isUpNextEntry,
+              let numbers = item.episodeNumbers,
+              numbers.season == video.season,
+              numbers.episode == video.episode
+        else { return nil }
+        return item.progress
+    }
+
+    private func macResolutionLabel(_ height: Int) -> String {
+        switch height {
+        case 2160...: return "4K"
+        case 1440..<2160: return "2K"
+        case 1080..<1440: return "1080p"
+        case 720..<1080: return "720p"
+        default: return "SD"
+        }
+    }
+
+    private func macReleaseLabel(_ released: String?) -> String? {
+        guard let released, !released.isEmpty else { return nil }
+        let day = DateFormatter()
+        day.locale = Locale(identifier: "en_US_POSIX")
+        day.dateFormat = "yyyy-MM-dd"
+        guard let date = day.date(from: String(released.prefix(10))) else { return nil }
+        let display = DateFormatter()
+        display.dateStyle = .medium
+        display.timeStyle = .none
+        return display.string(from: date)
+    }
+
+    private func macActivateRailHeader(_ index: Int) {
+        switch macRailMode {
+        case .episodes:
+            // Index 0 is the close control; the seasons follow it.
+            guard index > 0 else {
+                macCloseRail()
+                return
+            }
+            let seasonIndex = index - 1
+            guard macSeasons.indices.contains(seasonIndex) else { return }
+            macRailSeason = macSeasons[seasonIndex]
+            macPublishRailCounts()
+        case .streams:
+            switch index {
+            case 0:
+                // Back out of the streams: to the episode list on a series, or
+                // off the page entirely on a movie.
+                if macHasEpisodes {
+                    isStreamsPresented?.wrappedValue = false
+                } else {
+                    macCloseRail()
+                }
+            case 1: macOpenRailOptions(macProviderOptionList())
+            case 2: macOpenRailOptions(macResolutionOptionList())
+            default: macOpenRailOptions(macSortOptionList())
+            }
+        }
+    }
+
+    private func macActivateRailRow(_ index: Int) {
+        switch macRailMode {
+        case .episodes:
+            guard macSeasonEpisodes.indices.contains(index) else { return }
+            onEpisodeSelected(macSeasonEpisodes[index])
+        case .streams:
+            let streams = macDisplayedStreams
+            guard streams.indices.contains(index) else { return }
+            onSelectStream?(streams[index], nil)
+        }
+    }
+
+    /// The rail owns the season and the filters, so its row lengths change
+    /// under the caret as streams arrive or a filter narrows the list.
+    private func macPublishRailCounts() {
+        macFocus.setCount(macRailIsVisible ? macRailHeaderItems.count : 0, for: .railHeader)
+        macFocus.setCount(macRailIsVisible ? macRailRows.count : 0, for: .railList)
+        guard macRailIsVisible else { return }
+        macTraceRails()
+    }
+
+    private var macHasEpisodes: Bool { !(uiState.meta?.videos ?? []).isEmpty }
+
+    /// Nothing is listed until Play is pressed — then a series offers its
+    /// episodes and a movie goes straight to its streams.
+    private var macRailIsVisible: Bool {
+        macRailMode == .streams || macRailOpen
+    }
+
+    /// Play on macOS reveals the rail rather than starting playback blind: a
+    /// series shows its episodes to choose from, a movie its streams.
+    private func macHandlePlay() {
+        guard macHasEpisodes else {
+            onPlayClick()
+            return
+        }
+        macRailOpen = true
+        macPublishRailCounts()
+        macFocus.focusRail()
+        MacDiagnostics.log("rail.open episodes")
+    }
+
+    private func macCloseRail() {
+        macRailOpen = false
+        isStreamsPresented?.wrappedValue = false
+        macPublishRailCounts()
+        macFocus.row = .actions
+        macFocus.index = 0
+        MacDiagnostics.log("rail.close")
+    }
+
+    @ViewBuilder
+    private func macRail() -> some View {
+        if macRailIsVisible {
+            MacDetailsRail(
+                mode: macRailMode,
+                title: macRailTitle,
+                subtitle: macRailMode == .streams ? streamsSubtitle : nil,
+                headerItems: macRailHeaderItems,
+                rows: macRailRows,
+                isLoading: macRailMode == .streams && uiState.isLoadingStreams,
+                emptyMessage: macRailEmptyMessage,
+                focusedHeaderIndex: macFocus.row == .railHeader ? macFocus.index : nil,
+                focusedRowIndex: macFocus.row == .railList ? macFocus.index : nil,
+                onHeaderTap: { index in
+                    macFocus.row = .railHeader
+                    macFocus.index = index
+                    macActivateRailHeader(index)
+                },
+                onRowTap: { index in
+                    macFocus.row = .railList
+                    macFocus.index = index
+                    macActivateRailRow(index)
+                }
+            )
+            .padding(.vertical, 70)
+            .padding(.trailing, MacRailMetrics.gutter)
+            .transition(.move(edge: .trailing).combined(with: .opacity))
+        }
+    }
+
+    private var macRailTitle: String {
+        switch macRailMode {
+        case .episodes:
+            return L10n.string("details_episodes", fallback: "Episodes")
+        case .streams:
+            return L10n.string("details_streams", fallback: "Streams")
+        }
+    }
+
+    private var macRailEmptyMessage: String? {
+        switch macRailMode {
+        case .episodes:
+            return L10n.string("details_no_episodes", fallback: "No episodes listed")
+        case .streams:
+            guard !uiState.isLoadingStreams else { return nil }
+            return L10n.string("details_no_streams", fallback: "No streams found")
+        }
+    }
+
+    private func macOpenRailOptions(_ list: MacPickerOptionList) {
+        macRailOptions = list
+        macRailOptionIndex = max(list.options.firstIndex(where: \.isSelected) ?? 0, 0)
+    }
+
+    private func macProviderOptionList() -> MacPickerOptionList {
+        var options = [MacPickerOption(
+            label: L10n.string("action_all", fallback: "All"),
+            isSelected: macSelectedAddonId == nil,
+            apply: { macSelectedAddonId = nil }
+        )]
+        options += macProviderGroups.map { group in
+            MacPickerOption(
+                label: group.isLoading ? "\(group.displayName)…" : group.displayName,
+                isSelected: macSelectedAddonId == group.addonId,
+                apply: { macSelectedAddonId = group.addonId }
+            )
+        }
+        return MacPickerOptionList(
+            title: L10n.string("details_filter_provider", fallback: "Provider"),
+            options: options
+        )
+    }
+
+    private func macResolutionOptionList() -> MacPickerOptionList {
+        MacPickerOptionList(
+            title: L10n.string("details_filter_resolution", fallback: "Resolution"),
+            options: StreamResolutionFilter.allCases.map { option in
+                MacPickerOption(
+                    label: option.title,
+                    isSelected: macResolutionFilter == option,
+                    apply: { macResolutionFilter = option }
+                )
+            }
+        )
+    }
+
+    private func macSortOptionList() -> MacPickerOptionList {
+        MacPickerOptionList(
+            title: L10n.string("details_sort_streams_by", fallback: "Sort streams by"),
+            options: StreamSortOption.allCases.map { option in
+                MacPickerOption(
+                    label: L10n.optionLabel(option.rawValue),
+                    isSelected: macSortOption == option,
+                    apply: { macSortOption = option }
+                )
+            }
+        )
+    }
+
+    private func handleMacKey(_ key: MacKey) {
+        if let list = macRailOptions {
+            handleMacOptionKey(key, list: list)
+            return
+        }
+        // The menu floats above this page, so it gets first refusal.
+        guard let direction = MoveCommandDirection(key) else {
+            if MacMenuState.shared.handleReturn() { return }
+            MacDiagnostics.log("details.activate row=\(macFocus.row) index=\(macFocus.index)")
+            macFocus.activateFocused()
+            return
+        }
+        if MacMenuState.shared.handleMove(direction) { return }
+        if !macFocus.move(direction) { MacMenuState.shared.open() }
+        MacDiagnostics.log(
+            "details.move dir=\(direction) row=\(macFocus.row) index=\(macFocus.index)"
+                + " rows=\(macFocus.availableRows.map(\.rawValue))"
+        )
+    }
+
+    private func handleMacOptionKey(_ key: MacKey, list: MacPickerOptionList) {
+        switch key {
+        case .up:
+            macRailOptionIndex = max(macRailOptionIndex - 1, 0)
+        case .down:
+            macRailOptionIndex = min(macRailOptionIndex + 1, list.options.count - 1)
+        case .left:
+            macRailOptions = nil
+        case .right:
+            break
+        case .activate:
+            guard list.options.indices.contains(macRailOptionIndex) else { return }
+            list.options[macRailOptionIndex].apply()
+            macRailOptions = nil
+        }
+    }
+
+    /// Where to scroll when keyboard focus moves to a row.
+    private func macScrollAnchor(for row: MacDetailsRow) -> String? {
+        switch row {
+        case .actions: return TvDetailsScrollID.topSection
+        case .related: return TvDetailsScrollID.moreLikeThisSection
+        // The rail scrolls itself; the left column stays where it is.
+        case .railHeader, .railList: return nil
+        }
+    }
+    #endif
+
     private func isDetailsFocusReachable(_ section: TvDetailsFocusSection) -> Bool {
         guard let currentIndex = detailsFocusOrder.firstIndex(of: focusedDetailsSection),
               let sectionIndex = detailsFocusOrder.firstIndex(of: section) else {
@@ -2786,7 +3354,17 @@ struct TvDetailsContent: View {
 
     // Give series more horizontal room so the episode cards aren't cramped.
     private func detailsWidth(_ proxy: GeometryProxy, hasEpisodes: Bool) -> CGFloat {
-        hasEpisodes ? min(proxy.size.width - 96, 2200) : min(proxy.size.width * 0.64, 1180)
+        #if os(macOS)
+        // The rail takes the right-hand side while it is open, so the column is
+        // whatever is left rather than the full-bleed width the tvOS episode
+        // strip needed.
+        if macRailIsVisible {
+            return max(proxy.size.width - MacRailMetrics.width - MacRailMetrics.gutter * 3, 520)
+        }
+        return min(proxy.size.width * 0.64, 1180)
+        #else
+        return hasEpisodes ? min(proxy.size.width - 96, 2200) : min(proxy.size.width * 0.64, 1180)
+        #endif
     }
 
     private func sortedEpisodes(_ meta: NuvioMeta) -> [NuvioVideo] {
@@ -3025,6 +3603,13 @@ private enum DetailsActionFocus: Hashable {
     case play, watchlist, watched, trailer
 }
 
+/// The action row's buttons by position, so the keyboard caret's index and the
+/// button that runs can never disagree. Only macOS navigates by it, but the
+/// shared action row names the type.
+enum MacDetailsActionSlot: Int, CaseIterable {
+    case play, watchlist, watched, trailer
+}
+
 private enum DetailsCastHeaderFocus: Hashable {
     case creatorAndCast, trailer
 }
@@ -3044,6 +3629,20 @@ private struct TvDetailsActionRow: View {
     let playEntryLocked: Bool
     let onFocus: () -> Void
 
+    #if os(macOS)
+    @ObservedObject private var macFocus = MacDetailsFocus.shared
+    #endif
+
+    /// True when the macOS caret is on this button. Always false on tvOS,
+    /// where the focus engine drives the same appearance.
+    private func isMacFocused(_ slot: MacDetailsActionSlot) -> Bool {
+        #if os(macOS)
+        return macFocus.isFocused(.actions, slot.rawValue)
+        #else
+        return false
+        #endif
+    }
+
     var body: some View {
         HStack(spacing: 26) {
             TvDetailsActionButton(
@@ -3054,6 +3653,7 @@ private struct TvDetailsActionRow: View {
                 isPrimary: true,
                 focus: focus,
                 tag: .play,
+                macIsFocused: isMacFocused(.play),
                 action: onPlayClick,
                 onFocus: onFocus,
                 longPressAction: onPlayLongPress
@@ -3072,6 +3672,7 @@ private struct TvDetailsActionRow: View {
                 isPrimary: false,
                 focus: focus,
                 tag: .watchlist,
+                macIsFocused: isMacFocused(.watchlist),
                 action: onWatchlistClick,
                 onFocus: onFocus
             )
@@ -3089,6 +3690,7 @@ private struct TvDetailsActionRow: View {
                 isPrimary: false,
                 focus: focus,
                 tag: .watched,
+                macIsFocused: isMacFocused(.watched),
                 action: onWatchedClick,
                 onFocus: onFocus
             )
@@ -3102,6 +3704,7 @@ private struct TvDetailsActionRow: View {
                 isPrimary: false,
                 focus: focus,
                 tag: .trailer,
+                macIsFocused: isMacFocused(.trailer),
                 action: onTrailerClick,
                 onFocus: onFocus
             )
@@ -3118,12 +3721,22 @@ private struct TvDetailsActionButton: View {
     let isPrimary: Bool
     var focus: FocusState<DetailsActionFocus?>.Binding
     let tag: DetailsActionFocus
+    /// Set by the parent on macOS, where nothing moves AppKit focus between
+    /// these buttons. A stored value re-renders; a focus binding does not.
+    var macIsFocused: Bool = false
     let action: () -> Void
     let onFocus: () -> Void
     var longPressAction: (() -> Void)? = nil
 
     @State private var didTriggerLongPress = false
-    private var isFocused: Bool { focus.wrappedValue == tag }
+
+    private var isFocused: Bool {
+        #if os(macOS)
+        return macIsFocused
+        #else
+        return focus.wrappedValue == tag
+        #endif
+    }
 
     var body: some View {
         Button(action: {
@@ -3550,6 +4163,9 @@ private struct TvDetailsRelatedRow: View {
     let title: String
     let items: [RelatedTitle]
     let entryLocked: Bool
+    /// Position of the macOS keyboard caret in this row, or nil when it is
+    /// somewhere else on the page.
+    var macFocusedIndex: Int? = nil
     let onSelect: (RelatedTitle) -> Void
     let onFocus: () -> Void
 
@@ -3581,6 +4197,7 @@ private struct TvDetailsRelatedRow: View {
                             if scrollIndex != index { scrollIndex = index }
                             onFocus()
                         },
+                        macFocusedCardKey: macFocusedIndex.flatMap { items.indices.contains($0) ? items[$0].id : nil },
                         layoutMode: homeLayout,
                         showPosterLabels: posterLabels,
                         smoothFocusAnimations: smoothFocus,
@@ -4480,36 +5097,51 @@ private enum TvEpisodeCardLayout {
 private struct TvSeasonPill: View {
     let title: String
     let isSelected: Bool
+    /// Driven by the page's focus model on macOS, where the engine that would
+    /// otherwise set `isFocused` does not exist.
+    var macIsFocused: Bool = false
     let onFocus: () -> Void
     let onMoveUp: () -> Void
     let action: () -> Void
 
     @FocusState private var isFocused: Bool
 
+    private var showsFocus: Bool {
+        #if os(macOS)
+        return macIsFocused
+        #else
+        return isFocused
+        #endif
+    }
+
     var body: some View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 30, weight: .semibold))
-                .foregroundColor(isSelected || isFocused ? .black : .white.opacity(0.66))
+                .foregroundColor(isSelected || showsFocus ? .black : .white.opacity(0.66))
                 .padding(.horizontal, 30)
                 .frame(height: 70)
-                .modifier(TvDetailsGlassBackground(filled: isSelected || isFocused, shape: Capsule()))
+                .modifier(TvDetailsGlassBackground(filled: isSelected || showsFocus, shape: Capsule()))
         }
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
-        .scaleEffect(isFocused ? 1.06 : 1)
-        .animation(.easeOut(duration: 0.14), value: isFocused)
+        .scaleEffect(showsFocus ? 1.06 : 1)
+        .animation(.easeOut(duration: 0.14), value: showsFocus)
         .animation(.easeOut(duration: 0.14), value: isSelected)
         .onChange(of: isFocused) { _, focused in
             if focused { onFocus() }
         }
+        #if !os(macOS)
+        // Nudges the tvOS focus engine off the pills. On macOS it would eat an
+        // arrow the page's own handler needs.
         .onMoveCommand { direction in
             if direction == .up {
                 onMoveUp()
             }
         }
+        #endif
     }
 }
 
@@ -4531,6 +5163,8 @@ private struct TvEpisodeCard: View {
     var onPlayManually: (() -> Void)? = nil
     var smartStreamSelection: Bool = false
     var focus: FocusState<String?>.Binding
+    /// Driven by the page's focus model on macOS; see `MacDetailsFocus`.
+    var macIsFocused: Bool = false
     let restrictFocusToKey: String?
     let onMoveDown: () -> Void
     var onMoveUp: (() -> Void)? = nil
@@ -4539,7 +5173,14 @@ private struct TvEpisodeCard: View {
     @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
 
     private var cardKey: String { TvEpisodeFocus.card(video.id) }
-    private var isFocused: Bool { focus.wrappedValue == cardKey }
+
+    private var isFocused: Bool {
+        #if os(macOS)
+        return macIsFocused
+        #else
+        return focus.wrappedValue == cardKey
+        #endif
+    }
 
     private let cardWidth: CGFloat = TvEpisodeCardLayout.width
     private let thumbHeight: CGFloat = 300
@@ -4724,6 +5365,7 @@ private struct TvEpisodeCard: View {
                 }
             }
         }
+        #if !os(macOS)
         .onMoveCommand { direction in
             if direction == .down {
                 onMoveDown()
@@ -4731,6 +5373,7 @@ private struct TvEpisodeCard: View {
                 onMoveUp?()
             }
         }
+        #endif
     }
 
     /// A native tvOS context-menu action runs before the menu's presentation
@@ -4952,12 +5595,222 @@ private struct TvStreamPickerOverlay: View {
     private var resolutionFilter: StreamResolutionFilter = .any
     @State private var showResolutionOptions = false
     @State private var showProviderOptions = false
+    #if os(macOS)
+    /// The macOS highlight, as a plain value. `focusedItem` is a `@FocusState`
+    /// and SwiftUI drops writes to one when no view holds the matching focus,
+    /// which on macOS is most of the time.
+    @State private var macFocusedItem: String?
+    /// The open dropdown, if any. `confirmationDialog` becomes an `NSAlert` on
+    /// macOS, which caps at three buttons — so the provider list silently hid
+    /// every add-on past the third (including the one actually serving the
+    /// streams) and Resolution lost 1080p, 720p and SD. This is an in-canvas
+    /// list instead, with no cap and the same keyboard model as everything else.
+    @State private var macOptions: MacPickerOptionList?
+    @State private var macOptionIndex = 0
+    @ObservedObject private var keyRouter = MacKeyRouter.shared
+    @State private var macKeyToken: UUID?
+    #endif
 
     private let filterAllKey = "filter::all"
     private let resolutionKey = "filter::resolution"
     private let sortKey = "filter::sort"
     private let cachedKey = "filter::cached"
     private func filterKey(_ addonId: String) -> String { "filter::\(addonId)" }
+
+    /// True when the macOS highlight is on this control. Always false on tvOS,
+    /// where the focus engine drives the same appearance.
+    private func macIsFocused(_ key: String) -> Bool {
+        #if os(macOS)
+        return macFocusedItem == key
+        #else
+        return false
+        #endif
+    }
+
+    #if os(macOS)
+    /// Only providers worth choosing between: one that returned nothing has no
+    /// streams to filter to. Still-loading add-ons stay listed so the list does
+    /// not shuffle underneath the selection while discovery finishes.
+    private var macProviderGroups: [AddonStreamGroup] {
+        filterGroups.filter { !$0.streams.isEmpty || $0.isLoading }
+    }
+
+    private func macProviderOptions() -> MacPickerOptionList {
+        var entries = [MacPickerOption(
+            label: L10n.string("action_all", fallback: "All"),
+            isSelected: selectedAddonId == nil,
+            apply: { selectedAddonId = nil }
+        )]
+        entries += macProviderGroups.map { group in
+            MacPickerOption(
+                label: group.isLoading ? "\(group.displayName)…" : group.displayName,
+                isSelected: selectedAddonId == group.addonId,
+                apply: { selectedAddonId = group.addonId }
+            )
+        }
+        return MacPickerOptionList(
+            title: L10n.string("details_filter_provider", fallback: "Provider"),
+            options: entries
+        )
+    }
+
+    private func macResolutionOptions() -> MacPickerOptionList {
+        MacPickerOptionList(
+            title: L10n.string("details_filter_resolution", fallback: "Resolution"),
+            options: StreamResolutionFilter.allCases.map { option in
+                MacPickerOption(
+                    label: option.title,
+                    isSelected: resolutionFilter == option,
+                    apply: { resolutionFilter = option }
+                )
+            }
+        )
+    }
+
+    private func macSortOptions() -> MacPickerOptionList {
+        MacPickerOptionList(
+            title: L10n.string("details_sort_streams_by", fallback: "Sort streams by"),
+            options: StreamSortOption.allCases.map { option in
+                MacPickerOption(
+                    label: L10n.optionLabel(option.rawValue),
+                    isSelected: sortOption == option,
+                    apply: { sortOption = option }
+                )
+            }
+        )
+    }
+
+    private func macOpenOptions(_ list: MacPickerOptionList) {
+        macOptions = list
+        macOptionIndex = max(list.options.firstIndex(where: \.isSelected) ?? 0, 0)
+    }
+
+    /// The filter chips in the order they are laid out, so Left/Right along the
+    /// row matches what is on screen.
+    private var macFilterKeys: [String] {
+        var keys = [filterAllKey]
+        if includeDebrid { keys.append(cachedKey) }
+        keys.append(contentsOf: [resolutionKey, sortKey])
+        return keys
+    }
+
+    private func handleMacKey(_ key: MacKey) {
+        if let list = macOptions {
+            handleMacOptionKey(key, list: list)
+            return
+        }
+        guard let direction = MoveCommandDirection(key) else {
+            if MacMenuState.shared.handleReturn() { return }
+            macActivateFocused()
+            return
+        }
+        if MacMenuState.shared.handleMove(direction) { return }
+        macMoveFocus(direction)
+        MacDiagnostics.log("picker.move dir=\(direction) to=\(macTrace(macFocusedItem))")
+    }
+
+    private func handleMacOptionKey(_ key: MacKey, list: MacPickerOptionList) {
+        switch key {
+        case .up:
+            macOptionIndex = max(macOptionIndex - 1, 0)
+        case .down:
+            macOptionIndex = min(macOptionIndex + 1, list.options.count - 1)
+        case .left:
+            macOptions = nil
+        case .right:
+            break
+        case .activate:
+            guard list.options.indices.contains(macOptionIndex) else { return }
+            MacDiagnostics.log("picker.option \(list.options[macOptionIndex].label)")
+            list.options[macOptionIndex].apply()
+            macOptions = nil
+        }
+    }
+
+    /// Stream ids are resolve URLs carrying the whole title and every audio
+    /// flag, which made a single trace line dozens of lines long.
+    private func macTrace(_ key: String?) -> String {
+        guard let key else { return "none" }
+        guard !key.hasPrefix("filter::") else { return key }
+        guard let index = activeDisplayedStreams.firstIndex(where: { $0.id == key }) else {
+            return "stream?"
+        }
+        return "stream#\(index)"
+    }
+
+    /// The chips are a row and the streams are a column, so the two axes mean
+    /// different things depending on which the highlight is in.
+    private func macMoveFocus(_ direction: MoveCommandDirection) {
+        let filters = macFilterKeys
+        let streams = activeDisplayedStreams.map(\.id)
+
+        guard let current = macFocusedItem else {
+            macFocusedItem = streams.first ?? filters.first
+            return
+        }
+
+        if let index = filters.firstIndex(of: current) {
+            switch direction {
+            case .left:
+                if index > 0 {
+                    macFocusedItem = filters[index - 1]
+                } else {
+                    MacMenuState.shared.open()
+                }
+            case .right:
+                if index + 1 < filters.count { macFocusedItem = filters[index + 1] }
+            case .down:
+                if let first = streams.first { macFocusedItem = first }
+            default:
+                break
+            }
+            return
+        }
+
+        if let index = streams.firstIndex(of: current) {
+            switch direction {
+            case .up:
+                macFocusedItem = index > 0 ? streams[index - 1] : filters.first
+            case .down:
+                if index + 1 < streams.count { macFocusedItem = streams[index + 1] }
+            case .left:
+                MacMenuState.shared.open()
+            default:
+                break
+            }
+            return
+        }
+
+        // The highlight was on a stream that has since been filtered out.
+        macFocusedItem = streams.first ?? filters.first
+    }
+
+    private func macActivateFocused() {
+        guard let key = macFocusedItem else { return }
+        MacDiagnostics.log("picker.activate \(macTrace(key))")
+        switch key {
+        case filterAllKey: macOpenOptions(macProviderOptions())
+        case cachedKey: cachedOnly.toggle()
+        case resolutionKey: macOpenOptions(macResolutionOptions())
+        case sortKey: macOpenOptions(macSortOptions())
+        default:
+            guard let stream = activeDisplayedStreams.first(where: { $0.id == key }) else { return }
+            onSelect(stream, nil)
+        }
+    }
+
+    /// Put the highlight somewhere real: the list arrives progressively, so the
+    /// first seed usually lands on a chip and moves to a stream once there is
+    /// one, and a filter change can remove the stream it was on.
+    private func macSeedFocusIfNeeded() {
+        let streams = activeDisplayedStreams.map(\.id)
+        if let current = macFocusedItem,
+           macFilterKeys.contains(current) || streams.contains(current) {
+            return
+        }
+        macFocusedItem = streams.first ?? macFilterKeys.first
+    }
+    #endif
 
     /// Inputs that may change the visible stream list (not focus).
     private var listCacheKey: StreamPickerListCacheKey {
@@ -5021,6 +5874,24 @@ private struct TvStreamPickerOverlay: View {
                     x: canvasWidth - 64 - panelWidth / 2,
                     y: 168 + panelStackHeight / 2
                 )
+
+                #if os(macOS)
+                if let list = macOptions {
+                    MacPickerOptionsPanel(list: list, highlighted: macOptionIndex) { index in
+                        guard list.options.indices.contains(index) else { return }
+                        list.options[index].apply()
+                        macOptions = nil
+                    } onDismiss: {
+                        macOptions = nil
+                    }
+                    .frame(width: panelWidth, height: canvasHeight, alignment: .center)
+                    .position(
+                        x: canvasWidth - 64 - panelWidth / 2,
+                        y: canvasHeight / 2
+                    )
+                    .transition(.opacity)
+                }
+                #endif
             }
             // The picker mounts before discovery finishes, so this seed usually
             // lands on the All chip; seedStreamFocusIfNeeded hands focus to the
@@ -5059,6 +5930,26 @@ private struct TvStreamPickerOverlay: View {
                 streamBadgeSettingsRevision &+= 1
             }
             .onExitCommand(perform: onDismiss)
+            #if os(macOS)
+            // Keys come from `MacKeyRouter`: this overlay sits above Details,
+            // which would otherwise keep moving its own highlight underneath.
+            .onAppear {
+                keyRouter.release(macKeyToken)
+                macKeyToken = keyRouter.claim()
+                macSeedFocusIfNeeded()
+            }
+            .onDisappear {
+                keyRouter.release(macKeyToken)
+                macKeyToken = nil
+            }
+            .onChange(of: keyRouter.latest) { _, press in
+                guard let press, keyRouter.isFront(macKeyToken) else { return }
+                handleMacKey(press.key)
+            }
+            .onChange(of: displayedStreamsCacheKey) { _, _ in
+                macSeedFocusIfNeeded()
+            }
+            #endif
         }
         .background(Color.black.ignoresSafeArea())
         .task(id: streamCardPresentationCacheKey, priority: .utility) {
@@ -5171,7 +6062,14 @@ private struct TvStreamPickerOverlay: View {
                 isSelected: selectedAddonId != nil,
                 focusBinding: $focusedItem,
                 focusValue: filterAllKey,
-                action: { showProviderOptions = true }
+                macIsFocused: macIsFocused(filterAllKey),
+                action: {
+                    #if os(macOS)
+                    macOpenOptions(macProviderOptions())
+                    #else
+                    showProviderOptions = true
+                    #endif
+                }
             )
             .fixedSize(horizontal: true, vertical: false)
             .confirmationDialog(
@@ -5200,6 +6098,7 @@ private struct TvStreamPickerOverlay: View {
                     isSelected: cachedOnly,
                     focusBinding: $focusedItem,
                     focusValue: cachedKey,
+                    macIsFocused: macIsFocused(cachedKey),
                     action: { cachedOnly.toggle() }
                 )
                 .fixedSize(horizontal: true, vertical: false)
@@ -5214,7 +6113,14 @@ private struct TvStreamPickerOverlay: View {
                 isSelected: resolutionFilter != .any,
                 focusBinding: $focusedItem,
                 focusValue: resolutionKey,
-                action: { showResolutionOptions = true }
+                macIsFocused: macIsFocused(resolutionKey),
+                action: {
+                    #if os(macOS)
+                    macOpenOptions(macResolutionOptions())
+                    #else
+                    showResolutionOptions = true
+                    #endif
+                }
             )
             .fixedSize(horizontal: true, vertical: false)
             .confirmationDialog(
@@ -5234,7 +6140,14 @@ private struct TvStreamPickerOverlay: View {
                 isSelected: sortOption != .quality,
                 focusBinding: $focusedItem,
                 focusValue: sortKey,
-                action: { showSortOptions = true }
+                macIsFocused: macIsFocused(sortKey),
+                action: {
+                    #if os(macOS)
+                    macOpenOptions(macSortOptions())
+                    #else
+                    showSortOptions = true
+                    #endif
+                }
             )
             .fixedSize(horizontal: true, vertical: false)
             .confirmationDialog(
@@ -5295,6 +6208,7 @@ private struct TvStreamPickerOverlay: View {
                 }
                 .padding(.horizontal, 40)
             } else {
+                ScrollViewReader { listProxy in
                 ScrollView(.vertical, showsIndicators: false) {
                     LazyVStack(spacing: 28) {
                         ForEach(streamsToShow) { stream in
@@ -5306,9 +6220,11 @@ private struct TvStreamPickerOverlay: View {
                                 presentation: streamCardPresentations[stream.id]
                                     ?? TvStreamCardPresentation(pending: badgeSettings),
                                 externalFocus: $focusedItem,
+                                macIsFocused: macIsFocused(stream.id),
                                 action: { onSelect(stream, nil) },
                                 onSelectPlayer: { player in onSelect(stream, player) }
                             )
+                            .id(stream.id)
                         }
 
                         if isLoading {
@@ -5327,6 +6243,17 @@ private struct TvStreamPickerOverlay: View {
                     .padding(40)
                 }
                 .focusSection()
+                #if os(macOS)
+                // A LazyVStack in a plain ScrollView: arrowing past the last
+                // visible card would otherwise highlight something off screen.
+                .onChange(of: macFocusedItem) { _, key in
+                    guard let key, streamsToShow.contains(where: { $0.id == key }) else { return }
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        listProxy.scrollTo(key, anchor: .center)
+                    }
+                }
+                #endif
+                }
             }
 
             // Torrent streams take a moment to cache/unrestrict on the debrid
@@ -5482,9 +6409,17 @@ private struct TvStreamFilterButton: View {
     let isSelected: Bool
     let focusBinding: FocusState<String?>.Binding
     let focusValue: String
+    /// Driven by the picker's own focus model on macOS.
+    var macIsFocused: Bool = false
     let action: () -> Void
 
-    private var isFocused: Bool { focusBinding.wrappedValue == focusValue }
+    private var isFocused: Bool {
+        #if os(macOS)
+        return macIsFocused
+        #else
+        return focusBinding.wrappedValue == focusValue
+        #endif
+    }
 
     var body: some View {
         Button(action: action) {
@@ -5569,12 +6504,23 @@ private struct TvStreamCard: View {
     private let badgePlacement: StreamBadgePlacement
     private let showAddonLogo: Bool
     let externalFocus: FocusState<String?>.Binding
+    /// Set by the picker on macOS, where nothing moves AppKit focus between
+    /// these cards. A stored value re-renders; a focus binding does not.
+    let macIsFocused: Bool
     let action: () -> Void
     var onSelectPlayer: ((ExternalPlayer) -> Void)? = nil
 
     /// Local focus drives appearance only for this card, so focus moves do not
     /// push `isFocused` through the parent ForEach for every sibling.
     @FocusState private var isFocused: Bool
+
+    private var showsFocus: Bool {
+        #if os(macOS)
+        return macIsFocused
+        #else
+        return isFocused
+        #endif
+    }
 
     /// Precomputed once per card identity — not re-derived on every body tick.
     private let primaryName: String
@@ -5584,6 +6530,7 @@ private struct TvStreamCard: View {
         stream: NuvioStream,
         presentation: TvStreamCardPresentation,
         externalFocus: FocusState<String?>.Binding,
+        macIsFocused: Bool = false,
         action: @escaping () -> Void,
         onSelectPlayer: ((ExternalPlayer) -> Void)? = nil
     ) {
@@ -5594,6 +6541,7 @@ private struct TvStreamCard: View {
         self.badgePlacement = presentation.badgePlacement
         self.showAddonLogo = presentation.showAddonLogo
         self.externalFocus = externalFocus
+        self.macIsFocused = macIsFocused
         self.action = action
         self.onSelectPlayer = onSelectPlayer
         let lines = Self.nameLines(for: stream)
@@ -5613,7 +6561,7 @@ private struct TvStreamCard: View {
                             badges: importedBadges,
                             fileSizeLabel: fileSizeLabel,
                             releaseYear: releaseYear,
-                            isScrolling: isFocused
+                            isScrolling: showsFocus
                         )
                     }
 
@@ -5645,7 +6593,7 @@ private struct TvStreamCard: View {
                             badges: importedBadges,
                             fileSizeLabel: fileSizeLabel,
                             releaseYear: releaseYear,
-                            isScrolling: isFocused
+                            isScrolling: showsFocus
                         )
                             .padding(.top, 4)
                     }
@@ -5676,13 +6624,13 @@ private struct TvStreamCard: View {
             // Lightweight fill instead of per-card Liquid Glass (panel keeps glass).
             .background(
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(Color.white.opacity(isFocused ? 0.14 : 0.06))
+                    .fill(Color.white.opacity(showsFocus ? 0.14 : 0.06))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .stroke(
-                        isFocused ? AppFocusOutline.color : Color.white.opacity(0.10),
-                        lineWidth: isFocused ? AppFocusOutline.width : 1
+                        showsFocus ? AppFocusOutline.color : Color.white.opacity(0.10),
+                        lineWidth: showsFocus ? AppFocusOutline.width : 1
                     )
             )
         }
@@ -5691,8 +6639,8 @@ private struct TvStreamCard: View {
         .focused($isFocused)
         .modifier(ExternalFocusBinding(binding: externalFocus, id: stream.id))
         .focusEffectDisabledIfAvailable()
-        .scaleEffect(isFocused ? 1.025 : 1)
-        .animation(.easeOut(duration: 0.14), value: isFocused)
+        .scaleEffect(showsFocus ? 1.025 : 1)
+        .animation(.easeOut(duration: 0.14), value: showsFocus)
         .contextMenu {
             Section("Play with") {
                 ForEach(ExternalPlayer.allCases) { player in
@@ -6051,3 +6999,529 @@ struct ErrorView: View {
         .padding(32)
     }
 }
+
+/// A band of a details page. Only macOS navigates by them, but shared view
+/// signatures name the type.
+///
+/// The macOS page is two columns: the title's own content on the left, and a
+/// rail on the right holding either the episode list or the streams for what
+/// was just selected.
+enum MacDetailsRow: Int, Hashable, CaseIterable {
+    case actions
+    case related
+    /// Season controls, or the stream filters.
+    case railHeader
+    /// Episodes, or streams.
+    case railList
+
+    var isRail: Bool { self == .railHeader || self == .railList }
+
+    /// The rail's list is a column of items, so Up/Down walk it rather than
+    /// moving to another band.
+    var isVertical: Bool { self == .railList }
+}
+
+#if os(macOS)
+/// Keyboard focus for a details page on macOS.
+///
+/// macOS has no focus engine, so — exactly as Home does — the page tracks its
+/// own focused position and each control renders from it. The sections own
+/// their data (the rail owns the selected season, for instance), so they
+/// publish their item count and register what Return should do, and this only
+/// has to know where the caret is.
+@MainActor
+final class MacDetailsFocus: ObservableObject {
+    static let shared = MacDetailsFocus()
+
+    @Published var row: MacDetailsRow = .actions
+    @Published var index = 0
+    /// Item counts, published by the section that owns each row.
+    @Published private(set) var counts: [MacDetailsRow: Int] = [:]
+
+    private var activations: [MacDetailsRow: (Int) -> Void] = [:]
+    /// Id of the page these counts describe.
+    private var page: String?
+
+    private init() {}
+
+    /// A details page is being shown: forget the last one's geometry.
+    ///
+    /// Every section calls this before publishing, and only the first call for
+    /// a page does anything. SwiftUI runs a child's `onAppear` before its
+    /// parent's, so a reset the parent owned alone would wipe counts the rail
+    /// had already published.
+    func begin(page id: String) {
+        guard page != id else { return }
+        page = id
+        row = .actions
+        index = 0
+        counts = [:]
+        activations = [:]
+    }
+
+    func setCount(_ count: Int, for row: MacDetailsRow) {
+        guard counts[row] != count else { return }
+        counts[row] = count
+        if row == self.row, index >= count {
+            index = max(count - 1, 0)
+        }
+    }
+
+    func count(for row: MacDetailsRow) -> Int { counts[row] ?? 0 }
+
+    func register(_ row: MacDetailsRow, activate: @escaping (Int) -> Void) {
+        activations[row] = activate
+    }
+
+    func isFocused(_ row: MacDetailsRow, _ index: Int) -> Bool {
+        self.row == row && self.index == index
+    }
+
+    /// Rows with something in them. A movie has no rail until Play is pressed,
+    /// and a single-season series publishes no season controls.
+    var availableRows: [MacDetailsRow] {
+        MacDetailsRow.allCases.filter { count(for: $0) > 0 }
+    }
+
+    /// Move the caret to the rail, preferring its list over its header.
+    func focusRail() {
+        let rail = availableRows.filter(\.isRail)
+        guard let target = rail.first(where: { $0 == .railList }) ?? rail.first else { return }
+        row = target
+        index = 0
+    }
+
+    /// - Returns: false when the press ran off the left edge of the page, which
+    ///   is the caller's cue to open the menu.
+    func move(_ direction: MoveCommandDirection) -> Bool {
+        let all = availableRows
+        guard !all.isEmpty else { return direction != .left }
+        guard all.contains(row) else {
+            row = all[0]
+            index = 0
+            return true
+        }
+
+        let inRail = row.isRail
+        let column = all.filter { $0.isRail == inRail }
+        let rowIndex = column.firstIndex(of: row) ?? 0
+        let count = count(for: row)
+
+        switch direction {
+        case .left:
+            // Leaving the rail returns to the title's own content; leaving the
+            // left column opens the menu.
+            if row.isVertical || index == 0 {
+                guard inRail else { return false }
+                focusMainColumn(in: all)
+            } else {
+                index -= 1
+            }
+        case .right:
+            if row.isVertical { break }
+            if index + 1 < count {
+                index += 1
+            } else if !inRail {
+                focusRail()
+            }
+        case .up:
+            if row.isVertical, index > 0 {
+                index -= 1
+            } else if rowIndex > 0 {
+                row = column[rowIndex - 1]
+                index = 0
+            }
+        case .down:
+            if row.isVertical, index + 1 < count {
+                index += 1
+            } else if rowIndex + 1 < column.count {
+                row = column[rowIndex + 1]
+                index = 0
+            }
+        @unknown default:
+            break
+        }
+        return true
+    }
+
+    private func focusMainColumn(in rows: [MacDetailsRow]) {
+        guard let target = rows.first(where: { !$0.isRail }) else { return }
+        row = target
+        index = 0
+    }
+
+    func activateFocused() {
+        activations[row]?(index)
+    }
+}
+#endif
+
+#if os(macOS)
+/// One choice in a stream-picker dropdown.
+struct MacPickerOption {
+    let label: String
+    let isSelected: Bool
+    let apply: () -> Void
+}
+
+struct MacPickerOptionList: Identifiable {
+    let id = UUID()
+    let title: String
+    let options: [MacPickerOption]
+}
+
+/// A dropdown for the stream picker, drawn inside the app's canvas.
+///
+/// `confirmationDialog` maps to an `NSAlert` on macOS, which allows at most
+/// three buttons: the provider list hid every add-on past the third — including
+/// the one actually serving the streams — and Resolution lost 1080p, 720p and
+/// SD without any indication. This lists everything, scrolls when long, and is
+/// driven by the picker's own keyboard model.
+struct MacPickerOptionsPanel: View {
+    let list: MacPickerOptionList
+    let highlighted: Int
+    let onSelect: (Int) -> Void
+    let onDismiss: () -> Void
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 26, style: .continuous)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(list.title)
+                .font(.system(size: 30, weight: .semibold))
+                .foregroundColor(.white.opacity(0.9))
+                .padding(.horizontal, 10)
+
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 8) {
+                        // Keyed by label, not position: swapping one dropdown
+                        // for another reuses the rows at the same indices, and
+                        // position identity would let stale content stand.
+                        ForEach(Array(list.options.enumerated()), id: \.element.label) { index, option in
+                            row(option, isHighlighted: index == highlighted)
+                                .id(option.label)
+                                .onTapGesture { onSelect(index) }
+                        }
+                    }
+                }
+                .onChange(of: highlighted) { _, index in
+                    guard list.options.indices.contains(index) else { return }
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        proxy.scrollTo(list.options[index].label, anchor: .center)
+                    }
+                }
+            }
+        }
+        .padding(28)
+        .frame(maxWidth: 560, maxHeight: 620)
+        .background {
+            if #available(macOS 26.0, *) {
+                shape.fill(Color.black.opacity(0.42)).glassEffect(.regular, in: shape)
+            } else {
+                shape.fill(.ultraThinMaterial)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundColor(.white.opacity(0.7))
+                    .padding(16)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func row(_ option: MacPickerOption, isHighlighted: Bool) -> some View {
+        HStack(spacing: 14) {
+            Text(option.label)
+                .font(.system(size: 26, weight: option.isSelected ? .semibold : .regular))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 12)
+            if option.isSelected {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 20, weight: .bold))
+            }
+        }
+        .foregroundColor(isHighlighted || option.isSelected ? .white : .white.opacity(0.6))
+        .padding(.horizontal, 22)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.white.opacity(isHighlighted ? 0.20 : 0))
+        )
+        .contentShape(Rectangle())
+    }
+}
+#endif
+
+#if os(macOS)
+/// What the details rail is showing.
+enum MacRailMode: Equatable {
+    case episodes
+    case streams
+}
+
+enum MacRailMetrics {
+    static let width: CGFloat = 560
+    /// Left column's share of the canvas once the rail has its own.
+    static let gutter: CGFloat = 32
+}
+
+/// The right-hand rail: a series' episodes, or the streams for whatever was
+/// just selected.
+///
+/// tvOS shows these as full-screen steps because a 10-foot UI can only hold one
+/// thing at once. On a Mac that costs a page transition per choice and leaves
+/// most of the window empty, so both live beside the title instead and the rail
+/// swaps between them.
+struct MacDetailsRail: View {
+    let mode: MacRailMode
+    let title: String
+    let subtitle: String?
+    /// Header controls, left to right.
+    let headerItems: [MacRailHeaderItem]
+    let rows: [MacRailRow]
+    let isLoading: Bool
+    let emptyMessage: String?
+    let focusedHeaderIndex: Int?
+    let focusedRowIndex: Int?
+    let onHeaderTap: (Int) -> Void
+    let onRowTap: (Int) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            header
+            list
+        }
+        .padding(.vertical, 26)
+        .padding(.horizontal, 22)
+        .frame(width: MacRailMetrics.width)
+        .background {
+            let shape = RoundedRectangle(cornerRadius: 28, style: .continuous)
+            if #available(macOS 26.0, *) {
+                shape.fill(Color.black.opacity(0.38)).glassEffect(.regular, in: shape)
+            } else {
+                shape.fill(.ultraThinMaterial)
+            }
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(title)
+                .font(.system(size: 26, weight: .semibold))
+                .foregroundColor(.white)
+                .lineLimit(1)
+
+            if let subtitle {
+                Text(subtitle)
+                    .font(.system(size: 18, weight: .regular))
+                    .foregroundColor(.white.opacity(0.55))
+                    .lineLimit(1)
+            }
+
+            if !headerItems.isEmpty {
+                HStack(spacing: 10) {
+                    ForEach(Array(headerItems.enumerated()), id: \.offset) { index, item in
+                        headerChip(item, isFocused: focusedHeaderIndex == index)
+                            .onTapGesture { onHeaderTap(index) }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 6)
+    }
+
+    private func headerChip(_ item: MacRailHeaderItem, isFocused: Bool) -> some View {
+        HStack(spacing: 8) {
+            if let symbol = item.symbol {
+                Image(systemName: symbol)
+                    .font(.system(size: 15, weight: .bold))
+            }
+            if let label = item.label {
+                Text(label)
+                    .font(.system(size: 17, weight: item.isActive ? .semibold : .regular))
+                    .lineLimit(1)
+            }
+        }
+        .foregroundColor(isFocused || item.isActive ? .black : .white.opacity(0.7))
+        .padding(.horizontal, item.label == nil ? 12 : 16)
+        .frame(height: 40)
+        .background(
+            Capsule().fill(
+                isFocused
+                    ? Color.white
+                    : Color.white.opacity(item.isActive ? 0.85 : 0.14)
+            )
+        )
+        .contentShape(Capsule())
+    }
+
+    @ViewBuilder
+    private var list: some View {
+        if rows.isEmpty {
+            VStack(spacing: 14) {
+                if isLoading {
+                    BrandLoadingView(wordmarkWidth: 200)
+                        .frame(height: 90)
+                    Text(L10n.string("details_finding_streams", fallback: "Finding streams"))
+                        .font(.system(size: 18))
+                        .foregroundColor(.white.opacity(0.6))
+                } else if let emptyMessage {
+                    Text(emptyMessage)
+                        .font(.system(size: 18))
+                        .foregroundColor(.white.opacity(0.6))
+                        .multilineTextAlignment(.center)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVStack(spacing: 6) {
+                        ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                            // Identify by the row's own id, never by position.
+                            // `.id(index)` here overrode the identity ForEach
+                            // had just established, so switching season or
+                            // filter kept whatever view already sat at that
+                            // position — the list simply never changed.
+                            MacRailRowView(row: row, isFocused: focusedRowIndex == index)
+                                .id(row.id)
+                                .contentShape(Rectangle())
+                                .onTapGesture { onRowTap(index) }
+                        }
+
+                        if isLoading {
+                            HStack(spacing: 12) {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                    .controlSize(.small)
+                                Text(L10n.string("details_checking_more_addons", fallback: "Checking more add-ons…"))
+                                    .font(.system(size: 16))
+                                    .foregroundColor(.white.opacity(0.55))
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 10)
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                }
+                .onChange(of: focusedRowIndex) { _, index in
+                    guard let index, rows.indices.contains(index) else { return }
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        proxy.scrollTo(rows[index].id, anchor: .center)
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct MacRailHeaderItem {
+    var symbol: String?
+    var label: String?
+    var isActive: Bool = false
+}
+
+/// One line in the rail. Deliberately flat data: the rail draws episodes and
+/// streams the same way, which is what makes a dozen of them fit where two
+/// tvOS cards used to.
+struct MacRailRow: Identifiable {
+    let id: String
+    var thumbnailURL: URL?
+    var leading: String?
+    var title: String
+    var subtitle: String?
+    var detail: String?
+    var badge: String?
+    var badgeTint: Color = .white.opacity(0.2)
+    var progress: Double?
+}
+
+private struct MacRailRowView: View {
+    let row: MacRailRow
+    let isFocused: Bool
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            if let url = row.thumbnailURL {
+                AsyncImage(url: url) { phase in
+                    if case .success(let image) = phase {
+                        image.resizable().aspectRatio(contentMode: .fill)
+                    } else {
+                        Color.white.opacity(0.08)
+                    }
+                }
+                .frame(width: 92, height: 52)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(alignment: .bottom) {
+                    if let progress = row.progress, progress > 0 {
+                        GeometryReader { geo in
+                            Capsule()
+                                .fill(Color.white)
+                                .frame(width: geo.size.width * min(progress, 1), height: 3)
+                        }
+                        .frame(height: 3)
+                        .padding(.horizontal, 4)
+                        .padding(.bottom, 4)
+                    }
+                }
+            } else if let leading = row.leading {
+                Text(leading)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.75))
+                    .multilineTextAlignment(.center)
+                    .frame(width: 74)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(row.title)
+                    .font(.system(size: 17, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let subtitle = row.subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 14))
+                        .foregroundColor(.white.opacity(0.55))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                if let detail = row.detail {
+                    Text(detail)
+                        .font(.system(size: 13))
+                        .foregroundColor(.white.opacity(0.45))
+                        .lineLimit(1)
+                }
+            }
+            .foregroundColor(.white)
+
+            Spacer(minLength: 8)
+
+            if let badge = row.badge {
+                Text(badge)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.black)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(row.badgeTint))
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.white.opacity(isFocused ? 0.20 : 0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(isFocused ? AppFocusOutline.color : .clear, lineWidth: 2)
+        )
+    }
+}
+#endif

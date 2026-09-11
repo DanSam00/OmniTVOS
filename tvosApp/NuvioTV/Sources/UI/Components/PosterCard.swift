@@ -173,17 +173,17 @@ struct PosterCard: View {
     var onInitialFocusRequested: (() -> Void)? = nil
     var onFocus: ((NuvioMeta) -> Void)? = nil
     var onBlur: ((NuvioMeta) -> Void)? = nil
-    /// Optional shared focus state so a parent can drive `.defaultFocus`
-    /// restoration — e.g. returning to the exact card after the menu. Keyed by
-    /// `externalFocusValue` (must be unique per card instance, since the same
-    /// meta.id can appear in more than one row), falling back to meta.id.
-/// Mirror of Home's focused card key as a plain value.
+    /// Mirror of the owning screen's focused card key, as a plain value.
     ///
     /// `.focused(binding, equals:)` is not a render dependency, so a card never
     /// re-evaluates when the shared key moves — it never looks focused and never
     /// reports focus. A stored property does cause the re-render.
     var macFocusedCardKey: String? = nil
-        var externalFocus: FocusState<String?>.Binding? = nil
+    /// Optional shared focus state so a parent can drive `.defaultFocus`
+    /// restoration — e.g. returning to the exact card after the menu. Keyed by
+    /// `externalFocusValue` (must be unique per card instance, since the same
+    /// meta.id can appear in more than one row), falling back to meta.id.
+    var externalFocus: FocusState<String?>.Binding? = nil
     var externalFocusValue: String? = nil
     /// Fired when the card is held (Siri Remote select press-and-hold), to raise
     /// the quick-actions menu. Nil disables the long-press.

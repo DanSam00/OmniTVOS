@@ -3,13 +3,14 @@ import SwiftUI
 
 /// Shared state for the macOS menu column.
 ///
-/// The menu lives beside the tab content while focus is driven from Home, so
-/// the two need a common place to agree on who currently holds focus.
+/// The menu floats above every screen while focus is driven separately by Home
+/// and by Details, so the three need a common place to agree on who currently
+/// holds focus.
 @MainActor
 final class MacMenuState: ObservableObject {
     static let shared = MacMenuState()
 
-    /// True while the menu column owns keyboard focus rather than a card.
+    /// True while the menu column owns keyboard focus rather than the screen.
     @Published var isFocused = false
     /// The row the caret sits on, which is not yet the selected tab.
     @Published var highlighted: TVTab = .home
@@ -26,6 +27,43 @@ final class MacMenuState: ObservableObject {
         guard tabs.indices.contains(next) else { return }
         highlighted = tabs[next]
     }
+
+    /// Open the menu because focus ran off the left edge of a screen. The
+    /// highlight is left where it was, so the menu remembers its place.
+    func open() {
+        guard !isFocused else { return }
+        isFocused = true
+        MacDiagnostics.log("menu.open")
+    }
+
+    /// Every screen offers the menu the arrow first, so one implementation
+    /// serves Home, Details and anything added later.
+    /// - Returns: true when the menu consumed the key.
+    func handleMove(_ direction: MoveCommandDirection) -> Bool {
+        guard isFocused else { return false }
+        switch direction {
+        case .up:
+            moveHighlight(by: -1, from: highlighted)
+        case .down:
+            moveHighlight(by: 1, from: highlighted)
+        case .right:
+            // Back to the content, on whatever it left focused.
+            isFocused = false
+            MacDiagnostics.log("menu.close")
+        default:
+            break
+        }
+        return true
+    }
+
+    /// - Returns: true when the menu consumed Return.
+    func handleReturn() -> Bool {
+        guard isFocused else { return false }
+        MacDiagnostics.log("menu.select " + highlighted.rawValue)
+        MacTabCommandBus.shared.request(highlighted)
+        isFocused = false
+        return true
+    }
 }
 
 /// The visible menu: a column of tabs that keyboard focus can reach.
@@ -33,34 +71,83 @@ final class MacMenuState: ObservableObject {
 /// tvOS reveals its tab bar by moving focus up off the first row, which needs
 /// the focus engine macOS does not have — so on the Mac the menu was
 /// unreachable and the ⌘-number shortcuts were the only way to change tabs.
-/// This puts it on screen and into the focus model: Left from the first card
-/// opens it, Right returns, Up/Down move along it, Return switches tab.
+/// This puts it on screen and into the focus model: Left off the edge of a
+/// screen opens it, Right returns, Up/Down move along it, Return switches tab.
 struct MacHomeMenu: View {
     @Binding var selectedTab: TVTab
+    /// False while a details or browse screen covers the tabs, where no menu
+    /// item is current and the collapsed menu is a plain hamburger instead.
+    var isShowingTabPage: Bool = true
     @ObservedObject private var state = MacMenuState.shared
     @Namespace private var glassNamespace
+    @ObservedObject private var keyRouter = MacKeyRouter.shared
+    /// Held only while the menu is open: it floats above every screen, so
+    /// while it has focus it is the front key handler regardless of which
+    /// screen is underneath.
+    @State private var keyToken: UUID?
+    /// Widest row, so every highlight is the same width even though the titles
+    /// are not. Measured from the row content, before the width is applied
+    /// back, so this settles in one pass instead of feeding back on itself.
+    @State private var rowWidth: CGFloat = 0
 
     private var panelShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 30, style: .continuous)
+        RoundedRectangle(cornerRadius: 26, style: .continuous)
     }
 
     var body: some View {
         column
-            .frame(width: state.isFocused ? 260 : 96, alignment: .leading)
+            // Sized by its own icons and labels rather than a fixed column, so
+            // the collapsed menu is just one glyph wide and the open menu just
+            // wide enough for the longest title.
+            .fixedSize()
             .background { panel }
+            .padding(.leading, 28)
+            .padding(.top, 28)
             .animation(.easeOut(duration: 0.18), value: state.isFocused)
+            .onChange(of: state.isFocused) { _, focused in
+                // Labels appear and disappear with the open state, so the
+                // measured width has to be taken again.
+                rowWidth = 0
+                if focused {
+                    keyRouter.release(keyToken)
+                    keyToken = keyRouter.claim()
+                } else {
+                    keyRouter.release(keyToken)
+                    keyToken = nil
+                }
+            }
+            .onChange(of: keyRouter.latest) { _, press in
+                guard let press, keyRouter.isFront(keyToken) else { return }
+                if let direction = MoveCommandDirection(press.key) {
+                    _ = state.handleMove(direction)
+                } else {
+                    _ = state.handleReturn()
+                }
+            }
+            .onDisappear {
+                keyRouter.release(keyToken)
+                keyToken = nil
+            }
     }
 
     @ViewBuilder
     private var column: some View {
         let stack = VStack(alignment: .leading, spacing: 8) {
-            ForEach(state.tabs) { tab in
-                row(for: tab)
+            if state.isFocused {
+                ForEach(state.tabs) { tab in
+                    row(for: tab)
+                }
+            } else {
+                // Closed, the menu says only where you are — the current tab's
+                // icon, or a hamburger on a page that is not a tab at all.
+                collapsedRow
             }
-            Spacer(minLength: 0)
         }
-        .padding(.vertical, 28)
+        .padding(.vertical, 12)
         .padding(.horizontal, 12)
+        .onPreferenceChange(MacMenuRowWidthKey.self) { width in
+            if width > rowWidth { rowWidth = width }
+        }
 
         // A container lets the caret's glass blend with its neighbours as it
         // travels the column, instead of each row refracting in isolation.
@@ -69,6 +156,19 @@ struct MacHomeMenu: View {
         } else {
             stack
         }
+    }
+
+    @ViewBuilder
+    private var collapsedRow: some View {
+        let symbol = isShowingTabPage ? selectedTab.symbol : "line.3.horizontal"
+        Image(systemName: symbol)
+            .font(.system(size: 22, weight: .medium))
+            .frame(width: 30)
+            .foregroundColor(.white.opacity(0.82))
+            .padding(.vertical, 12)
+            .padding(.horizontal, 14)
+            .contentShape(Rectangle())
+            .onTapGesture { state.open() }
     }
 
     /// The column's own surface. Collapsed the menu is a bare icon strip over
@@ -94,20 +194,34 @@ struct MacHomeMenu: View {
         HStack(spacing: 14) {
             Image(systemName: tab.symbol)
                 .font(.system(size: 22, weight: .medium))
-                .frame(width: 34)
+                .frame(width: 30)
             if state.isFocused {
                 Text(tab.title)
                     .font(.system(size: 20, weight: isCurrent ? .semibold : .regular))
                     .lineLimit(1)
+                    .fixedSize()
             }
         }
         .foregroundColor(isCaret || isCurrent ? .white : .white.opacity(0.55))
         .padding(.vertical, 12)
         .padding(.horizontal, 14)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: MacMenuRowWidthKey.self, value: proxy.size.width)
+            }
+        }
+        .frame(width: rowWidth > 0 ? rowWidth : nil, alignment: .leading)
         .modifier(MacMenuRowGlass(isCaret: isCaret, namespace: glassNamespace))
         .contentShape(Rectangle())
         .onTapGesture { selectedTab = tab }
+    }
+}
+
+private struct MacMenuRowWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 

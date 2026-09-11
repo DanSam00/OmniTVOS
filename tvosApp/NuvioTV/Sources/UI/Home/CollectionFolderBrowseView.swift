@@ -190,9 +190,7 @@ struct CollectionFolderBrowseView: View {
 
                 if isLoading {
                     Spacer()
-                    ProgressView()
-                        .scaleEffect(1.6)
-                        .tint(.white)
+                    BrandLoadingView(wordmarkWidth: 360)
                         .frame(maxWidth: .infinity)
                         .overlay { loadingFocusAnchor }
                     Spacer()
@@ -230,9 +228,7 @@ struct CollectionFolderBrowseView: View {
                     cinematicHero
 
                     if isLoading {
-                        ProgressView()
-                            .scaleEffect(1.6)
-                            .tint(.white)
+                        BrandLoadingView(wordmarkWidth: 360)
                             .frame(maxWidth: .infinity, minHeight: 260)
                             .overlay { loadingFocusAnchor }
                     } else if let errorMessage {

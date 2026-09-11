@@ -200,7 +200,7 @@ struct DiscoverSection: View {
     @ViewBuilder
     private var content: some View {
         if viewModel.isLoading {
-            centered { ProgressView().scaleEffect(1.6).tint(.white) }
+            centered { BrandLoadingView(wordmarkWidth: 360) }
         } else if let error = viewModel.error, visibleItems.isEmpty {
             centered {
                 message(icon: "wifi.exclamationmark", title: error)
