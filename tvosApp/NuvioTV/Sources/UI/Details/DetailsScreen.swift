@@ -5097,38 +5097,27 @@ private enum TvEpisodeCardLayout {
 private struct TvSeasonPill: View {
     let title: String
     let isSelected: Bool
-    /// Driven by the page's focus model on macOS, where the engine that would
-    /// otherwise set `isFocused` does not exist.
-    var macIsFocused: Bool = false
     let onFocus: () -> Void
     let onMoveUp: () -> Void
     let action: () -> Void
 
     @FocusState private var isFocused: Bool
 
-    private var showsFocus: Bool {
-        #if os(macOS)
-        return macIsFocused
-        #else
-        return isFocused
-        #endif
-    }
-
     var body: some View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 30, weight: .semibold))
-                .foregroundColor(isSelected || showsFocus ? .black : .white.opacity(0.66))
+                .foregroundColor(isSelected || isFocused ? .black : .white.opacity(0.66))
                 .padding(.horizontal, 30)
                 .frame(height: 70)
-                .modifier(TvDetailsGlassBackground(filled: isSelected || showsFocus, shape: Capsule()))
+                .modifier(TvDetailsGlassBackground(filled: isSelected || isFocused, shape: Capsule()))
         }
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
-        .scaleEffect(showsFocus ? 1.06 : 1)
-        .animation(.easeOut(duration: 0.14), value: showsFocus)
+        .scaleEffect(isFocused ? 1.06 : 1)
+        .animation(.easeOut(duration: 0.14), value: isFocused)
         .animation(.easeOut(duration: 0.14), value: isSelected)
         .onChange(of: isFocused) { _, focused in
             if focused { onFocus() }
@@ -5163,8 +5152,6 @@ private struct TvEpisodeCard: View {
     var onPlayManually: (() -> Void)? = nil
     var smartStreamSelection: Bool = false
     var focus: FocusState<String?>.Binding
-    /// Driven by the page's focus model on macOS; see `MacDetailsFocus`.
-    var macIsFocused: Bool = false
     let restrictFocusToKey: String?
     let onMoveDown: () -> Void
     var onMoveUp: (() -> Void)? = nil
@@ -5174,13 +5161,7 @@ private struct TvEpisodeCard: View {
 
     private var cardKey: String { TvEpisodeFocus.card(video.id) }
 
-    private var isFocused: Bool {
-        #if os(macOS)
-        return macIsFocused
-        #else
-        return focus.wrappedValue == cardKey
-        #endif
-    }
+    private var isFocused: Bool { focus.wrappedValue == cardKey }
 
     private let cardWidth: CGFloat = TvEpisodeCardLayout.width
     private let thumbHeight: CGFloat = 300
@@ -5552,7 +5533,9 @@ private struct TvStreamGlass<S: InsettableShape>: ViewModifier {
     }
 }
 
-#if os(tvOS) || os(macOS)
+// The stream picker is a tvOS-only screen: macOS lists the same streams in
+// the details rail, so nothing here is reachable there.
+#if os(tvOS)
 private struct TvStreamPickerOverlay: View {
     let meta: NuvioMeta
     let episode: NuvioVideo?
@@ -5595,222 +5578,12 @@ private struct TvStreamPickerOverlay: View {
     private var resolutionFilter: StreamResolutionFilter = .any
     @State private var showResolutionOptions = false
     @State private var showProviderOptions = false
-    #if os(macOS)
-    /// The macOS highlight, as a plain value. `focusedItem` is a `@FocusState`
-    /// and SwiftUI drops writes to one when no view holds the matching focus,
-    /// which on macOS is most of the time.
-    @State private var macFocusedItem: String?
-    /// The open dropdown, if any. `confirmationDialog` becomes an `NSAlert` on
-    /// macOS, which caps at three buttons — so the provider list silently hid
-    /// every add-on past the third (including the one actually serving the
-    /// streams) and Resolution lost 1080p, 720p and SD. This is an in-canvas
-    /// list instead, with no cap and the same keyboard model as everything else.
-    @State private var macOptions: MacPickerOptionList?
-    @State private var macOptionIndex = 0
-    @ObservedObject private var keyRouter = MacKeyRouter.shared
-    @State private var macKeyToken: UUID?
-    #endif
 
     private let filterAllKey = "filter::all"
     private let resolutionKey = "filter::resolution"
     private let sortKey = "filter::sort"
     private let cachedKey = "filter::cached"
     private func filterKey(_ addonId: String) -> String { "filter::\(addonId)" }
-
-    /// True when the macOS highlight is on this control. Always false on tvOS,
-    /// where the focus engine drives the same appearance.
-    private func macIsFocused(_ key: String) -> Bool {
-        #if os(macOS)
-        return macFocusedItem == key
-        #else
-        return false
-        #endif
-    }
-
-    #if os(macOS)
-    /// Only providers worth choosing between: one that returned nothing has no
-    /// streams to filter to. Still-loading add-ons stay listed so the list does
-    /// not shuffle underneath the selection while discovery finishes.
-    private var macProviderGroups: [AddonStreamGroup] {
-        filterGroups.filter { !$0.streams.isEmpty || $0.isLoading }
-    }
-
-    private func macProviderOptions() -> MacPickerOptionList {
-        var entries = [MacPickerOption(
-            label: L10n.string("action_all", fallback: "All"),
-            isSelected: selectedAddonId == nil,
-            apply: { selectedAddonId = nil }
-        )]
-        entries += macProviderGroups.map { group in
-            MacPickerOption(
-                label: group.isLoading ? "\(group.displayName)…" : group.displayName,
-                isSelected: selectedAddonId == group.addonId,
-                apply: { selectedAddonId = group.addonId }
-            )
-        }
-        return MacPickerOptionList(
-            title: L10n.string("details_filter_provider", fallback: "Provider"),
-            options: entries
-        )
-    }
-
-    private func macResolutionOptions() -> MacPickerOptionList {
-        MacPickerOptionList(
-            title: L10n.string("details_filter_resolution", fallback: "Resolution"),
-            options: StreamResolutionFilter.allCases.map { option in
-                MacPickerOption(
-                    label: option.title,
-                    isSelected: resolutionFilter == option,
-                    apply: { resolutionFilter = option }
-                )
-            }
-        )
-    }
-
-    private func macSortOptions() -> MacPickerOptionList {
-        MacPickerOptionList(
-            title: L10n.string("details_sort_streams_by", fallback: "Sort streams by"),
-            options: StreamSortOption.allCases.map { option in
-                MacPickerOption(
-                    label: L10n.optionLabel(option.rawValue),
-                    isSelected: sortOption == option,
-                    apply: { sortOption = option }
-                )
-            }
-        )
-    }
-
-    private func macOpenOptions(_ list: MacPickerOptionList) {
-        macOptions = list
-        macOptionIndex = max(list.options.firstIndex(where: \.isSelected) ?? 0, 0)
-    }
-
-    /// The filter chips in the order they are laid out, so Left/Right along the
-    /// row matches what is on screen.
-    private var macFilterKeys: [String] {
-        var keys = [filterAllKey]
-        if includeDebrid { keys.append(cachedKey) }
-        keys.append(contentsOf: [resolutionKey, sortKey])
-        return keys
-    }
-
-    private func handleMacKey(_ key: MacKey) {
-        if let list = macOptions {
-            handleMacOptionKey(key, list: list)
-            return
-        }
-        guard let direction = MoveCommandDirection(key) else {
-            if MacMenuState.shared.handleReturn() { return }
-            macActivateFocused()
-            return
-        }
-        if MacMenuState.shared.handleMove(direction) { return }
-        macMoveFocus(direction)
-        MacDiagnostics.log("picker.move dir=\(direction) to=\(macTrace(macFocusedItem))")
-    }
-
-    private func handleMacOptionKey(_ key: MacKey, list: MacPickerOptionList) {
-        switch key {
-        case .up:
-            macOptionIndex = max(macOptionIndex - 1, 0)
-        case .down:
-            macOptionIndex = min(macOptionIndex + 1, list.options.count - 1)
-        case .left:
-            macOptions = nil
-        case .right:
-            break
-        case .activate:
-            guard list.options.indices.contains(macOptionIndex) else { return }
-            MacDiagnostics.log("picker.option \(list.options[macOptionIndex].label)")
-            list.options[macOptionIndex].apply()
-            macOptions = nil
-        }
-    }
-
-    /// Stream ids are resolve URLs carrying the whole title and every audio
-    /// flag, which made a single trace line dozens of lines long.
-    private func macTrace(_ key: String?) -> String {
-        guard let key else { return "none" }
-        guard !key.hasPrefix("filter::") else { return key }
-        guard let index = activeDisplayedStreams.firstIndex(where: { $0.id == key }) else {
-            return "stream?"
-        }
-        return "stream#\(index)"
-    }
-
-    /// The chips are a row and the streams are a column, so the two axes mean
-    /// different things depending on which the highlight is in.
-    private func macMoveFocus(_ direction: MoveCommandDirection) {
-        let filters = macFilterKeys
-        let streams = activeDisplayedStreams.map(\.id)
-
-        guard let current = macFocusedItem else {
-            macFocusedItem = streams.first ?? filters.first
-            return
-        }
-
-        if let index = filters.firstIndex(of: current) {
-            switch direction {
-            case .left:
-                if index > 0 {
-                    macFocusedItem = filters[index - 1]
-                } else {
-                    MacMenuState.shared.open()
-                }
-            case .right:
-                if index + 1 < filters.count { macFocusedItem = filters[index + 1] }
-            case .down:
-                if let first = streams.first { macFocusedItem = first }
-            default:
-                break
-            }
-            return
-        }
-
-        if let index = streams.firstIndex(of: current) {
-            switch direction {
-            case .up:
-                macFocusedItem = index > 0 ? streams[index - 1] : filters.first
-            case .down:
-                if index + 1 < streams.count { macFocusedItem = streams[index + 1] }
-            case .left:
-                MacMenuState.shared.open()
-            default:
-                break
-            }
-            return
-        }
-
-        // The highlight was on a stream that has since been filtered out.
-        macFocusedItem = streams.first ?? filters.first
-    }
-
-    private func macActivateFocused() {
-        guard let key = macFocusedItem else { return }
-        MacDiagnostics.log("picker.activate \(macTrace(key))")
-        switch key {
-        case filterAllKey: macOpenOptions(macProviderOptions())
-        case cachedKey: cachedOnly.toggle()
-        case resolutionKey: macOpenOptions(macResolutionOptions())
-        case sortKey: macOpenOptions(macSortOptions())
-        default:
-            guard let stream = activeDisplayedStreams.first(where: { $0.id == key }) else { return }
-            onSelect(stream, nil)
-        }
-    }
-
-    /// Put the highlight somewhere real: the list arrives progressively, so the
-    /// first seed usually lands on a chip and moves to a stream once there is
-    /// one, and a filter change can remove the stream it was on.
-    private func macSeedFocusIfNeeded() {
-        let streams = activeDisplayedStreams.map(\.id)
-        if let current = macFocusedItem,
-           macFilterKeys.contains(current) || streams.contains(current) {
-            return
-        }
-        macFocusedItem = streams.first ?? macFilterKeys.first
-    }
-    #endif
 
     /// Inputs that may change the visible stream list (not focus).
     private var listCacheKey: StreamPickerListCacheKey {
@@ -5875,23 +5648,6 @@ private struct TvStreamPickerOverlay: View {
                     y: 168 + panelStackHeight / 2
                 )
 
-                #if os(macOS)
-                if let list = macOptions {
-                    MacPickerOptionsPanel(list: list, highlighted: macOptionIndex) { index in
-                        guard list.options.indices.contains(index) else { return }
-                        list.options[index].apply()
-                        macOptions = nil
-                    } onDismiss: {
-                        macOptions = nil
-                    }
-                    .frame(width: panelWidth, height: canvasHeight, alignment: .center)
-                    .position(
-                        x: canvasWidth - 64 - panelWidth / 2,
-                        y: canvasHeight / 2
-                    )
-                    .transition(.opacity)
-                }
-                #endif
             }
             // The picker mounts before discovery finishes, so this seed usually
             // lands on the All chip; seedStreamFocusIfNeeded hands focus to the
@@ -5930,26 +5686,6 @@ private struct TvStreamPickerOverlay: View {
                 streamBadgeSettingsRevision &+= 1
             }
             .onExitCommand(perform: onDismiss)
-            #if os(macOS)
-            // Keys come from `MacKeyRouter`: this overlay sits above Details,
-            // which would otherwise keep moving its own highlight underneath.
-            .onAppear {
-                keyRouter.release(macKeyToken)
-                macKeyToken = keyRouter.claim()
-                macSeedFocusIfNeeded()
-            }
-            .onDisappear {
-                keyRouter.release(macKeyToken)
-                macKeyToken = nil
-            }
-            .onChange(of: keyRouter.latest) { _, press in
-                guard let press, keyRouter.isFront(macKeyToken) else { return }
-                handleMacKey(press.key)
-            }
-            .onChange(of: displayedStreamsCacheKey) { _, _ in
-                macSeedFocusIfNeeded()
-            }
-            #endif
         }
         .background(Color.black.ignoresSafeArea())
         .task(id: streamCardPresentationCacheKey, priority: .utility) {
@@ -6062,14 +5798,7 @@ private struct TvStreamPickerOverlay: View {
                 isSelected: selectedAddonId != nil,
                 focusBinding: $focusedItem,
                 focusValue: filterAllKey,
-                macIsFocused: macIsFocused(filterAllKey),
-                action: {
-                    #if os(macOS)
-                    macOpenOptions(macProviderOptions())
-                    #else
-                    showProviderOptions = true
-                    #endif
-                }
+                action: { showProviderOptions = true }
             )
             .fixedSize(horizontal: true, vertical: false)
             .confirmationDialog(
@@ -6098,7 +5827,6 @@ private struct TvStreamPickerOverlay: View {
                     isSelected: cachedOnly,
                     focusBinding: $focusedItem,
                     focusValue: cachedKey,
-                    macIsFocused: macIsFocused(cachedKey),
                     action: { cachedOnly.toggle() }
                 )
                 .fixedSize(horizontal: true, vertical: false)
@@ -6113,14 +5841,7 @@ private struct TvStreamPickerOverlay: View {
                 isSelected: resolutionFilter != .any,
                 focusBinding: $focusedItem,
                 focusValue: resolutionKey,
-                macIsFocused: macIsFocused(resolutionKey),
-                action: {
-                    #if os(macOS)
-                    macOpenOptions(macResolutionOptions())
-                    #else
-                    showResolutionOptions = true
-                    #endif
-                }
+                action: { showResolutionOptions = true }
             )
             .fixedSize(horizontal: true, vertical: false)
             .confirmationDialog(
@@ -6140,14 +5861,7 @@ private struct TvStreamPickerOverlay: View {
                 isSelected: sortOption != .quality,
                 focusBinding: $focusedItem,
                 focusValue: sortKey,
-                macIsFocused: macIsFocused(sortKey),
-                action: {
-                    #if os(macOS)
-                    macOpenOptions(macSortOptions())
-                    #else
-                    showSortOptions = true
-                    #endif
-                }
+                action: { showSortOptions = true }
             )
             .fixedSize(horizontal: true, vertical: false)
             .confirmationDialog(
@@ -6208,7 +5922,6 @@ private struct TvStreamPickerOverlay: View {
                 }
                 .padding(.horizontal, 40)
             } else {
-                ScrollViewReader { listProxy in
                 ScrollView(.vertical, showsIndicators: false) {
                     LazyVStack(spacing: 28) {
                         ForEach(streamsToShow) { stream in
@@ -6220,11 +5933,9 @@ private struct TvStreamPickerOverlay: View {
                                 presentation: streamCardPresentations[stream.id]
                                     ?? TvStreamCardPresentation(pending: badgeSettings),
                                 externalFocus: $focusedItem,
-                                macIsFocused: macIsFocused(stream.id),
                                 action: { onSelect(stream, nil) },
                                 onSelectPlayer: { player in onSelect(stream, player) }
                             )
-                            .id(stream.id)
                         }
 
                         if isLoading {
@@ -6243,17 +5954,6 @@ private struct TvStreamPickerOverlay: View {
                     .padding(40)
                 }
                 .focusSection()
-                #if os(macOS)
-                // A LazyVStack in a plain ScrollView: arrowing past the last
-                // visible card would otherwise highlight something off screen.
-                .onChange(of: macFocusedItem) { _, key in
-                    guard let key, streamsToShow.contains(where: { $0.id == key }) else { return }
-                    withAnimation(.easeOut(duration: 0.18)) {
-                        listProxy.scrollTo(key, anchor: .center)
-                    }
-                }
-                #endif
-                }
             }
 
             // Torrent streams take a moment to cache/unrestrict on the debrid
@@ -6409,17 +6109,9 @@ private struct TvStreamFilterButton: View {
     let isSelected: Bool
     let focusBinding: FocusState<String?>.Binding
     let focusValue: String
-    /// Driven by the picker's own focus model on macOS.
-    var macIsFocused: Bool = false
     let action: () -> Void
 
-    private var isFocused: Bool {
-        #if os(macOS)
-        return macIsFocused
-        #else
-        return focusBinding.wrappedValue == focusValue
-        #endif
-    }
+    private var isFocused: Bool { focusBinding.wrappedValue == focusValue }
 
     var body: some View {
         Button(action: action) {
@@ -6504,23 +6196,12 @@ private struct TvStreamCard: View {
     private let badgePlacement: StreamBadgePlacement
     private let showAddonLogo: Bool
     let externalFocus: FocusState<String?>.Binding
-    /// Set by the picker on macOS, where nothing moves AppKit focus between
-    /// these cards. A stored value re-renders; a focus binding does not.
-    let macIsFocused: Bool
     let action: () -> Void
     var onSelectPlayer: ((ExternalPlayer) -> Void)? = nil
 
     /// Local focus drives appearance only for this card, so focus moves do not
     /// push `isFocused` through the parent ForEach for every sibling.
     @FocusState private var isFocused: Bool
-
-    private var showsFocus: Bool {
-        #if os(macOS)
-        return macIsFocused
-        #else
-        return isFocused
-        #endif
-    }
 
     /// Precomputed once per card identity — not re-derived on every body tick.
     private let primaryName: String
@@ -6530,7 +6211,6 @@ private struct TvStreamCard: View {
         stream: NuvioStream,
         presentation: TvStreamCardPresentation,
         externalFocus: FocusState<String?>.Binding,
-        macIsFocused: Bool = false,
         action: @escaping () -> Void,
         onSelectPlayer: ((ExternalPlayer) -> Void)? = nil
     ) {
@@ -6541,7 +6221,6 @@ private struct TvStreamCard: View {
         self.badgePlacement = presentation.badgePlacement
         self.showAddonLogo = presentation.showAddonLogo
         self.externalFocus = externalFocus
-        self.macIsFocused = macIsFocused
         self.action = action
         self.onSelectPlayer = onSelectPlayer
         let lines = Self.nameLines(for: stream)
@@ -6561,7 +6240,7 @@ private struct TvStreamCard: View {
                             badges: importedBadges,
                             fileSizeLabel: fileSizeLabel,
                             releaseYear: releaseYear,
-                            isScrolling: showsFocus
+                            isScrolling: isFocused
                         )
                     }
 
@@ -6593,7 +6272,7 @@ private struct TvStreamCard: View {
                             badges: importedBadges,
                             fileSizeLabel: fileSizeLabel,
                             releaseYear: releaseYear,
-                            isScrolling: showsFocus
+                            isScrolling: isFocused
                         )
                             .padding(.top, 4)
                     }
@@ -6624,13 +6303,13 @@ private struct TvStreamCard: View {
             // Lightweight fill instead of per-card Liquid Glass (panel keeps glass).
             .background(
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(Color.white.opacity(showsFocus ? 0.14 : 0.06))
+                    .fill(Color.white.opacity(isFocused ? 0.14 : 0.06))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .stroke(
-                        showsFocus ? AppFocusOutline.color : Color.white.opacity(0.10),
-                        lineWidth: showsFocus ? AppFocusOutline.width : 1
+                        isFocused ? AppFocusOutline.color : Color.white.opacity(0.10),
+                        lineWidth: isFocused ? AppFocusOutline.width : 1
                     )
             )
         }
@@ -6639,8 +6318,8 @@ private struct TvStreamCard: View {
         .focused($isFocused)
         .modifier(ExternalFocusBinding(binding: externalFocus, id: stream.id))
         .focusEffectDisabledIfAvailable()
-        .scaleEffect(showsFocus ? 1.025 : 1)
-        .animation(.easeOut(duration: 0.14), value: showsFocus)
+        .scaleEffect(isFocused ? 1.025 : 1)
+        .animation(.easeOut(duration: 0.14), value: isFocused)
         .contextMenu {
             Section("Play with") {
                 ForEach(ExternalPlayer.allCases) { player in
