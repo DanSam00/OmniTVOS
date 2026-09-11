@@ -1378,7 +1378,7 @@ struct LiquidGlassSurface: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        #if os(tvOS)
+        #if os(tvOS) || os(macOS)
         if #available(tvOS 26.0, macOS 26.0, *) {
             content
                 .background(

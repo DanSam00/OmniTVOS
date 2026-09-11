@@ -2500,8 +2500,12 @@ private struct TVMainTabView: View {
         // with its own window toolbar. That chrome lives outside the scaled tvOS
         // canvas, so it cannot be sized with the rest of the UI — and the split
         // view was in the stack of the fullscreen-transition crash. Keep the
-        // app's own tab bar, scaled with everything else.
-        tabs
+        // app's own tab bar, scaled with everything else, and put a menu column
+        // beside it that keyboard focus can actually reach.
+        HStack(spacing: 0) {
+            MacHomeMenu(selectedTab: $selectedTab)
+            tabs
+        }
         #else
         if #available(tvOS 18.0, macOS 15.0, *) {
             tabs
@@ -2603,14 +2607,15 @@ private struct TVMainTabView: View {
                 }
                 .tag(TVTab.home)
 
-            #if !os(macOS)
-            // Parked on macOS until keyboard navigation is settled on Home and
-            // Settings; fewer surfaces to chase focus behaviour across.
             searchTab
                 .tabItem {
                     Label(TVTab.search.title, systemImage: TVTab.search.symbol)
                 }
                 .tag(TVTab.search)
+
+            #if !os(macOS)
+            // Library and Calendar stay parked on macOS until they get the same
+            // focus treatment Home has.
 
             LibraryView(
                 viewModel: libraryViewModel,
@@ -2819,6 +2824,11 @@ private final class TVHomeFocusWork {
     /// on every repeated focus report scrolls the row above across the lazy
     /// mount boundary, which relayouts and re-reports focus — an endless loop.
     var correctivelyPinnedCardKey: String?
+    #if os(macOS)
+    /// Re-entrancy guard: page filling is driven off the change notification,
+    /// and refreshing the row posts more of them.
+    var isFillingMacPages = false
+    #endif
     /// Last card an `onFocus` actually ran to completion for. Repeat reports are
     /// detected against this, NOT against the `focusedCardID` FocusState: SwiftUI
     /// writes the new card into that binding before the callback fires, so a
@@ -3651,7 +3661,14 @@ struct TVHomeView: View {
                     // cleanly. The default focus is only armed after Home loses
                     // focus, so the first Menu press can still reach the sidebar,
                     // while returning from the sidebar restores the saved card.
+                    #if !os(macOS)
+                    // On macOS a focus section swallows the arrow press at its
+                    // own boundary, so `onMoveCommand` never fires for a left
+                    // press on the first card — which is the gesture that opens
+                    // the menu. Focus is driven explicitly here, so the section
+                    // buys nothing.
                     .focusSection()
+                    #endif
                     .defaultFocusIfAvailable($focusedCardID, store.lastFocusedCardID ?? focusWork.pendingOverlayRestoreCardID)
                     #if os(macOS)
                     // macOS has no focus engine, so Home moves its own focus.
@@ -3666,6 +3683,11 @@ struct TVHomeView: View {
                     // nowhere, the arrow keys reach nothing at all, so give
                     // them somewhere to start.
                     .onKeyPress(.return) {
+                        // Details and the player sit above a still-mounted
+                        // Home; leave Return to them when one is showing.
+                        guard isActive, !isFullScreenOverlayPresented else {
+                            return .ignored
+                        }
                         macActivateFocusedCard()
                         return .handled
                     }
@@ -3753,6 +3775,13 @@ struct TVHomeView: View {
         .onReceive(NotificationCenter.default.publisher(for: ContinueWatchingStore.changedNotification).receive(on: RunLoop.main)) { _ in
             guard isActive else { return }
             refreshContinueWatching()
+            #if os(macOS)
+            // Every rebuild resets paging to page one, and rebuilds fire for
+            // more reasons than launch — a watched-state change alone knocked
+            // the row back to two titles. Refill from here so it does not
+            // matter which trigger ran.
+            Task { @MainActor in await macFillContinueWatchingPages() }
+            #endif
         }
         // A removal has to leave the row immediately, including under Trakt/Simkl
         // where the displayed list belongs to the provider and only changes on
@@ -5053,6 +5082,13 @@ struct TVHomeView: View {
     /// Continue Watching resumes (unless it is an unaired Up Next entry), and
     /// everything else opens details.
     private func macActivateFocusedCard() {
+        let menu = MacMenuState.shared
+        if menu.isFocused {
+            MacDiagnostics.log("menu.select " + menu.highlighted.rawValue)
+            MacTabCommandBus.shared.request(menu.highlighted)
+            menu.isFocused = false
+            return
+        }
         guard let cardKey = focusedCardID,
               let sectionId = MacHomeFocus.sectionId(of: cardKey) else { return }
         let itemId = String(cardKey.dropFirst(sectionId.count + 1))
@@ -5093,6 +5129,9 @@ struct TVHomeView: View {
     /// list. Bounded so a long history cannot spin here.
     @MainActor
     private func macFillContinueWatchingPages() async {
+        guard !focusWork.isFillingMacPages else { return }
+        focusWork.isFillingMacPages = true
+        defer { focusWork.isFillingMacPages = false }
         var pages = 0
         while ContinueWatchingBuilder.canLoadMore, pages < 8 {
             _ = await ContinueWatchingBuilder.loadNextPage()
@@ -5109,6 +5148,27 @@ struct TVHomeView: View {
     }
 
     private func handleMacHomeMove(_ direction: MoveCommandDirection, scrollProxy: ScrollViewProxy?) {
+        // Home stays mounted behind Details and the player, and kept handling
+        // arrows there — so those screens received nothing while focus moved
+        // invisibly down here.
+        guard isActive, !isFullScreenOverlayPresented else { return }
+        let menu = MacMenuState.shared
+        if menu.isFocused {
+            switch direction {
+            case .up:
+                menu.moveHighlight(by: -1, from: menu.highlighted)
+            case .down:
+                menu.moveHighlight(by: 1, from: menu.highlighted)
+            case .right:
+                // Back to the content, on whatever card focus left behind.
+                menu.isFocused = false
+                MacDiagnostics.log("menu.close")
+            default:
+                break
+            }
+            return
+        }
+
         let next = MacHomeFocus.nextCardKey(
             from: focusedCardID,
             direction: direction,
@@ -5117,7 +5177,15 @@ struct TVHomeView: View {
         MacDiagnostics.log(
             "homeFocus.move dir=\(direction) from=\(focusedCardID ?? "none") to=\(next ?? "none")"
         )
-        guard let next else { return }
+        guard let next else {
+            if direction == .left {
+                // Highlight is left where it was: the menu remembers its place
+                // and defaults to Home.
+                menu.isFocused = true
+                MacDiagnostics.log("menu.open")
+            }
+            return
+        }
 
         let fromSection = MacHomeFocus.sectionId(of: focusedCardID)
         let toSection = MacHomeFocus.sectionId(of: next)

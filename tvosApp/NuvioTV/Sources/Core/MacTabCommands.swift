@@ -19,7 +19,7 @@ final class MacTabCommandBus: ObservableObject {
     /// Only the tabs that exist on macOS right now. Search, Library, Calendar
     /// and the profile switcher are parked while keyboard navigation is being
     /// settled — see the `#if !os(macOS)` fences in `TVMainTabView.tabs`.
-    static let availableTabs: [TVTab] = [.home, .settings]
+    static let availableTabs: [TVTab] = [.home, .search, .settings]
 
     private init() {}
 
@@ -34,7 +34,8 @@ struct MacTabCommands: Commands {
     /// settled — see the `#if !os(macOS)` fences in `TVMainTabView.tabs`.
     private static let tabs: [(TVTab, KeyEquivalent)] = [
         (.home, "1"),
-        (.settings, "2"),
+        (.search, "2"),
+        (.settings, "3"),
     ]
 
     var body: some Commands {
