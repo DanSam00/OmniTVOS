@@ -117,10 +117,14 @@ final class MacKeyRouter: ObservableObject {
 
     private func handle(_ event: NSEvent) -> NSEvent? {
         guard let key = Self.key(for: event) else { return event }
-        // Never take arrows away from a text field — Search is typed into, and
-        // its caret needs Left/Right far more than the grid does.
+        // A focused text field owns typing, the text cursor and Return. It has
+        // no use for Up/Down though, and swallowing those left the caret stuck
+        // in the search field with no way down to the results.
         if let responder = event.window?.firstResponder, responder is NSText {
-            return event
+            switch key {
+            case .left, .right, .activate: return event
+            case .up, .down: break
+            }
         }
         guard !stack.isEmpty else { return event }
         sequence &+= 1

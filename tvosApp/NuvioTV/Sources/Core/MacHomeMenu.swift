@@ -66,6 +66,13 @@ final class MacMenuState: ObservableObject {
     }
 }
 
+enum MacMenuMetrics {
+    /// Space a screen must leave clear at its top-left so the collapsed menu
+    /// icon is not drawn over. Home needs none — its tvOS inset is already
+    /// wider — but the screens that start their header at the very edge do.
+    static let headerInset: CGFloat = 78
+}
+
 /// The visible menu: a column of tabs that keyboard focus can reach.
 ///
 /// tvOS reveals its tab bar by moving focus up off the first row, which needs

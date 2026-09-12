@@ -18,6 +18,11 @@ enum AppFocusOutline {
     static let emphasizedWidth: CGFloat = 6
 }
 
+/// Band identifiers for the macOS keyboard model.
+enum SettingsFocusBand {
+    static let categories = "categories"
+}
+
 private enum SettingsCategory: String, CaseIterable, Identifiable {
     case account = "Account & Profiles"
     case appearance = "Appearance"
@@ -1041,6 +1046,13 @@ struct SettingsView: View {
     @State private var selectedCategory: SettingsCategory = .account
     @State private var presentedLanguagePicker: LanguagePickerKind?
     @State private var presentedProfilePinMode: ProfilePinSheetMode?
+    #if os(macOS)
+    /// macOS has no focus engine. The category sidebar is one vertical band;
+    /// the detail pane's controls vary per category and are not modelled yet.
+    @StateObject private var macFocus = MacScreenFocus("settings")
+    @ObservedObject private var keyRouter = MacKeyRouter.shared
+    @ObservedObject private var macTabState = MacTabState.shared
+    #endif
     @FocusState private var focusedCategory: SettingsCategory?
     @FocusState private var focusedLanguagePreference: LanguagePickerKind?
     /// Whether focus has entered the current category's detail pane at least once.
@@ -1070,6 +1082,32 @@ struct SettingsView: View {
     private var accentColor: Color {
         SettingsAccent.color(for: theme)
     }
+
+    /// The macOS highlight for a sidebar pill, or nil on tvOS where the focus
+    /// engine drives it.
+    private func macSidebarFocus(_ category: SettingsCategory) -> Bool? {
+        #if os(macOS)
+        return macFocus.isFocused(SettingsFocusBand.categories, category.rawValue)
+        #else
+        return nil
+        #endif
+    }
+
+    #if os(macOS)
+    /// The sidebar only: one item per row, so Left always reaches the menu.
+    private var macBands: [MacFocusBand] {
+        [MacFocusBand(
+            id: SettingsFocusBand.categories,
+            items: SettingsCategory.allCases.map(\.rawValue),
+            columns: 1
+        )]
+    }
+
+    private func macActivate(band: String, item: String) {
+        guard let category = SettingsCategory(rawValue: item) else { return }
+        selectedCategory = category
+    }
+    #endif
 
     var body: some View {
         ZStack {
@@ -1173,6 +1211,30 @@ struct SettingsView: View {
         .background(Color.nuvioBackground(amoled: amoled, body: bodyColor).ignoresSafeArea())
         .animation(.easeOut(duration: 0.16), value: presentedLanguagePicker != nil)
         .animation(.easeInOut(duration: 0.18), value: presentedProfilePinMode != nil)
+        #if os(macOS)
+        .onAppear {
+            macFocus.update(macBands)
+            macFocus.focus(band: SettingsFocusBand.categories, item: selectedCategory.rawValue)
+            macFocus.syncClaim(isCurrent: macTabState.current == .settings)
+        }
+        .onDisappear { macFocus.release() }
+        .onChange(of: macTabState.current, initial: true) { _, tab in
+            macFocus.update(macBands)
+            macFocus.syncClaim(isCurrent: tab == .settings)
+        }
+        .onChange(of: keyRouter.latest) { _, press in
+            guard let press else { return }
+            // A sheet or picker owns the keyboard while it is up.
+            guard presentedLanguagePicker == nil, presentedProfilePinMode == nil else { return }
+            macFocus.handle(press.key, activate: macActivate)
+        }
+        // Moving the caret opens that category, so the pane always matches the
+        // highlighted pill rather than waiting for Return.
+        .onChange(of: macFocus.itemID) { _, item in
+            guard let item, let category = SettingsCategory(rawValue: item) else { return }
+            selectedCategory = category
+        }
+        #endif
     }
 
     private var audioLanguageSelection: Binding<[String]> {
@@ -1324,7 +1386,7 @@ struct SettingsView: View {
                     SettingsCategoryPill(
                         category: category,
                         isSelected: isSelectedCategory,
-                        isFocused: isFocusedCategory,
+                        isFocused: macSidebarFocus(category) ?? isFocusedCategory,
                         accentColor: accentColor
                     ) {
                         selectedCategory = category

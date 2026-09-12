@@ -185,9 +185,12 @@ struct SearchView: View {
         .onChange(of: viewModel.hasQuery) { _, _ in macFocus.update(macBands) }
         .onChange(of: keyRouter.latest) { _, press in
             guard let press else { return }
-            // Typing owns the keyboard while the field is first responder; the
-            // router already passes keys through to `NSText`.
             macFocus.handle(press.key, activate: macActivate)
+        }
+        // The caret being on the field means the field is ready to type into —
+        // a focus ring that does not accept text is worse than none.
+        .onChange(of: macFocus.bandID, initial: true) { _, band in
+            searchBarFocused = (band == SearchFocusBand.field)
         }
         #endif
         .onChange(of: focusedResultID) { _, newValue in
@@ -308,7 +311,16 @@ struct SearchView: View {
         .padding(.horizontal, 34)
         .frame(height: 72)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .modifier(GlassCapsule(focused: searchBarFocused || searchTextInputActive))
+        // The caret starts here on macOS, so the capsule has to show it —
+        // otherwise the screen looks unfocused until something is clicked.
+        #if os(macOS)
+        .padding(.leading, MacMenuMetrics.headerInset)
+        #endif
+        .modifier(GlassCapsule(
+            focused: searchBarFocused
+                || searchTextInputActive
+                || macIsFocused(SearchFocusBand.field, SearchFocusBand.field)
+        ))
     }
 
     // MARK: - Type filter

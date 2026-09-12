@@ -25,6 +25,13 @@ struct CalendarView: View {
     let onContentClick: (String, String) -> Void
 
     @StateObject private var viewModel = CalendarViewModel()
+    #if os(macOS)
+    /// macOS has no focus engine: each day is a band of entries. See
+    /// `MacScreenFocus`.
+    @StateObject private var macFocus = MacScreenFocus("calendar")
+    @ObservedObject private var keyRouter = MacKeyRouter.shared
+    @ObservedObject private var macTabState = MacTabState.shared
+    #endif
     @FocusState private var focusedEntryID: String?
     @FocusState private var focusedDayKey: String?
     @State private var focusedEntry: CalendarEntry?
@@ -135,14 +142,44 @@ struct CalendarView: View {
                 withAnimation(.easeOut(duration: 0.25)) { focusedEntry = first }
             }
         }
+        #if os(macOS)
+        .onAppear {
+            macFocus.update(macBands)
+            macFocus.syncClaim(isCurrent: macTabState.current == .calendar)
+        }
+        .onDisappear { macFocus.release() }
+        .onChange(of: macTabState.current, initial: true) { _, tab in
+            macFocus.update(macBands)
+            macFocus.syncClaim(isCurrent: tab == .calendar)
+        }
+        .onChange(of: viewModel.days.map(\.id)) { _, _ in macFocus.update(macBands) }
+        .onChange(of: mode) { _, _ in macFocus.update(macBands) }
+        .onChange(of: keyRouter.latest) { _, press in
+            guard let press else { return }
+            macFocus.handle(press.key, activate: macActivate)
+        }
+        // The hero above the list follows the highlight, the way the focus
+        // engine drives it on tvOS.
+        .onChange(of: macFocus.itemID) { _, id in
+            guard let id,
+                  let match = viewModel.entriesByDay.values.flatMap({ $0 }).first(where: { $0.id == id })
+            else { return }
+            withAnimation(.easeOut(duration: 0.25)) { focusedEntry = match }
+        }
+        #endif
     }
 
     private var filterChips: some View {
         HStack(spacing: 14) {
+            #if os(macOS)
+            // Clear of the collapsed menu icon in the top-left corner.
+            Color.clear.frame(width: MacMenuMetrics.headerInset, height: 1)
+            #endif
             ForEach(CalendarFilter.allCases) { option in
                 CalendarFilterChip(
                     title: chipTitle(for: option),
                     isSelected: viewModel.filters.contains(option),
+                    macIsFocused: macIsFocused(CalendarFocusBand.filters, option.rawValue),
                     showsMenuAffordance: option == .sports && sportMenuAvailable,
                     accentColor: accentColor,
                     action: {
@@ -305,13 +342,70 @@ struct CalendarView: View {
         }
     }
 
+    /// True when the macOS highlight is on this entry; always false on tvOS,
+    /// where the focus engine drives the same appearance.
+    private func macIsFocused(_ day: String, _ entry: String) -> Bool {
+        #if os(macOS)
+        return macFocus.isFocused(day, entry)
+        #else
+        return false
+        #endif
+    }
+
+    #if os(macOS)
+    /// One band per day, each a single horizontal row of entries.
+    private var macBands: [MacFocusBand] {
+        var bands = [MacFocusBand(
+            id: CalendarFocusBand.filters,
+            items: CalendarFilter.allCases.map(\.rawValue)
+        )]
+        // Month mode has no per-day rows to walk; the filters still do.
+        guard mode == .list else { return bands }
+        bands += viewModel.days.map { day in
+            MacFocusBand(id: day.id, items: day.entries.map(\.id))
+        }
+        return bands
+    }
+
+    private func macActivate(day: String, entry: String) {
+        if day == CalendarFocusBand.filters {
+            guard let option = CalendarFilter(rawValue: entry) else { return }
+            withAnimation(.easeOut(duration: 0.18)) { viewModel.toggle(option) }
+            return
+        }
+        guard let match = viewModel.days.first(where: { $0.id == day })?
+            .entries.first(where: { $0.id == entry })
+        else { return }
+        onContentClick(match.metaId, match.type)
+    }
+    #endif
+
     // MARK: - List mode
 
     private var listMode: some View {
+        #if os(macOS)
+        // The highlight is a plain value, so it lands on days below the fold
+        // that the viewport never follows.
+        ScrollViewReader { proxy in
+            listScrollView
+                .onChange(of: macFocus.bandID) { _, day in
+                    guard let day else { return }
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(day, anchor: .center)
+                    }
+                }
+        }
+        #else
+        listScrollView
+        #endif
+    }
+
+    private var listScrollView: some View {
         ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(alignment: .leading, spacing: 40) {
                 ForEach(viewModel.days) { day in
                     daySection(day)
+                        .id(day.id)
                 }
             }
             .padding(.vertical, 8)
@@ -323,20 +417,44 @@ struct CalendarView: View {
             dayHeading(day.id)
                 .padding(.horizontal, CalendarMetrics.pageInset)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: CalendarMetrics.cardGap) {
-                    ForEach(day.entries) { entry in
-                        CalendarEntryCard(entry: entry, accentColor: accentColor) {
-                            onContentClick(entry.metaId, entry.type)
+            #if os(macOS)
+            // Each day scrolls on its own, so the caret walks straight off the
+            // right-hand edge unless this row follows it.
+            ScrollViewReader { rowProxy in
+                dayEntries(day)
+                    .onChange(of: macFocus.itemID) { _, id in
+                        guard let id, macFocus.bandID == day.id else { return }
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            rowProxy.scrollTo(id, anchor: .center)
                         }
-                        .nuvioFocusable()
-                        .focused($focusedEntryID, equals: entry.id)
                     }
-                }
-                // Room for the focused card's scale so it cannot clip.
-                .padding(.horizontal, CalendarMetrics.pageInset)
-                .padding(.vertical, 12)
             }
+            #else
+            dayEntries(day)
+            #endif
+        }
+    }
+
+    @ViewBuilder
+    private func dayEntries(_ day: CalendarDay) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: CalendarMetrics.cardGap) {
+                ForEach(day.entries) { entry in
+                    CalendarEntryCard(
+                        entry: entry,
+                        accentColor: accentColor,
+                        macIsFocused: macIsFocused(day.id, entry.id)
+                    ) {
+                        onContentClick(entry.metaId, entry.type)
+                    }
+                    .nuvioFocusable()
+                    .focused($focusedEntryID, equals: entry.id)
+                    .id(entry.id)
+                }
+            }
+            // Room for the focused card's scale so it cannot clip.
+            .padding(.horizontal, CalendarMetrics.pageInset)
+            .padding(.vertical, 12)
         }
     }
 
@@ -479,6 +597,9 @@ struct CalendarView: View {
 private struct CalendarFilterChip: View {
     let title: String
     let isSelected: Bool
+    /// Driven by `MacScreenFocus`; macOS has no focus engine to set the
+    /// environment value.
+    var macIsFocused = false
     /// Draws the chevron hinting that a long press opens a menu.
     var showsMenuAffordance: Bool = false
     let accentColor: Color
@@ -510,7 +631,8 @@ private struct CalendarFilterChip: View {
                 title: title,
                 isSelected: isSelected,
                 showsMenuAffordance: showsMenuAffordance,
-                accentColor: accentColor
+                accentColor: accentColor,
+                macIsFocused: macIsFocused
             )
         }
         .buttonStyle(ChromeButtonStyle())
@@ -534,11 +656,22 @@ private struct CalendarFilterChip: View {
     /// Matches Search / Discover chips: glass pill, white when selected, accent
     /// outline on focus. Calendar previously rolled its own look.
     private struct ChipBody: View {
-        @Environment(\.isFocused) private var isFocused
+        @Environment(\.isFocused) private var environmentFocused
         let title: String
         let isSelected: Bool
         let showsMenuAffordance: Bool
         let accentColor: Color
+        /// Passed down from the chip: macOS has no focus engine to set the
+        /// environment value.
+        var macIsFocused = false
+
+        private var isFocused: Bool {
+            #if os(macOS)
+            return macIsFocused
+            #else
+            return environmentFocused
+            #endif
+        }
 
         var body: some View {
             HStack(spacing: 10) {
@@ -622,14 +755,30 @@ private struct CalendarHeroView: View {
 /// Must be placed **inside** a Button's label: tvOS publishes `\.isFocused`
 /// into the label's environment, so a view that merely *contains* the button
 /// always reads `false` — which is why these rings never appeared.
+/// Band identifiers for the macOS keyboard model.
+enum CalendarFocusBand {
+    static let filters = "filters"
+}
+
 private struct FocusRing<Content: View>: View {
-    @Environment(\.isFocused) private var isFocused
+    @Environment(\.isFocused) private var environmentFocused
+    /// Driven by `MacScreenFocus`; macOS has no focus engine to set the
+    /// environment value.
+    var macIsFocused = false
     let accentColor: Color
     var cornerRadius: CGFloat = 12
     var lineWidth: CGFloat = 6
     var scale: CGFloat = 1.04
     var fillOnFocus: Color? = nil
     @ViewBuilder let content: Content
+
+    private var isFocused: Bool {
+        #if os(macOS)
+        return macIsFocused
+        #else
+        return environmentFocused
+        #endif
+    }
 
     var body: some View {
         content
@@ -1044,6 +1193,7 @@ private struct DayPanelRow: View {
 private struct CalendarEntryCard: View {
     let entry: CalendarEntry
     var accentColor: Color = .white
+    var macIsFocused = false
     let action: () -> Void
 
     /// Same radius every other card in the app uses. Hardcoding 12 here made
@@ -1061,6 +1211,7 @@ private struct CalendarEntryCard: View {
         VStack(alignment: .leading, spacing: 10) {
             Button(action: action) {
                 FocusRing(
+                    macIsFocused: macIsFocused,
                     accentColor: accentColor,
                     cornerRadius: cardCornerRadius,
                     scale: 1.0

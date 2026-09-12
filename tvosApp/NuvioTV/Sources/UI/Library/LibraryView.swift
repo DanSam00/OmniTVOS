@@ -45,6 +45,13 @@ public struct LibraryView: View {
     @State private var restoreCloudArmTask: Task<Void, Never>?
     @State private var overlayRestoreCloudItemID: String?
 
+    #if os(macOS)
+    /// macOS has no focus engine: each group is a band of items. See
+    /// `MacScreenFocus`.
+    @StateObject private var macFocus = MacScreenFocus("library")
+    @ObservedObject private var keyRouter = MacKeyRouter.shared
+    @ObservedObject private var macTabState = MacTabState.shared
+    #endif
     @FocusState private var focusedItemID: String?
     /// Last card focused in the grid, kept so returning from details (which
     /// steals focus and nils `focusedItemID`) restores that card instead of
@@ -96,6 +103,9 @@ public struct LibraryView: View {
                 Text(L10n.string("library_title", fallback: "Library"))
                     .font(.system(size: 46, weight: .bold))
                     .foregroundColor(.white)
+                    #if os(macOS)
+                    .padding(.leading, MacMenuMetrics.headerInset)
+                    #endif
 
                 // Source switch: Saved | Cloud
                 HStack(spacing: 16) {
@@ -296,6 +306,29 @@ public struct LibraryView: View {
                 await cloudViewModel.load()
             }
         }
+        #if os(macOS)
+        .onAppear {
+            macFocus.update(macBands)
+            macFocus.syncClaim(isCurrent: macTabState.current == .library)
+        }
+        .onDisappear { macFocus.release() }
+        .onChange(of: macTabState.current, initial: true) { _, tab in
+            macFocus.update(macBands)
+            macFocus.syncClaim(isCurrent: tab == .library)
+        }
+        .onChange(of: viewModel.sortedAndGroupedItems.keys.sorted()) { _, _ in
+            macFocus.update(macBands)
+        }
+        // The Saved/Cloud switch swaps the whole list out from under the caret.
+        .onChange(of: sourceMode) { _, _ in macFocus.update(macBands) }
+        .onChange(of: keyRouter.latest) { _, press in
+            guard let press else { return }
+            // Cloud mode has its own list and no band model yet; leave its keys
+            // alone rather than moving an invisible caret in the saved grid.
+            guard sourceMode == .saved else { return }
+            macFocus.handle(press.key, activate: macActivate)
+        }
+        #endif
     }
 
     private var cloudSelectedProviderLabel: String {
@@ -314,6 +347,24 @@ public struct LibraryView: View {
     }
 
     private var savedContent: some View {
+        #if os(macOS)
+        // The highlight is a plain value, so it lands on cards below the fold
+        // that the viewport never follows.
+        ScrollViewReader { proxy in
+            savedScrollView
+                .onChange(of: macFocus.itemID) { _, id in
+                    guard let id else { return }
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(id, anchor: .center)
+                    }
+                }
+        }
+        #else
+        savedScrollView
+        #endif
+    }
+
+    private var savedScrollView: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 ForEach(viewModel.sortedAndGroupedItems.keys.sorted(), id: \.self) { group in
@@ -330,6 +381,7 @@ public struct LibraryView: View {
                                 item: item,
                                 externalFocus: $focusedItemID,
                                 retainFocusAppearance: overlayRestoreItemID == item.id,
+                                macIsFocused: macIsFocused(group, item.id),
                                 onLongPress: onLongPress.map { cb in { cb(item.asNuvioMeta) } }
                             ) {
                                 overlayRestoreItemID = item.id
@@ -337,6 +389,7 @@ public struct LibraryView: View {
                                 onContentClick(item.id, item.contentType)
                             }
                             .disabled(overlayRestoreItemID != nil && overlayRestoreItemID != item.id)
+                            .id(item.id)
                         }
                     }
                 }
@@ -616,6 +669,51 @@ public struct LibraryView: View {
             Text(title)
         }
     }
+
+    /// True when the macOS highlight is on this item; always false on tvOS,
+    /// where the focus engine drives the same appearance.
+    private func macIsFocused(_ group: String, _ item: String) -> Bool {
+        #if os(macOS)
+        return macFocus.isFocused(group, item)
+        #else
+        return false
+        #endif
+    }
+
+    #if os(macOS)
+    /// One band per group. The groups are separate grids on screen, so a flat
+    /// index would step across a short final row into the wrong place.
+    private var macBands: [MacFocusBand] {
+        viewModel.sortedAndGroupedItems.keys.sorted().map { group in
+            MacFocusBand(
+                id: group,
+                items: (viewModel.sortedAndGroupedItems[group] ?? []).map(\.id),
+                columns: macGridColumns
+            )
+        }
+    }
+
+    /// The grid is `.adaptive`, so the column count follows the width the
+    /// canvas actually gives it rather than a constant.
+    private var macGridColumns: Int {
+        // `MacTVCanvas` is generic over its content, so the static needs a
+        // concrete parameter to name the canvas the app actually renders on.
+        let available = MacTVCanvas<EmptyView>.canvasSize.width
+            - LibraryGridMetrics.pageInset * 2
+            - 24
+        let step = LibraryGridMetrics.posterWidth + LibraryGridMetrics.posterGap
+        return max(Int((available + LibraryGridMetrics.posterGap) / step), 1)
+    }
+
+    private func macActivate(group: String, item: String) {
+        guard let match = (viewModel.sortedAndGroupedItems[group] ?? [])
+            .first(where: { $0.id == item })
+        else { return }
+        overlayRestoreItemID = match.id
+        lastFocusedItemID = match.id
+        onContentClick(match.id, match.contentType)
+    }
+    #endif
 
     private var gridColumns: [GridItem] {
         [GridItem(
