@@ -8,6 +8,13 @@ import AppKit
 
 /// Same poster geometry as the See All catalog and Grid Home. Seven columns fit
 /// only because of `pageInset` — the old 80pt inset left room for six.
+/// Band identifiers for the macOS keyboard model.
+enum SearchFocusBand {
+    static let field = "field"
+    static let filters = "filters"
+    static let results = "results"
+}
+
 private enum SearchGridMetrics {
     static let posterWidth: CGFloat = 210
     static let posterHeight: CGFloat = 315
@@ -31,6 +38,13 @@ struct SearchView: View {
     var onLongPress: ((NuvioMeta) -> Void)? = nil
 
     @FocusState private var searchBarFocused: Bool
+    #if os(macOS)
+    /// macOS has no focus engine; the results grid keeps its own highlight.
+    /// See `MacGridFocus`.
+    @StateObject private var macFocus = MacScreenFocus("search")
+    @ObservedObject private var keyRouter = MacKeyRouter.shared
+    @ObservedObject private var macTabState = MacTabState.shared
+    #endif
     @FocusState private var focusedResultID: String?
     @FocusState private var clearRecentFocused: Bool
     /// Last card focused in the results grid, kept so returning from details
@@ -59,6 +73,51 @@ struct SearchView: View {
         self.onContentClick = onContentClick
         self.onLongPress = onLongPress
     }
+
+    /// True when the macOS highlight is on this control; always false on tvOS,
+    /// where the focus engine drives the same appearance.
+    private func macIsFocused(_ band: String, _ item: String) -> Bool {
+        #if os(macOS)
+        return macFocus.isFocused(band, item)
+        #else
+        return false
+        #endif
+    }
+
+    #if os(macOS)
+    /// The screen as the keyboard sees it: the field, then the filters, then
+    /// the results. Republished whenever any of the three changes.
+    private var macBands: [MacFocusBand] {
+        var bands = [MacFocusBand(id: SearchFocusBand.field, items: [SearchFocusBand.field])]
+        if viewModel.hasQuery {
+            bands.append(MacFocusBand(
+                id: SearchFocusBand.filters,
+                items: SearchContentType.allCases.map(\.rawValue)
+            ))
+            bands.append(MacFocusBand(
+                id: SearchFocusBand.results,
+                items: visibleResults.map(\.id),
+                columns: Int(SearchGridMetrics.columnCount)
+            ))
+        }
+        return bands
+    }
+
+    private func macActivate(band: String, item: String) {
+        switch band {
+        case SearchFocusBand.field:
+            // Return on the field hands the keyboard to the text cursor.
+            searchBarFocused = true
+        case SearchFocusBand.filters:
+            guard let type = SearchContentType(rawValue: item) else { return }
+            viewModel.setType(type)
+        default:
+            guard let result = visibleResults.first(where: { $0.id == item }) else { return }
+            lastFocusedResultID = item
+            onContentClick(result.id, result.type)
+        }
+    }
+    #endif
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -111,7 +170,26 @@ struct SearchView: View {
         }
         .onAppear {
             viewModel.reloadRecent()
+            #if os(macOS)
+            macFocus.update(macBands)
+            macFocus.syncClaim(isCurrent: macTabState.current == .search)
+            #endif
         }
+        #if os(macOS)
+        .onDisappear { macFocus.release() }
+        .onChange(of: macTabState.current, initial: true) { _, tab in
+            macFocus.update(macBands)
+            macFocus.syncClaim(isCurrent: tab == .search)
+        }
+        .onChange(of: visibleResults.map(\.id)) { _, _ in macFocus.update(macBands) }
+        .onChange(of: viewModel.hasQuery) { _, _ in macFocus.update(macBands) }
+        .onChange(of: keyRouter.latest) { _, press in
+            guard let press else { return }
+            // Typing owns the keyboard while the field is first responder; the
+            // router already passes keys through to `NSText`.
+            macFocus.handle(press.key, activate: macActivate)
+        }
+        #endif
         .onChange(of: focusedResultID) { _, newValue in
             if let newValue {
                 restoreArmTask?.cancel()
@@ -238,7 +316,11 @@ struct SearchView: View {
     private var typeFilter: some View {
         HStack(spacing: 16) {
             ForEach(SearchContentType.allCases) { type in
-                GlassChip(title: type.title, isSelected: viewModel.selectedType == type) {
+                GlassChip(
+                    title: type.title,
+                    isSelected: viewModel.selectedType == type,
+                    macIsFocused: macIsFocused(SearchFocusBand.filters, type.rawValue)
+                ) {
                     viewModel.setType(type)
                 }
             }
@@ -298,6 +380,25 @@ struct SearchView: View {
     }
 
     private var resultsGrid: some View {
+        #if os(macOS)
+        // The highlight is a plain value, so it lands on cards below the fold
+        // that the viewport never follows — arrowing down simply looked like
+        // nothing happening. Keep the grid on the focused card.
+        ScrollViewReader { proxy in
+            resultsScrollView
+                .onChange(of: macFocus.itemID) { _, id in
+                    guard let id, macFocus.bandID == SearchFocusBand.results else { return }
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        proxy.scrollTo(id, anchor: .center)
+                    }
+                }
+        }
+        #else
+        resultsScrollView
+        #endif
+    }
+
+    private var resultsScrollView: some View {
         ScrollView {
             LazyVGrid(columns: gridColumns, alignment: .leading, spacing: SearchGridMetrics.posterGap) {
                 ForEach(visibleResults) { item in
@@ -308,7 +409,8 @@ struct SearchView: View {
                         externalFocus: $focusedResultID,
                         retainFocusAppearance: overlayRestoreResultID == item.id,
                         onLongPress: onLongPress.map { cb in { cb(item) } },
-                        forceShowLabels: true
+                        forceShowLabels: true,
+                        macIsFocused: macIsFocused(SearchFocusBand.results, item.id)
                     ) {
                         overlayRestoreResultID = item.id
                         lastFocusedResultID = item.id
@@ -567,8 +669,18 @@ struct GlassChip: View {
     var leadingSystemImage: String? = nil
     var externalFocus: FocusState<String?>.Binding? = nil
     var focusValue: String = ""
+    /// Driven by `MacScreenFocus`; macOS has no focus engine to set `focused`.
+    var macIsFocused = false
     let action: () -> Void
     @FocusState private var focused: Bool
+
+    private var showsFocus: Bool {
+        #if os(macOS)
+        return macIsFocused
+        #else
+        return focused
+        #endif
+    }
 
     var body: some View {
         Button(action: action) {
@@ -580,18 +692,18 @@ struct GlassChip: View {
                 Text(title)
                     .font(.system(size: 24, weight: .semibold))
             }
-            .foregroundColor(isSelected || focused ? .black : .white.opacity(0.85))
+            .foregroundColor(isSelected || showsFocus ? .black : .white.opacity(0.85))
             .padding(.horizontal, 30)
             .frame(height: 60)
-            .modifier(GlassChipBackground(filled: isSelected || focused))
+            .modifier(GlassChipBackground(filled: isSelected || showsFocus))
         }
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
         .focused($focused)
         .modifier(ExternalFocusBinding(binding: externalFocus, id: focusValue))
         .focusEffectDisabledIfAvailable()
-        .scaleEffect(focused ? 1.06 : 1.0)
-        .animation(.easeOut(duration: 0.14), value: focused)
+        .scaleEffect(showsFocus ? 1.06 : 1.0)
+        .animation(.easeOut(duration: 0.14), value: showsFocus)
     }
 }
 

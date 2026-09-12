@@ -1227,6 +1227,8 @@ struct PosterGridCard: View {
     /// itself. Container-level handlers can miss commands consumed by tvOS's
     /// focus engine before they bubble out of a poster.
     var onMove: ((MoveCommandDirection) -> Void)? = nil
+    /// Driven by `MacGridFocus`; see `LibraryItemButton` for the same note.
+    var macIsFocused = false
     let action: () -> Void
 
     @FocusState private var focused: Bool
@@ -1237,7 +1239,13 @@ struct PosterGridCard: View {
     @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
     @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
 
-    private var showsFocusedAppearance: Bool { focused || retainFocusAppearance }
+    private var showsFocusedAppearance: Bool {
+        #if os(macOS)
+        return macIsFocused || retainFocusAppearance
+        #else
+        return focused || retainFocusAppearance
+        #endif
+    }
 
     private var cardCornerRadius: CGFloat {
         AppCardStyle.cornerRadius(for: cardCornerRadiusSetting, fallback: 16)

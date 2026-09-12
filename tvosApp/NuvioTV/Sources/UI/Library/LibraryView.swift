@@ -637,6 +637,9 @@ struct LibraryItemButton: View {
     let item: StremioMeta
     var externalFocus: FocusState<String?>.Binding? = nil
     var retainFocusAppearance = false
+    /// Driven by `MacGridFocus`, since macOS has no focus engine to set
+    /// `isFocused` and a focus binding is not a render dependency.
+    var macIsFocused = false
     var onLongPress: (() -> Void)? = nil
     let action: () -> Void
 
@@ -728,7 +731,11 @@ struct LibraryItemButton: View {
     }
 
     private var showsFocusedAppearance: Bool {
-        isFocused || retainFocusAppearance
+        #if os(macOS)
+        return macIsFocused || retainFocusAppearance
+        #else
+        return isFocused || retainFocusAppearance
+        #endif
     }
 
     private var cardCornerRadius: CGFloat {

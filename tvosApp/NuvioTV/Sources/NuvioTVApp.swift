@@ -321,6 +321,9 @@ struct ContentView: View {
         #if os(macOS)
         // ⌘1/⌘2 arrive on the Scene's commands, which cannot reach this view's
         // state directly, so they are relayed through the shared bus.
+        .onChange(of: selectedTab, initial: true) { _, tab in
+            MacTabState.shared.current = tab
+        }
         .onChange(of: tabCommands.requestedTab) { _, requested in
             guard let requested else { return }
             tabCommands.requestedTab = nil
@@ -2646,10 +2649,6 @@ private struct TVMainTabView: View {
                 }
                 .tag(TVTab.search)
 
-            #if !os(macOS)
-            // Library and Calendar stay parked on macOS until they get the same
-            // focus treatment Home has.
-
             LibraryView(
                 viewModel: libraryViewModel,
                 store: ProfileSettings.store(for: activeProfile?.id),
@@ -2670,7 +2669,6 @@ private struct TVMainTabView: View {
                     Label(TVTab.calendar.title, systemImage: TVTab.calendar.symbol)
                 }
                 .tag(TVTab.calendar)
-            #endif
 
             SettingsView(
                 activeProfile: displayedProfile,
