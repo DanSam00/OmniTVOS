@@ -114,8 +114,13 @@ final class PlaybackSessionCoordinator: ObservableObject {
         aetherController.destroyPlayer()
 
         var mpvRequest = request
-        if captured > 1 {
+        // Never carry a position into a live stream: there is nothing to resume
+        // to, MPV cannot seek it, and the attempt repeated several times a
+        // second while the position sat outside the rolling window.
+        if captured > 1, !request.isLive {
             mpvRequest.resumePositionSeconds = captured
+        } else {
+            mpvRequest.resumePositionSeconds = nil
         }
         lastRequest = mpvRequest
         handoffTargetSeconds = mpvRequest.resumePositionSeconds

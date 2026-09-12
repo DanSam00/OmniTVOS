@@ -2982,40 +2982,96 @@ struct TvDetailsContent: View {
         uiState.streamGroups.filter { !$0.streams.isEmpty || $0.isLoading }
     }
 
-    private var macRailHeaderItems: [MacRailHeaderItem] {
+    /// Header controls paired with what they do.
+    ///
+    /// Built together deliberately: the previous version mapped a caret index
+    /// onto a `switch` in a second function, and a conditional control makes
+    /// those two drift.
+    private var macRailHeaderEntries: [MacRailHeaderEntry] {
         switch macRailMode {
         case .episodes:
-            var items = [MacRailHeaderItem(symbol: "chevron.left")]
-            guard macSeasons.count > 1 else { return items }
-            items += macSeasons.map { season in
-                MacRailHeaderItem(
-                    label: macSeasonTitle(season),
-                    isActive: season == macActiveSeason
+            var entries = [MacRailHeaderEntry(
+                item: MacRailHeaderItem(symbol: "chevron.left"),
+                action: macCloseRail
+            )]
+            guard macSeasons.count > 1 else { return entries }
+            entries += macSeasons.map { season in
+                MacRailHeaderEntry(
+                    item: MacRailHeaderItem(
+                        label: macSeasonTitle(season),
+                        isActive: season == macActiveSeason
+                    ),
+                    action: {
+                        macRailSeason = season
+                        macPublishRailCounts()
+                    }
                 )
             }
-            return items
+            return entries
+
         case .streams:
-            var items = [MacRailHeaderItem(symbol: "chevron.left")]
-            items.append(MacRailHeaderItem(
-                label: L10n.format(
-                    "details_provider_format",
-                    fallback: "Provider: %@",
-                    macSelectedAddonId.flatMap { id in
-                        macProviderGroups.first { $0.addonId == id }?.displayName
-                    } ?? L10n.string("action_all", fallback: "All")
+            var entries = [MacRailHeaderEntry(
+                item: MacRailHeaderItem(symbol: "chevron.left"),
+                action: {
+                    // Back to the episode list on a series; off the page
+                    // entirely on a movie, which has no list to return to.
+                    if macHasEpisodes {
+                        isStreamsPresented?.wrappedValue = false
+                    } else {
+                        macCloseRail()
+                    }
+                }
+            )]
+            entries.append(MacRailHeaderEntry(
+                item: MacRailHeaderItem(
+                    label: L10n.format(
+                        "details_provider_format",
+                        fallback: "Provider: %@",
+                        macSelectedAddonId.flatMap { id in
+                            macProviderGroups.first { $0.addonId == id }?.displayName
+                        } ?? L10n.string("action_all", fallback: "All")
+                    ),
+                    isActive: macSelectedAddonId != nil
                 ),
-                isActive: macSelectedAddonId != nil
+                action: { macOpenRailOptions(macProviderOptionList()) }
             ))
-            items.append(MacRailHeaderItem(
-                label: L10n.format("details_resolution_format", fallback: "Res: %@", macResolutionFilter.title),
-                isActive: macResolutionFilter != .any
+            entries.append(MacRailHeaderEntry(
+                item: MacRailHeaderItem(
+                    label: L10n.format("details_resolution_format", fallback: "Res: %@", macResolutionFilter.title),
+                    isActive: macResolutionFilter != .any
+                ),
+                action: { macOpenRailOptions(macResolutionOptionList()) }
             ))
-            items.append(MacRailHeaderItem(
-                label: L10n.format("details_sort_format", fallback: "Sort: %@", L10n.optionLabel(macSortOption.rawValue)),
-                isActive: macSortOption != .quality
+            entries.append(MacRailHeaderEntry(
+                item: MacRailHeaderItem(
+                    label: L10n.format("details_sort_format", fallback: "Sort: %@", L10n.optionLabel(macSortOption.rawValue)),
+                    isActive: macSortOption != .quality
+                ),
+                action: { macOpenRailOptions(macSortOptionList()) }
             ))
-            return items
+            if includeDebrid {
+                // Without this the setting still filtered — `playableStreams`
+                // applies it with no fallback, unlike its other filters — and a
+                // list of uncached streams simply went blank with no way back.
+                entries.append(MacRailHeaderEntry(
+                    item: MacRailHeaderItem(
+                        label: macCachedOnly
+                            ? L10n.string("details_cached_only", fallback: "Cached only")
+                            : L10n.string("details_all_cache", fallback: "All cache"),
+                        isActive: macCachedOnly
+                    ),
+                    action: {
+                        macCachedOnly.toggle()
+                        macPublishRailCounts()
+                    }
+                ))
+            }
+            return entries
         }
+    }
+
+    private var macRailHeaderItems: [MacRailHeaderItem] {
+        macRailHeaderEntries.map(\.item)
     }
 
     private var macRailRows: [MacRailRow] {
@@ -3042,7 +3098,8 @@ struct TvDetailsContent: View {
         case .streams:
             let rows = macRailRows
             MacDiagnostics.log(
-                "rail.streams res=\(macResolutionFilter.rawValue) in=\(uiState.streams.count)"
+                "rail.streams res=\(macResolutionFilter.rawValue) cached=\(macCachedOnly)"
+                    + " debrid=\(includeDebrid) in=\(uiState.streams.count)"
                     + " out=\(rows.count)"
                     + " rows=\(rows.prefix(4).map { "\($0.badge ?? "-")|\($0.title.prefix(28))" })"
             )
@@ -3118,32 +3175,9 @@ struct TvDetailsContent: View {
     }
 
     private func macActivateRailHeader(_ index: Int) {
-        switch macRailMode {
-        case .episodes:
-            // Index 0 is the close control; the seasons follow it.
-            guard index > 0 else {
-                macCloseRail()
-                return
-            }
-            let seasonIndex = index - 1
-            guard macSeasons.indices.contains(seasonIndex) else { return }
-            macRailSeason = macSeasons[seasonIndex]
-            macPublishRailCounts()
-        case .streams:
-            switch index {
-            case 0:
-                // Back out of the streams: to the episode list on a series, or
-                // off the page entirely on a movie.
-                if macHasEpisodes {
-                    isStreamsPresented?.wrappedValue = false
-                } else {
-                    macCloseRail()
-                }
-            case 1: macOpenRailOptions(macProviderOptionList())
-            case 2: macOpenRailOptions(macResolutionOptionList())
-            default: macOpenRailOptions(macSortOptionList())
-            }
-        }
+        let entries = macRailHeaderEntries
+        guard entries.indices.contains(index) else { return }
+        entries[index].action()
     }
 
     private func macActivateRailRow(_ index: Int) {
@@ -3161,6 +3195,8 @@ struct TvDetailsContent: View {
     /// The rail owns the season and the filters, so its row lengths change
     /// under the caret as streams arrive or a filter narrows the list.
     private func macPublishRailCounts() {
+        macFocus.register(.railHeader, activate: macActivateRailHeader)
+        macFocus.register(.railList, activate: macActivateRailRow)
         macFocus.setCount(macRailIsVisible ? macRailHeaderItems.count : 0, for: .railHeader)
         macFocus.setCount(macRailIsVisible ? macRailRows.count : 0, for: .railList)
         guard macRailIsVisible else { return }
@@ -7100,6 +7136,13 @@ struct MacDetailsRail: View {
             }
         }
     }
+}
+
+/// A rail header control and what pressing it does, kept together so the
+/// caret's index and the action can never disagree.
+struct MacRailHeaderEntry {
+    let item: MacRailHeaderItem
+    let action: () -> Void
 }
 
 struct MacRailHeaderItem {

@@ -1543,6 +1543,8 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
     var onPlaybackSuspended: ((Int64, Int64) -> Void)?
     /// Terminal load/runtime failures the coordinator may use for MPV fallback.
     var onTerminalError: ((String) -> Void)?
+    /// Pending "is this stream actually showing a picture?" probe.
+    private var silentVideoCheck: DispatchWorkItem?
 
     let engine: AetherEngine
     let playerView = AetherPlayerView()
@@ -1577,6 +1579,9 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
     private(set) var isPlayerEnded = false
     private(set) var isAtEndOfFile = false
     private(set) var hasCoherentTimeSample = false
+    /// AetherEngine resolves this from the playlist itself.
+    var isLiveSource: Bool { engine.isLive }
+
     private(set) var durationMs: Int64 = 0
     private(set) var positionMs: Int64 = 0
     private(set) var bufferedMs: Int64 = 0
@@ -1869,6 +1874,58 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
         super.viewDidLayout()
         playerView.needsLayout = true
         playerView.layoutSubtreeIfNeeded()
+        logMacSurfaceState("layout")
+    }
+
+    /// Audio without a picture means the render layer is missing, empty or
+    /// unsized while the rest of the pipeline runs. Report which layer the
+    /// engine attached and how big it ended up.
+    private func logMacSurfaceState(_ reason: String) {
+        let hosted = surfaceSublayers.map { layer -> String in
+            let frame = layer.frame
+            var detail = "\(type(of: layer))@\(Int(frame.width))x\(Int(frame.height))"
+            // `isReadyForDisplay` separates "the layer never got video" from
+            // "the layer has video but nothing is on screen".
+            if let playerLayer = layer as? AVPlayerLayer {
+                let size = playerLayer.player?.currentItem?.presentationSize ?? .zero
+                detail += " ready=\(playerLayer.isReadyForDisplay)"
+                detail += " videoRect=\(Int(playerLayer.videoRect.width))x\(Int(playerLayer.videoRect.height))"
+                detail += " presentation=\(Int(size.width))x\(Int(size.height))"
+                detail += " gravity=\(playerLayer.videoGravity.rawValue)"
+                detail += " rate=\(playerLayer.player?.rate ?? -1)"
+                detail += " opacity=\(layer.opacity) hidden=\(layer.isHidden)"
+                if let item = playerLayer.player?.currentItem {
+                    // `presentationSize` of zero means AVFoundation sees no
+                    // video dimensions. Distinguish "the item has no video
+                    // track" from "it has one that will not decode".
+                    let video = item.tracks.filter { $0.assetTrack?.mediaType == .video }
+                    let audio = item.tracks.filter { $0.assetTrack?.mediaType == .audio }
+                    detail += " itemStatus=\(item.status.rawValue)"
+                    detail += " videoTracks=\(video.count) audioTracks=\(audio.count)"
+                    detail += " videoEnabled=\(video.map(\.isEnabled))"
+                    if let formats = video.first?.assetTrack?.formatDescriptions as? [CMFormatDescription],
+                       let first = formats.first {
+                        let code = CMFormatDescriptionGetMediaSubType(first)
+                        let chars = [24, 16, 8, 0].map { String(UnicodeScalar(UInt8((code >> $0) & 0xFF))) }
+                        detail += " videoCodec=\(chars.joined())"
+                    }
+                    if let error = item.error {
+                        detail += " itemError=\((error as NSError).code)"
+                    }
+                    if let url = (item.asset as? AVURLAsset)?.url.absoluteString {
+                        detail += " url=\(url.prefix(90))"
+                    }
+                }
+            }
+            return detail
+        }
+        MacDiagnostics.log(
+            "player.aether \(reason) state=\(engine.state)"
+                + " view=\(Int(view.bounds.width))x\(Int(view.bounds.height))"
+                + " surface=\(Int(playerView.bounds.width))x\(Int(playerView.bounds.height))"
+                + " wantsLayer=\(playerView.wantsLayer) backing=\(playerView.layer != nil)"
+                + " layers=\(hosted)"
+        )
     }
     #else
     override func viewWillAppear(_ animated: Bool) {
@@ -1888,6 +1945,56 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
     }
     #endif
 
+    /// AVFoundation plays the audio of an HLS stream whose video it cannot
+    /// use and reports no error at all: the item simply arrives with zero video
+    /// tracks and a zero `presentationSize`. HEVC carried in MPEG-2 Transport
+    /// Stream is the common case — Apple's HLS spec only supports HEVC in
+    /// fMP4/CMAF — and the result is a black picture with sound.
+    ///
+    /// Nothing in the native path can recover from that, so treat it the way a
+    /// terminal error is treated and let the coordinator hand the stream to
+    /// MPV, which decodes it.
+    private func scheduleSilentVideoCheck() {
+        silentVideoCheck?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.isNativePlaybackMissingVideo() else { return }
+            print("[Aether] native item has audio but no video — handing off to MPV")
+            #if os(macOS)
+            MacDiagnostics.log("player.noVideo handing off to MPV")
+            #endif
+            self.onTerminalError?("This stream's video needs the compatibility player.")
+        }
+        silentVideoCheck = work
+        // Tracks populate asynchronously after the item is ready, so sample
+        // once playback has actually settled rather than on the phase edge.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+    }
+
+    /// `UIView.layer` is non-optional and `NSView.layer` is not, so the two
+    /// platforms cannot share one expression.
+    private var surfaceSublayers: [CALayer] {
+        #if os(macOS)
+        return playerView.layer?.sublayers ?? []
+        #else
+        return playerView.layer.sublayers ?? []
+        #endif
+    }
+
+    /// True only when the native path is genuinely playing audio with no video
+    /// track. A source that has no audio either, or has not finished loading,
+    /// is not this case.
+    private func isNativePlaybackMissingVideo() -> Bool {
+        guard let playerLayer = surfaceSublayers.compactMap({ $0 as? AVPlayerLayer }).first,
+              let item = playerLayer.player?.currentItem,
+              item.status == .readyToPlay,
+              item.error == nil
+        else { return false }
+        let hasVideo = item.tracks.contains { $0.assetTrack?.mediaType == .video }
+        let hasAudio = item.tracks.contains { $0.assetTrack?.mediaType == .audio }
+        return !hasVideo && hasAudio && item.presentationSize == .zero
+    }
+
     func rebindSurface() {
         // `AetherPlayerView.attach` repairs a layer that AVKit/SwiftUI removed
         // or reparented while the controller was in PiP. Keep this operation
@@ -1899,6 +2006,7 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
     }
 
     deinit {
+        silentVideoCheck?.cancel()
         foregroundReloadTask?.cancel()
         NotificationCenter.default.removeObserver(self)
     }
@@ -1970,6 +2078,15 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
             .receive(on: DispatchQueue.main)
             .sink { [weak self] phase in
                 self?.applyPhase(phase)
+                if case .playing = phase {
+                    self?.scheduleSilentVideoCheck()
+                }
+                #if os(macOS)
+                // The render layer is created with the playback host, i.e.
+                // after load — a sample taken only at layout time is too early
+                // to tell whether one was ever attached.
+                self?.logMacSurfaceState("phase=\(phase)")
+                #endif
             }
             .store(in: &cancellables)
 

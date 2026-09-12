@@ -198,7 +198,14 @@ class PlayerViewModel: ObservableObject {
     /// Aether surface host.
     var aetherController: AetherPlaybackController { sessionCoordinator.aetherController }
     /// Which backend is driving the current (or next) stream.
-    @Published private(set) var activeEngineKind: PlayerEngineKind = .aether
+    @Published private(set) var activeEngineKind: PlayerEngineKind = .aether {
+        didSet {
+            #if os(macOS)
+            guard oldValue != activeEngineKind else { return }
+            MacDiagnostics.log("player.engine \(activeEngineKind)")
+            #endif
+        }
+    }
     /// Short on-screen note after engine selection (native DV vs HDR fallback).
     @Published private(set) var hdrModeToast: String?
     @Published private(set) var playbackDebugInfo: PlaybackDebugInfo?
@@ -626,6 +633,7 @@ class PlayerViewModel: ObservableObject {
             subtitleDelaySeconds: Double(subtitleDelayMs) / 1_000,
             audioDelaySeconds: Double(audioDelayMs) / 1_000,
             audioGainDB: Double(audioAmplificationDb),
+            isLive: isLiveStream,
             streamName: streamName,
             streamDescription: streamDescription,
             filename: filename
@@ -1285,6 +1293,16 @@ class PlayerViewModel: ObservableObject {
         }
     }
 
+    /// The engine knows what the metadata only guessed at. Adopting its answer
+    /// also fixes the buffer window, which uses a smaller readahead for live.
+    private func adoptEngineLivenessIfNeeded() {
+        guard !isLiveStream, engine.isLiveSource else { return }
+        isLiveStream = true
+        #if os(macOS)
+        MacDiagnostics.log("player.live detected by engine")
+        #endif
+    }
+
     /// Playback has demonstrably begun for the current load — disarm the
     /// watchdog. Idempotent.
     private func markLoadStarted() {
@@ -1570,6 +1588,9 @@ class PlayerViewModel: ObservableObject {
         let sampledEngineKind = activeEngineKind
         let c = engine
         c.refreshPlaybackState()
+        // Sampled here rather than once at load: the engine cannot answer until
+        // the file is open, which is after playback is considered started.
+        adoptEngineLivenessIfNeeded()
         sessionCoordinator.refreshHandoffState()
         // A backend handoff may occur while state is refreshed. Discard a stale sample.
         guard activeEngineKind == sampledEngineKind else { return }
@@ -3592,6 +3613,14 @@ class PlayerViewModel: ObservableObject {
     /// we expected (prior Continue Watching entry or metadata runtime) and the
     /// resume point — you can't be 40 min into a 2 min file.
     private func loadedStreamLooksLikeReplacement() -> Bool {
+        // Every test below reads `duration` as the length of a finite title. A
+        // live broadcast's duration is a rolling window — typically under a
+        // minute — so all three fire on a perfectly healthy channel, and the
+        // viewer gets an expired-link error over working video. Guarding the
+        // branches one at a time missed the middle one; live has no business
+        // in this heuristic at all.
+        guard !isLiveStream, !engine.isLiveSource else { return false }
+
         let loaded = time.duration
         guard loaded > 0 else { return false }
 
@@ -3601,7 +3630,7 @@ class PlayerViewModel: ObservableObject {
         if let expected = expectedDurationSeconds, expected >= 60, loaded < expected * 0.5 {
             return true
         }
-        if subtitle != PlaybackMarkers.trailerSubtitle, !isLiveStream, loaded < 180 {
+        if subtitle != PlaybackMarkers.trailerSubtitle, loaded < 180 {
             return true
         }
         return false
@@ -3628,6 +3657,13 @@ class PlayerViewModel: ObservableObject {
         guard replacementStreamHits >= Self.replacementConfirmTicks else { return false }
 
         didDetectReplacementStream = true
+        #if os(macOS)
+        MacDiagnostics.log(
+            "player.replacement duration=\(time.duration) expected=\(expectedDurationSeconds ?? -1)"
+                + " resume=\(pendingResumeSeconds ?? -1) live=\(isLiveStream)"
+                + " engineLive=\(engine.isLiveSource)"
+        )
+        #endif
         engine.pausePlayback()
         // Try to silently reload a fresh link before surfacing the error.
         recoverExpiredStream()

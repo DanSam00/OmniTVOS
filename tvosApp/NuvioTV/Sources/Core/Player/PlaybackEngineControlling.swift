@@ -190,6 +190,13 @@ protocol PlaybackEngineControlling: AnyObject {
     var currentSpeed: Float { get }
     var currentErrorMessage: String { get }
     var videoFrameSize: CGSize { get }
+    /// Whether the loaded source is a live broadcast, as the engine sees it.
+    ///
+    /// The metadata type is not reliable: `isLiveContentType` matches a fixed
+    /// list of words ("channel", "live", "tv"…) and an add-on that calls its
+    /// channels anything else is treated as on-demand — which then fails every
+    /// duration-based heuristic, since a live duration is a rolling window.
+    var isLiveSource: Bool { get }
     var playbackDebugInfo: PlaybackDebugInfo { get }
 
     func loadFile(_ urlString: String)

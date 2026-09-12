@@ -24,6 +24,9 @@ struct PlaybackLoadRequest: Equatable {
     var subtitleDelaySeconds: Double
     var audioDelaySeconds: Double
     var audioGainDB: Double
+    /// A live broadcast has no meaningful position to resume at, and its
+    /// duration is a rolling window rather than the length of anything.
+    var isLive: Bool = false
     /// Stream card labels used only for diagnostics / hard-exception policy.
     var streamName: String?
     var streamDescription: String?
@@ -46,6 +49,7 @@ struct PlaybackLoadRequest: Equatable {
         subtitleDelaySeconds: Double = 0,
         audioDelaySeconds: Double = 0,
         audioGainDB: Double = 0,
+        isLive: Bool = false,
         streamName: String? = nil,
         streamDescription: String? = nil,
         filename: String? = nil
@@ -66,6 +70,7 @@ struct PlaybackLoadRequest: Equatable {
         self.subtitleDelaySeconds = subtitleDelaySeconds
         self.audioDelaySeconds = audioDelaySeconds
         self.audioGainDB = audioGainDB
+        self.isLive = isLive
         self.streamName = streamName
         self.streamDescription = streamDescription
         self.filename = filename

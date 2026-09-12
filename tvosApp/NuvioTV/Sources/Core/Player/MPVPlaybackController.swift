@@ -402,6 +402,10 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
     private var mpv: OpaquePointer?
     private lazy var eventQueue = DispatchQueue(label: "mpv-events", qos: .userInitiated)
     private var recentPlaybackLogs: [String] = []
+    #if os(macOS)
+    /// Suppresses runs of the same forwarded log line.
+    private var lastForwardedLogLine: String?
+    #endif
     let subtitleTranslationState = MPVSubtitleTranslationState()
     private var isMPVSubtitleRendererHiddenForTranslation = false
 
@@ -703,7 +707,10 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
         setStringProperty("vid", "auto")
         clearCleanEndState()
 
-        if let target = lifecyclePositionMs {
+        // A live stream has no position to restore: it cannot be seeked, and
+        // its position moves with the broadcast, so the restore can never
+        // verify and ends by declaring a failure over working video.
+        if let target = lifecyclePositionMs, !isLiveSource {
             foregroundRestoreTargetMs = target
             foregroundRestoreDeadline = Date().addingTimeInterval(4)
             let rawPositionMs = milliseconds(from: readDoubleProperty("time-pos"))
@@ -1225,7 +1232,12 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
             return
         }
 
-        #if targetEnvironment(simulator)
+        #if targetEnvironment(simulator) || os(macOS)
+        // Nothing to wait for: the gate below exists to cover an Apple TV
+        // blanking HDMI while it switches frame rate and dynamic range, and
+        // `scheduleDisplayCriteriaProbe` — the only thing that releases it — is
+        // compiled out on both of these. Arming it here left MPV paused
+        // forever, decoding at full rate into a picture it never showed.
         playPlayback()
         #else
         // VIDEO_RECONFIG supplies the stream's real color and frame-rate
@@ -1375,7 +1387,9 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
                 && (previousPositionMs ?? positionMs) < referenceDurationMs * 85 / 100
                 && positionMs - (previousPositionMs ?? positionMs) > 30_000
 
-            if implausibleEndJump, let previousPositionMs {
+            // Same reasoning: a live position that jumps is the live edge
+            // moving, not a bad seek to correct.
+            if implausibleEndJump, !isLiveSource, let previousPositionMs {
                 lifecyclePositionMs = previousPositionMs
                 lifecycleDurationMs = referenceDurationMs
                 foregroundRestoreTargetMs = previousPositionMs
@@ -1863,10 +1877,55 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
         errorStateLock.unlock()
     }
 
+    #if os(macOS)
+    /// Audio without a picture means the video output failed while the rest of
+    /// the pipeline carried on. Say what mpv actually ended up with.
+    private func logMacVideoOutputState() {
+        let layer = metalLayer
+        MacDiagnostics.log(
+            "mpv.video vo=\(getString("current-vo") ?? "none")"
+                + " codec=\(getString("current-tracks/video/codec") ?? "none")"
+                + " vid=\(getString("vid") ?? "none")"
+                + " hwdec=\(getString("hwdec-current") ?? "none")"
+                + " size=\(getString("width") ?? "?")x\(getString("height") ?? "?")"
+                + " layer=\(Int(layer.frame.width))x\(Int(layer.frame.height))"
+                + " drawable=\(Int(layer.drawableSize.width))x\(Int(layer.drawableSize.height))"
+                + " scale=\(layer.contentsScale)"
+                + " device=\(layer.device?.name ?? "nil")"
+                + " view=\(Int(view.bounds.width))x\(Int(view.bounds.height))"
+        )
+    }
+    #endif
+
+    #if os(macOS)
+    /// Frames actually delivered, as opposed to an output that merely opened.
+    private func logMacVideoThroughput() {
+        MacDiagnostics.log(
+            "mpv.frames fps=\(getString("estimated-vf-fps") ?? "?")"
+                + " decoded=\(getString("frame-drop-count") ?? "?")"
+                + " dropped=\(getString("decoder-frame-drop-count") ?? "?")"
+                + " voDelayed=\(getString("vo-delayed-frame-count") ?? "?")"
+                + " dsize=\(getString("dwidth") ?? "?")x\(getString("dheight") ?? "?")"
+                + " hwdec=\(getString("hwdec-current") ?? "?")"
+                + " cache=\(getString("demuxer-cache-duration") ?? "?")"
+                + " paused=\(getFlag("pause")) coreIdle=\(getFlag("core-idle"))"
+        )
+    }
+    #endif
+
     private func appendPlaybackLog(prefix: String, level: String, text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         guard level == "warn" || level == "error" || level == "fatal" else { return }
+        #if os(macOS)
+        // Errors only, and never the same line twice in a row: a lossy live
+        // stream produces hundreds of identical decode warnings a minute, and
+        // each one of these is a disk write during playback.
+        if level != "warn", trimmed != lastForwardedLogLine {
+            lastForwardedLogLine = trimmed
+            MacDiagnostics.log("mpv.\(level) [\(prefix)] \(trimmed)")
+        }
+        #endif
         errorStateLock.lock()
         recentPlaybackLogs.append("[\(prefix)] \(trimmed)")
         if recentPlaybackLogs.count > 4 {
@@ -1914,6 +1973,15 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
                         self.updateState()
                         self.resetDisplayCriteriaProbe()
                         self.scheduleDisplayCriteriaProbe()
+                        #if os(macOS)
+                        self.logMacVideoOutputState()
+                        // `mpv.video` only proves the output opened. Sample
+                        // again once it has had time to decode, to see whether
+                        // any frames actually reach the screen.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                            self.logMacVideoThroughput()
+                        }
+                        #endif
                     }
                 case MPV_EVENT_VIDEO_RECONFIG:
                     // Fires once decode starts and whenever the video params
@@ -2017,6 +2085,15 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
         let str: String? = cstr == nil ? nil : String(cString: cstr!)
         mpv_free(cstr)
         return str
+    }
+
+    /// A live HLS/TS window cannot be seeked; a finite file can.
+    var isLiveSource: Bool {
+        guard mpv != nil else { return false }
+        // Before the file is open mpv reports `seekable=no` for everything, so
+        // only trust it once something is actually loaded.
+        guard durationMs > 0 || !isPlayerLoading else { return false }
+        return !getFlag("seekable")
     }
 
     private func getFlag(_ name: String) -> Bool {
