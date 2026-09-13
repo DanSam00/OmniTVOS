@@ -13,9 +13,20 @@ import SwiftUI
 /// `focusedCardID`, so movement is index arithmetic over the ordered sections
 /// rather than anything geometric.
 enum MacHomeFocus {
+    /// Section id of the stand-in row for the featured carousel, which Home
+    /// prepends to the navigable rows while the carousel is on.
+    static let featureSectionId = "mac.feature"
+    /// The carousel's single card key.
+    static let featureCardKey = "mac.feature\u{1}slide"
+
     /// Card keys for one row, in display order. Collection rows show folders
     /// where ordinary rows show titles.
     static func cardKeys(for section: TVHomeSection) -> [String] {
+        // However many slides it holds, the carousel is one focus target — the
+        // same as on tvOS, where Left/Right page it rather than moving focus.
+        // A key per slide would also change under the auto-advance timer and
+        // strand the highlight.
+        if section.id == featureSectionId { return [featureCardKey] }
         if !section.collectionFolders.isEmpty {
             return section.collectionFolders.map { "\(section.id)\u{1}\($0.id)" }
         }

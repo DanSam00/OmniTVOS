@@ -3305,8 +3305,8 @@ struct TVHomeView: View {
                             // focus-following hero while a row does. Unmounting
                             // it for any mode leaves nothing above the first row
                             // for Up to reach, and the press hits the sidebar.
-                            let folderOverride = isFeatureFocused ? nil : focusedCollectionFolder
-                            let metaOverride = (isFeatureFocused || folderOverride != nil)
+                            let folderOverride = featureFocused ? nil : focusedCollectionFolder
+                            let metaOverride = (featureFocused || folderOverride != nil)
                                 ? nil
                                 : (visibleFocusedMeta ?? visibleHero)
                             TVFeatureHeroView(
@@ -3315,6 +3315,7 @@ struct TVHomeView: View {
                                 overrideMeta: metaOverride,
                                 overrideContinueItem: metaOverride.flatMap { heroContinueItem(for: $0) },
                                 overrideFolder: folderOverride,
+                                macIsFocused: featureFocused,
                                 // Only latches on. Clearing it when the block
                                 // merely loses focus would flip to row-hero mode
                                 // the moment the sidebar opens, which reads as
@@ -4731,15 +4732,20 @@ struct TVHomeView: View {
     /// The feature only stands in for the hero when it has something to show —
     /// a new profile with no history keeps the ordinary hero.
     private var featureHeroActive: Bool {
+        homeFeature && homeLayout != "Grid View" && !featureItems.isEmpty
+    }
+
+    /// Whether the featured block is the focused element, and so in carousel
+    /// mode rather than standing in as the focus-following hero.
+    ///
+    /// tvOS has the focus engine set `isFeatureFocused`; macOS has no focus
+    /// engine, so the highlight is the plain `macFocusedCardID` and the
+    /// carousel is simply the card it names.
+    private var featureFocused: Bool {
         #if os(macOS)
-        // The carousel is a tvOS device: it owns focus as a single unit and is
-        // reached by moving up off the first row, which needs the focus engine
-        // macOS does not have. Keeping it here left Continue Watching both
-        // unreachable and invisible on load. As a plain row it is navigable
-        // like everything else.
-        return false
+        return macFocusedCardID == MacHomeFocus.featureCardKey
         #else
-        return homeFeature && homeLayout != "Grid View" && !featureItems.isEmpty
+        return isFeatureFocused
         #endif
     }
 
@@ -4801,7 +4807,7 @@ struct TVHomeView: View {
     private var homeBackdropURL: String? {
         // Featured carousel owns the backdrop while it holds focus, so the art
         // tracks the slide rather than whatever card was focused last.
-        if featureHeroActive, isFeatureFocused, featureItems.indices.contains(featureIndex) {
+        if featureHeroActive, featureFocused, featureItems.indices.contains(featureIndex) {
             return preferredBackdropURL(for: featureItems[featureIndex].meta)
         }
         // Collection folder focus uses its own hero backdrop (Android Modern
@@ -5100,6 +5106,10 @@ struct TVHomeView: View {
     /// arrives here, because moving focus means writing a shared key and the card
     /// does not re-render for it — so Home resolves the meta itself.
     private func macPublishHero(for cardKey: String) {
+        // The carousel draws its own slide and owns the backdrop while it is
+        // focused; publishing a row hero here would flip it out of carousel
+        // mode the moment it took the highlight.
+        guard cardKey != MacHomeFocus.featureCardKey else { return }
         guard let sectionId = MacHomeFocus.sectionId(of: cardKey) else { return }
         let itemId = String(cardKey.dropFirst(sectionId.count + 1))
         guard let section = macNavigableSections.first(where: { $0.id == sectionId }) else { return }
@@ -5132,8 +5142,20 @@ struct TVHomeView: View {
         // handler uses keeps it from acting while one is up.
         guard isActive, !isFullScreenOverlayPresented else { return }
         if MacMenuState.shared.handleReturn() { return }
-        guard let cardKey = macFocusedCardID,
-              let sectionId = MacHomeFocus.sectionId(of: cardKey) else { return }
+        guard let cardKey = macFocusedCardID else { return }
+        if cardKey == MacHomeFocus.featureCardKey {
+            let slides = featureItems
+            guard slides.indices.contains(featureIndex) else { return }
+            let item = slides[featureIndex]
+            MacDiagnostics.log("homeFocus.activate feature slide=\(featureIndex)")
+            if item.isUpNextEntry && !item.hasAired && !item.isAiringToday {
+                navigateToDetailsFromHome(id: item.meta.id, type: item.meta.type)
+            } else {
+                onResumePlayback(item)
+            }
+            return
+        }
+        guard let sectionId = MacHomeFocus.sectionId(of: cardKey) else { return }
         let itemId = String(cardKey.dropFirst(sectionId.count + 1))
         guard let section = macNavigableSections.first(where: { $0.id == sectionId }) else { return }
 
@@ -5186,8 +5208,16 @@ struct TVHomeView: View {
 
     /// Exactly the rows the view lays out, including the pinned ones that
     /// `store.sections` does not carry.
+    ///
+    /// The featured carousel is the Continue Watching surface while it is on,
+    /// so it takes that row's place here exactly as it does on screen — as a
+    /// stand-in row holding one card (see `MacHomeFocus.cardKeys`).
     private var macNavigableSections: [TVHomeSection] {
-        visibleSections.filter(\.hasContent)
+        let rows = visibleSections.filter(\.hasContent).filter {
+            !(featureHeroActive && $0.id == TVHomeSection.continueWatchingId)
+        }
+        guard featureHeroActive else { return rows }
+        return [TVHomeSection(id: MacHomeFocus.featureSectionId, title: "", items: [])] + rows
     }
 
     private func handleMacHomeMove(_ direction: MoveCommandDirection, scrollProxy: ScrollViewProxy?) {
@@ -5199,6 +5229,10 @@ struct TVHomeView: View {
         if menu.handleMove(direction) { return }
 
         let current = macFocusedCardID
+        if current == MacHomeFocus.featureCardKey, direction == .left || direction == .right {
+            macPageFeature(direction)
+            return
+        }
         let next = MacHomeFocus.nextCardKey(
             from: current,
             direction: direction,
@@ -5219,8 +5253,30 @@ struct TVHomeView: View {
         // the row still has to be brought in to be seen. Scroll minimally, so
         // the hero above is not pushed off screen the way an anchored pin would.
         let toSection = MacHomeFocus.sectionId(of: next)
-        if let toSection, toSection != MacHomeFocus.sectionId(of: current) {
+        if let toSection,
+           toSection != MacHomeFocus.featureSectionId,
+           toSection != MacHomeFocus.sectionId(of: current) {
             scrollProxy?.scrollTo(toSection, anchor: .top)
+        }
+    }
+
+    /// Pages the carousel, which is what Left/Right mean while it holds the
+    /// highlight. Right wraps, matching the auto-advance; Left at the first
+    /// slide is the way out to the menu, as it is at the start of any row.
+    private func macPageFeature(_ direction: MoveCommandDirection) {
+        let count = featureItems.count
+        let slide = min(max(featureIndex, 0), max(count - 1, 0))
+        MacDiagnostics.log("homeFocus.feature dir=\(direction) slide=\(slide) of=\(count)")
+        guard count > 1 else {
+            if direction == .left { MacMenuState.shared.open() }
+            return
+        }
+        if direction == .right {
+            withAnimation(.easeInOut(duration: 0.35)) { featureIndex = (slide + 1) % count }
+        } else if slide > 0 {
+            withAnimation(.easeInOut(duration: 0.35)) { featureIndex = slide - 1 }
+        } else {
+            MacMenuState.shared.open()
         }
     }
     #endif
@@ -6956,6 +7012,9 @@ private struct TVFeatureHeroView: View {
     var overrideContinueItem: ContinueWatchingItem? = nil
     /// Focused collection folder, which has its own hero treatment.
     var overrideFolder: TVCollectionFolderItem? = nil
+    /// The highlight, on macOS. There is no focus engine there, so Home owns
+    /// the highlight as a plain value and `isFocused` below is never set.
+    var macIsFocused: Bool = false
     var backdropBleed: CGFloat = 0
     var onFocusChange: ((Bool) -> Void)? = nil
     let onSelect: (ContinueWatchingItem) -> Void
@@ -6990,6 +7049,14 @@ private struct TVFeatureHeroView: View {
     /// moving focus onto it. Auto-advance waits for this to go quiet.
     @State private var lastInteraction = Date.distantPast
 
+    private var isMac: Bool {
+        #if os(macOS)
+        return true
+        #else
+        return false
+        #endif
+    }
+
     private var index: Int {
         guard !items.isEmpty else { return 0 }
         return min(max(selectedIndex, 0), items.count - 1)
@@ -7006,7 +7073,9 @@ private struct TVFeatureHeroView: View {
     /// so a left press there still opens the menu, which is the way out.
     @ViewBuilder
     private var leftPagingGuard: some View {
-        if isCarouselMode, index > 0 {
+        // macOS routes Left through `handleMacHomeMove`, so there is no focus
+        // press to absorb here — only a stray focusable button to leave behind.
+        if !isMac, isCarouselMode, index > 0 {
             Button(action: {}) {
                 Color.white.opacity(0.001)
                     .frame(width: 24, height: heroHeight * 0.5)
@@ -7021,6 +7090,15 @@ private struct TVFeatureHeroView: View {
     }
 
     private var isCarouselMode: Bool { overrideMeta == nil && overrideFolder == nil }
+
+    /// What the block draws its focus treatment from.
+    private var isHighlighted: Bool {
+        #if os(macOS)
+        return macIsFocused
+        #else
+        return isFocused
+        #endif
+    }
 
     /// Tall like the Grid View carousel while featuring Continue Watching, but
     /// back to the ordinary hero height as soon as a row is focused — a
@@ -7059,9 +7137,9 @@ private struct TVFeatureHeroView: View {
                             )
                             .frame(
                                 width: dot == index
-                                    ? (isFocused ? (dense ? 34 : 48) : (dense ? 26 : 36))
+                                    ? (isHighlighted ? (dense ? 34 : 48) : (dense ? 26 : 36))
                                     : (dense ? 10 : 18),
-                                height: isFocused && dot == index ? 6 : 4
+                                height: isHighlighted && dot == index ? 6 : 4
                             )
                     }
                 }
@@ -7078,9 +7156,11 @@ private struct TVFeatureHeroView: View {
         // artwork drawn here stops short of the screen edges. The page-level
         // CrossfadingBackdrop is full-bleed and follows `homeBackdropURL`.
         .contentShape(Rectangle())
+        #if !os(macOS)
         .focusable(true)
         .focusEffectDisabledIfAvailable()
         .focused($isFocused)
+        #endif
         .onTapGesture {
             if let overrideMeta {
                 onSelectOverride?(overrideMeta)
@@ -7295,20 +7375,20 @@ private struct TVFeatureHeroView: View {
             )
             .font(.system(size: 23, weight: .semibold))
         }
-        .foregroundColor(isFocused ? .black : .white)
+        .foregroundColor(isHighlighted ? .black : .white)
         .padding(.horizontal, 30)
         .frame(height: 58)
         .background(
-            Capsule().fill(isFocused ? Color.white : Color.white.opacity(0.16))
+            Capsule().fill(isHighlighted ? Color.white : Color.white.opacity(0.16))
         )
         .overlay(
             Capsule().strokeBorder(
-                isFocused ? accent : .clear,
-                lineWidth: isFocused ? AppFocusOutline.width : 0
+                isHighlighted ? accent : .clear,
+                lineWidth: isHighlighted ? AppFocusOutline.width : 0
             )
         )
-        .scaleEffect(isFocused ? 1.04 : 1)
-        .animation(.easeOut(duration: 0.16), value: isFocused)
+        .scaleEffect(isHighlighted ? 1.04 : 1)
+        .animation(.easeOut(duration: 0.16), value: isHighlighted)
     }
 
     /// Backdrop + scrims, drawn as a background so the art can bleed past the
