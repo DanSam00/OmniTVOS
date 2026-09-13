@@ -1832,7 +1832,57 @@ enum SmartPlaybackSelector {
             let res = tags.resolution > 0 ? tags.resolution : inferredResolution(for: stream)
             return !isLowQualityOrTicketStream(stream) && res >= 720
         }
+        traceStreamFunnel(
+            streams: streams,
+            playable: playable,
+            compatible: compatible,
+            nonPromotional: nonPromotional,
+            withoutPaywalls: withoutPaywalls,
+            valid: valid
+        )
         return valid.isEmpty ? result : valid
+    }
+
+    /// Which stage of the funnel each stream died at.
+    ///
+    /// Five filters run here in sequence and each has a fallback that makes it
+    /// invisible when it empties the list, so a short list says nothing about
+    /// which one shortened it.
+    private static func traceStreamFunnel(
+        streams: [NuvioStream],
+        playable: [NuvioStream],
+        compatible: [NuvioStream],
+        nonPromotional: [NuvioStream],
+        withoutPaywalls: [NuvioStream],
+        valid: [NuvioStream]
+    ) {
+        #if os(macOS)
+        guard !streams.isEmpty else { return }
+        MacDiagnostics.log(
+            "stream.funnel in=\(streams.count) url=\(playable.count)"
+                + " compatible=\(compatible.count) nonPromo=\(nonPromotional.count)"
+                + " nonPaywall=\(withoutPaywalls.count) valid=\(valid.count)"
+        )
+        let kept = Set(valid.map(\.id))
+        for stream in streams {
+            let tags = StreamQualityTags.parse(stream: stream)
+            let res = tags.resolution > 0 ? tags.resolution : inferredResolution(for: stream)
+            let reason: String
+            if !playable.contains(where: { $0.id == stream.id }) { reason = "no-url" }
+            else if !compatible.contains(where: { $0.id == stream.id }) { reason = "incompatible" }
+            else if !nonPromotional.contains(where: { $0.id == stream.id }) { reason = "promotional" }
+            else if !withoutPaywalls.contains(where: { $0.id == stream.id }) { reason = "paywall" }
+            else if isLowQualityOrTicketStream(stream) { reason = "ticket" }
+            else if res < 720 { reason = "res<720" }
+            else if kept.contains(stream.id) { reason = "kept" }
+            else { reason = "other" }
+            let addon: String = stream.addonName ?? "?"
+            let name: String = String((stream.name ?? "-").prefix(48))
+            let title: String = String((stream.description ?? "-").prefix(64))
+            let head: String = "stream.item \(reason) res=\(res) tagRes=\(tags.resolution)"
+            MacDiagnostics.log(head + " addon=" + addon + " name=" + name + " title=" + title)
+        }
+        #endif
     }
 
     /// Prefer DV / HDR / Atmos when aiming for highest quality.
@@ -2097,15 +2147,29 @@ enum StreamPickerListBuilder {
     ) -> [NuvioStream] {
         if let selectedAddonId {
             if let group = groups.first(where: { $0.addonId == selectedAddonId }) {
-                return group.streams
+                return deduplicated(group.streams)
             }
             let displayName = groups.first(where: { $0.addonId == selectedAddonId })?.displayName
-            return streams.filter { $0.addonName == displayName }
+            return deduplicated(streams.filter { $0.addonName == displayName })
         }
         if !groups.isEmpty {
-            return groups.flatMap(\.streams)
+            return deduplicated(groups.flatMap(\.streams))
         }
-        return streams
+        return deduplicated(streams)
+    }
+
+    /// Collapses streams that are indistinguishable from one another.
+    ///
+    /// Live-sports add-ons hand the same entry back more than once — one
+    /// fixture returned each of its four channels twice. `NuvioStream.id` is
+    /// built from exactly the fields that would tell two streams apart (URL,
+    /// label, description, add-on, filename), so a shared id means there is
+    /// nothing to choose between them. Leaving them in repeats rows, and puts
+    /// repeated ids in the macOS keyboard band, where the first match wins and
+    /// Left/Right stick.
+    private static func deduplicated(_ streams: [NuvioStream]) -> [NuvioStream] {
+        var seen: Set<String> = []
+        return streams.filter { seen.insert($0.id).inserted }
     }
 
     static func playableStreams(

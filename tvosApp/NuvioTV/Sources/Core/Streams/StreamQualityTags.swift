@@ -188,6 +188,18 @@ struct StreamQualityTags: Equatable, Codable {
             ) != nil
         }
 
+        // Frame size first. Live-sports add-ons report the actual dimensions
+        // rather than a quality token — "1920x1080 · Stereo · ~6.9 Mbps" — and
+        // the token matcher below cannot see the height there, because the `x`
+        // in front of it is alphanumeric and so fails the word boundary. Every
+        // one of those streams therefore parsed as 0, which reads as a ticket
+        // stream, which had them dropped from the picker entirely.
+        //
+        // It also beats the tokens on purpose: these channel *names* carry
+        // marketing ("HUB PREMIER 6 4K") that the frames contradict, and the
+        // frame size is the one the player will actually get.
+        if let height = frameHeight(in: lower) { return height }
+
         if hasToken("2160p?|4k|uhd") { return 2160 }
         if hasToken("1440p?|2k") { return 1440 }
         if hasToken("1080p?|fhd") { return 1080 }
@@ -196,6 +208,29 @@ struct StreamQualityTags: Equatable, Codable {
         if hasToken("480p?|sd") { return 480 }
         if hasToken("360p?") { return 360 }
         return 0
+    }
+
+    /// Height from a `WIDTHxHEIGHT` frame size, snapped to the standard rung
+    /// below it so broadcast sizes that are not exactly 1080 still classify.
+    private static func frameHeight(in lower: String) -> Int? {
+        guard let range = lower.range(
+            of: #"(?:^|[^a-z0-9])[0-9]{3,4}\s*[x\u{00D7}]\s*[0-9]{3,4}(?:[^a-z0-9]|$)"#,
+            options: .regularExpression
+        ) else { return nil }
+        let numbers = lower[range]
+            .split(whereSeparator: { !$0.isNumber })
+            .compactMap { Int($0) }
+        guard numbers.count == 2, let height = numbers.min() else { return nil }
+        switch height {
+        case 2000...: return 2160
+        case 1300..<2000: return 1440
+        case 1000..<1300: return 1080
+        case 700..<1000: return 720
+        case 550..<700: return 576
+        case 400..<550: return 480
+        case 300..<400: return 360
+        default: return nil
+        }
     }
 
     /// Canonical release quality classification matching Android TV's `streamQuality`.
