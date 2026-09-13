@@ -359,4 +359,92 @@ final class MacScreenFocus: ObservableObject {
         itemID = target.items[min(column, target.items.count - 1)]
     }
 }
+
+/// What an embedded section contributes to its host screen's keyboard model.
+///
+/// A section like Discover is never a screen in its own right, so it has no
+/// business claiming the key router — but the host cannot describe the
+/// section's contents either, because they live in the section's own view
+/// model. So the section hands up its bands and what Return means to each of
+/// them, and the host splices them into its own stack.
+struct MacFocusContribution {
+    var bands: [MacFocusBand] = []
+    var activate: (String, String) -> Void = { _, _ in }
+}
+
+/// Settings detail-pane rows, as the macOS keyboard sees them.
+///
+/// The pane renders eight category views built from a dozen row types, so a
+/// hand-written list of its rows would be a second description of the UI that
+/// drifts the moment a row is added. Each row publishes itself through a
+/// preference instead — SwiftUI collects those in view-tree order, so the band
+/// is always exactly what is on screen, in the order it appears.
+struct MacSettingsRowsKey: PreferenceKey {
+    static var defaultValue: [String] = []
+    static func reduce(value: inout [String], nextValue: () -> [String]) {
+        value.append(contentsOf: nextValue())
+    }
+}
+
+@MainActor
+final class MacSettingsRowFocus: ObservableObject {
+    static let shared = MacSettingsRowFocus()
+
+    /// Row the caret is on, or nil while it is in the category sidebar.
+    @Published var focusedRowID: String?
+    /// Bumped to run the focused row's own action. Rows compare
+    /// `activatingRowID` rather than the caret, so a row that moves the caret
+    /// as a side effect of acting still fires exactly once.
+    @Published private(set) var activationTick = 0
+    private(set) var activatingRowID: String?
+
+    func activate(_ id: String) {
+        activatingRowID = id
+        activationTick += 1
+    }
+}
+
+private struct MacSettingsRowIDKey: EnvironmentKey {
+    static let defaultValue: String? = nil
+}
+
+extension EnvironmentValues {
+    /// Id of the settings row being rendered. `SettingsRowShell` reads it, so
+    /// every row type draws the macOS highlight without knowing it exists.
+    var macSettingsRowID: String? {
+        get { self[MacSettingsRowIDKey.self] }
+        set { self[MacSettingsRowIDKey.self] = newValue }
+    }
+}
+
+private struct MacSettingsRowModifier: ViewModifier {
+    let id: String
+    let action: () -> Void
+    @ObservedObject private var focus = MacSettingsRowFocus.shared
+
+    init(id: String, action: @escaping () -> Void) {
+        self.id = id
+        self.action = action
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.macSettingsRowID, id)
+            .preference(key: MacSettingsRowsKey.self, value: [id])
+            // The rows sit in a ScrollView the caret has to drag along with it.
+            .id(id)
+            .onChange(of: focus.activationTick) { _, _ in
+                guard focus.activatingRowID == id else { return }
+                action()
+            }
+    }
+}
+
+extension View {
+    /// Registers this settings row with the macOS keyboard model: its place in
+    /// the pane, its highlight, and what Return does to it.
+    func macSettingsRow(_ id: String, action: @escaping () -> Void) -> some View {
+        modifier(MacSettingsRowModifier(id: id, action: action))
+    }
+}
 #endif

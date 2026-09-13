@@ -31,6 +31,9 @@ struct CalendarView: View {
     @StateObject private var macFocus = MacScreenFocus("calendar")
     @ObservedObject private var keyRouter = MacKeyRouter.shared
     @ObservedObject private var macTabState = MacTabState.shared
+    /// Day the caret goes back to when the slide-out panel closes, so backing
+    /// out of a day does not reseed the grid to the filters.
+    @State private var macReturnDayKey: String?
     #endif
     @FocusState private var focusedEntryID: String?
     @FocusState private var focusedDayKey: String?
@@ -93,6 +96,7 @@ struct CalendarView: View {
                     dayKey: panelDayKey,
                     entries: viewModel.entries(on: panelDayKey),
                     accentColor: accentColor,
+                    macFocusedEntryID: macPanelEntryID,
                     focusedEntryID: $focusedPanelEntryID,
                     onSelect: { entry in
                         self.panelDayKey = nil
@@ -154,9 +158,21 @@ struct CalendarView: View {
         }
         .onChange(of: viewModel.days.map(\.id)) { _, _ in macFocus.update(macBands) }
         .onChange(of: mode) { _, _ in macFocus.update(macBands) }
+        .onChange(of: monthAnchor) { _, _ in macFocus.update(macBands) }
+        .onChange(of: viewModel.entriesByDay.count) { _, _ in macFocus.update(macBands) }
+        // Opening or closing the day panel changes who owns the keyboard.
+        .onChange(of: panelDayKey) { _, key in
+            macFocus.update(macBands)
+            guard key == nil, let day = macReturnDayKey,
+                  let week = macMonthBands.first(where: { $0.items.contains(day) })
+            else { return }
+            macFocus.focus(band: week.id, item: day)
+            macReturnDayKey = nil
+        }
         .onChange(of: keyRouter.latest) { _, press in
             guard let press else { return }
             macFocus.handle(press.key, activate: macActivate)
+            macSkipBlankDay()
         }
         // The hero above the list follows the highlight, the way the focus
         // engine drives it on tvOS.
@@ -342,6 +358,25 @@ struct CalendarView: View {
         }
     }
 
+    /// The panel row the caret sits on, or nil when the panel is not up.
+    private var macPanelEntryID: String? {
+        #if os(macOS)
+        return macFocus.bandID == CalendarFocusBand.panel ? macFocus.itemID : nil
+        #else
+        return nil
+        #endif
+    }
+
+    /// The day cell the caret sits on, or nil when it is elsewhere.
+    private var macFocusedMonthDay: String? {
+        #if os(macOS)
+        guard let band = macFocus.bandID, band.hasPrefix(CalendarFocusBand.weekPrefix) else { return nil }
+        return macFocus.itemID
+        #else
+        return nil
+        #endif
+    }
+
     /// True when the macOS highlight is on this entry; always false on tvOS,
     /// where the focus engine drives the same appearance.
     private func macIsFocused(_ day: String, _ entry: String) -> Bool {
@@ -353,24 +388,96 @@ struct CalendarView: View {
     }
 
     #if os(macOS)
-    /// One band per day, each a single horizontal row of entries.
+    /// List mode is one band per day; month mode is the header controls above
+    /// a seven-wide matrix, one band per week row.
     private var macBands: [MacFocusBand] {
+        // The panel covers the grid and disables it, so it owns the keyboard
+        // outright rather than sitting on top of a still-navigable screen.
+        if let panelDayKey {
+            let entries = viewModel.entries(on: panelDayKey)
+            if !entries.isEmpty {
+                return [MacFocusBand(
+                    id: CalendarFocusBand.panel,
+                    items: entries.map(\.id),
+                    columns: 1
+                )]
+            }
+        }
         var bands = [MacFocusBand(
             id: CalendarFocusBand.filters,
             items: CalendarFilter.allCases.map(\.rawValue)
         )]
-        // Month mode has no per-day rows to walk; the filters still do.
-        guard mode == .list else { return bands }
+        guard mode == .list else { return bands + macMonthBands }
         bands += viewModel.days.map { day in
             MacFocusBand(id: day.id, items: day.entries.map(\.id))
         }
         return bands
     }
 
+    private var macMonthBands: [MacFocusBand] {
+        var header = ["prev", "next"]
+        if !CalendarDateFormatting.isSameMonth(monthAnchor, Date()) { header.append("today") }
+        var bands = [MacFocusBand(id: CalendarFocusBand.monthHeader, items: header)]
+
+        let layout = CalendarDateFormatting.monthLayout(for: monthAnchor)
+        for (week, days) in layout.weeks.enumerated() {
+            let items = days.enumerated().map { column, day -> String in
+                guard let day else { return "\(CalendarFocusBand.blankPrefix)\(week).\(column)" }
+                return CalendarDayKey.dayKey(year: layout.year, month: layout.month, day: day)
+            }
+            bands.append(MacFocusBand(
+                id: "\(CalendarFocusBand.weekPrefix)\(week)",
+                items: items,
+                columns: 7
+            ))
+        }
+        return bands
+    }
+
+    /// Days outside the month hold the matrix square but draw nothing, so the
+    /// caret never rests on one — it carries on to the nearest real day in the
+    /// same week, which is always toward the middle of the month.
+    private func macSkipBlankDay() {
+        guard let band = macFocus.bandID, let item = macFocus.itemID,
+              CalendarFocusBand.isBlank(item),
+              let week = macMonthBands.first(where: { $0.id == band }),
+              let index = week.items.firstIndex(of: item)
+        else { return }
+        let real = week.items.enumerated()
+            .filter { !CalendarFocusBand.isBlank($0.element) }
+            .min(by: { abs($0.offset - index) < abs($1.offset - index) })
+        guard let real else { return }
+        macFocus.focus(band: band, item: real.element)
+    }
+
     private func macActivate(day: String, entry: String) {
         if day == CalendarFocusBand.filters {
             guard let option = CalendarFilter(rawValue: entry) else { return }
             withAnimation(.easeOut(duration: 0.18)) { viewModel.toggle(option) }
+            return
+        }
+        if day == CalendarFocusBand.panel {
+            guard let key = panelDayKey,
+                  let match = viewModel.entries(on: key).first(where: { $0.id == entry })
+            else { return }
+            panelDayKey = nil
+            onContentClick(match.metaId, match.type)
+            return
+        }
+        if day == CalendarFocusBand.monthHeader {
+            switch entry {
+            case "prev": step(by: -1)
+            case "next": step(by: 1)
+            default: withAnimation(.easeOut(duration: 0.2)) { monthAnchor = Date() }
+            }
+            return
+        }
+        if day.hasPrefix(CalendarFocusBand.weekPrefix) {
+            guard !CalendarFocusBand.isBlank(entry),
+                  !viewModel.entries(on: entry).isEmpty else { return }
+            focusedPanelEntryID = viewModel.entries(on: entry).first?.id
+            macReturnDayKey = entry
+            withAnimation(.easeOut(duration: 0.22)) { panelDayKey = entry }
             return
         }
         guard let match = viewModel.days.first(where: { $0.id == day })?
@@ -483,6 +590,7 @@ struct CalendarView: View {
                 anchor: monthAnchor,
                 viewModel: viewModel,
                 accentColor: accentColor,
+                macFocusedDayKey: macFocusedMonthDay,
                 focusedDayKey: $focusedDayKey,
                 onOpenDay: { key in
                     guard !viewModel.entries(on: key).isEmpty else { return }
@@ -499,7 +607,11 @@ struct CalendarView: View {
 
     private var monthHeader: some View {
         HStack(spacing: 22) {
-            MonthStepButton(systemImage: "chevron.left", accentColor: accentColor) { step(by: -1) }
+            MonthStepButton(
+                systemImage: "chevron.left",
+                accentColor: accentColor,
+                macIsFocused: macIsFocused(CalendarFocusBand.monthHeader, "prev")
+            ) { step(by: -1) }
 
             Text(CalendarDateFormatting.monthTitle(for: monthAnchor))
                 .font(.system(size: 34, weight: .semibold))
@@ -509,12 +621,19 @@ struct CalendarView: View {
                 .frame(width: 400, alignment: .center)
                 .multilineTextAlignment(.center)
 
-            MonthStepButton(systemImage: "chevron.right", accentColor: accentColor) { step(by: 1) }
+            MonthStepButton(
+                systemImage: "chevron.right",
+                accentColor: accentColor,
+                macIsFocused: macIsFocused(CalendarFocusBand.monthHeader, "next")
+            ) { step(by: 1) }
 
             Spacer()
 
             if !CalendarDateFormatting.isSameMonth(monthAnchor, Date()) {
-                MonthTodayButton(accentColor: accentColor) { withAnimation(.easeOut(duration: 0.2)) { monthAnchor = Date() } }
+                MonthTodayButton(
+                    accentColor: accentColor,
+                    macIsFocused: macIsFocused(CalendarFocusBand.monthHeader, "today")
+                ) { withAnimation(.easeOut(duration: 0.2)) { monthAnchor = Date() } }
             }
         }
     }
@@ -758,6 +877,17 @@ private struct CalendarHeroView: View {
 /// Band identifiers for the macOS keyboard model.
 enum CalendarFocusBand {
     static let filters = "filters"
+    /// Month mode: the chevrons and Today, then one band per week row.
+    static let monthHeader = "month.header"
+    static let weekPrefix = "month.week."
+    /// Cells for days outside the month. They keep every week band exactly
+    /// seven wide so Up/Down holds its weekday column; the caret is nudged off
+    /// them because they draw nothing.
+    static let blankPrefix = "month.blank."
+    /// The slide-out day panel, which owns the keyboard while it is up.
+    static let panel = "month.panel"
+
+    static func isBlank(_ item: String) -> Bool { item.hasPrefix(blankPrefix) }
 }
 
 private struct FocusRing<Content: View>: View {
@@ -800,6 +930,9 @@ private struct MonthGrid: View {
     let anchor: Date
     @ObservedObject var viewModel: CalendarViewModel
     let accentColor: Color
+    /// The macOS caret. There is no focus engine there, so the cells cannot
+    /// read `\.isFocused` and the screen hands the position down instead.
+    var macFocusedDayKey: String? = nil
     @FocusState.Binding var focusedDayKey: String?
     let onOpenDay: (String) -> Void
 
@@ -827,10 +960,15 @@ private struct MonthGrid: View {
                                 entries: viewModel.entries(on: key),
                                 isToday: key == CalendarDayKey.dayKey(offsetFromToday: 0),
                                 accentColor: accentColor,
+                                macIsFocused: macFocusedDayKey == key,
                                 action: { onOpenDay(key) }
                             )
                             .nuvioFocusable()
                             .focused($focusedDayKey, equals: key)
+                            // AppKit draws its own ring outside the cell's
+                            // bounds, which read as a focus box larger than the
+                            // day it belongs to. The cell draws its own.
+                            .focusEffectDisabledIfAvailable()
                         } else {
                             Color.clear
                                 .frame(width: CalendarMetrics.dayCellWidth, height: CalendarMetrics.dayCellHeight)
@@ -860,11 +998,17 @@ private struct DayCell: View {
     let entries: [CalendarEntry]
     let isToday: Bool
     let accentColor: Color
+    var macIsFocused = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            FocusRing(accentColor: accentColor, cornerRadius: 10, fillOnFocus: .white.opacity(0.16)) {
+            FocusRing(
+                macIsFocused: macIsFocused,
+                accentColor: accentColor,
+                cornerRadius: 10,
+                fillOnFocus: .white.opacity(0.16)
+            ) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
                     // Today reads as a filled chip — light plate, dark numeral —
@@ -943,13 +1087,24 @@ private struct ChromeButtonStyle: ButtonStyle {
 }
 
 private struct ChromeBackground<Content: View>: View {
-    @Environment(\.isFocused) private var isFocused
+    @Environment(\.isFocused) private var environmentFocused
+    /// Driven by `MacScreenFocus`; macOS has no focus engine to set the
+    /// environment value.
+    var macIsFocused = false
     var accentColor: Color = .white
     /// Sized explicitly: inside an HStack the label would otherwise stretch and
     /// paint its focus fill across the neighbouring month title.
     var width: CGFloat? = nil
     var height: CGFloat = 52
     @ViewBuilder let content: Content
+
+    private var isFocused: Bool {
+        #if os(macOS)
+        return macIsFocused
+        #else
+        return environmentFocused
+        #endif
+    }
 
     var body: some View {
         content
@@ -968,11 +1123,12 @@ private struct ChromeBackground<Content: View>: View {
 private struct MonthStepButton: View {
     let systemImage: String
     var accentColor: Color = .white
+    var macIsFocused = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            ChromeBackground(accentColor: accentColor, width: 66) {
+            ChromeBackground(macIsFocused: macIsFocused, accentColor: accentColor, width: 66) {
                 Image(systemName: systemImage)
                     .font(.system(size: 24, weight: .semibold))
             }
@@ -984,11 +1140,12 @@ private struct MonthStepButton: View {
 
 private struct MonthTodayButton: View {
     var accentColor: Color = .white
+    var macIsFocused = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            ChromeBackground(accentColor: accentColor) {
+            ChromeBackground(macIsFocused: macIsFocused, accentColor: accentColor) {
                 Text(L10n.string("calendar_today", fallback: "Today"))
                     .font(.system(size: 20, weight: .semibold))
                     .padding(.horizontal, 22)
@@ -1012,6 +1169,8 @@ private struct DayEntriesPanel: View {
     let dayKey: String
     let entries: [CalendarEntry]
     let accentColor: Color
+    /// The macOS caret, handed down for the same reason `MonthGrid` takes one.
+    var macFocusedEntryID: String? = nil
     @FocusState.Binding var focusedEntryID: String?
     let onSelect: (CalendarEntry) -> Void
 
@@ -1037,11 +1196,16 @@ private struct DayEntriesPanel: View {
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 12) {
                         ForEach(entries) { entry in
-                            DayPanelRow(entry: entry, accentColor: accentColor) {
+                            DayPanelRow(
+                                entry: entry,
+                                accentColor: accentColor,
+                                macIsFocused: macFocusedEntryID == entry.id
+                            ) {
                                 onSelect(entry)
                             }
                             .nuvioFocusable()
                             .focused($focusedEntryID, equals: entry.id)
+                            .focusEffectDisabledIfAvailable()
                         }
                     }
                     .padding(.horizontal, 26)
@@ -1131,6 +1295,7 @@ private struct EntryArtwork: View {
 private struct DayPanelRow: View {
     let entry: CalendarEntry
     let accentColor: Color
+    var macIsFocused = false
     let action: () -> Void
 
     @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
@@ -1141,6 +1306,7 @@ private struct DayPanelRow: View {
     var body: some View {
         Button(action: action) {
             FocusRing(
+                macIsFocused: macIsFocused,
                 accentColor: accentColor,
                 cornerRadius: rowCornerRadius,
                 scale: 1.02,

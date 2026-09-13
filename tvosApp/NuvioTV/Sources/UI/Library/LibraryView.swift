@@ -2,6 +2,13 @@ import SwiftUI
 
 /// Same poster geometry as the See All catalog, Grid Home, and Search. Seven
 /// columns fit only because of `pageInset` — the old 80pt inset left room for six.
+/// Band identifiers for the macOS keyboard model.
+enum LibraryFocusBand {
+    static let source = "source"
+    static let controls = "controls"
+    static let controlItems = ["sort", "group", "content", "watched", "genre"]
+}
+
 private enum LibraryGridMetrics {
     static let posterWidth: CGFloat = 210
     static let posterHeight: CGFloat = 315
@@ -52,6 +59,14 @@ public struct LibraryView: View {
     @ObservedObject private var keyRouter = MacKeyRouter.shared
     @ObservedObject private var macTabState = MacTabState.shared
     #endif
+    /// Raised to open a filter menu from the keyboard; each is consumed by the
+    /// menu it belongs to. Unfenced because the menus themselves are shared.
+    @State private var macOpenSort = false
+    @State private var macOpenGroup = false
+    @State private var macOpenContent = false
+    @State private var macOpenWatched = false
+    @State private var macOpenGenre = false
+
     @FocusState private var focusedItemID: String?
     /// Last card focused in the grid, kept so returning from details (which
     /// steals focus and nils `focusedItemID`) restores that card instead of
@@ -112,7 +127,8 @@ public struct LibraryView: View {
                     ForEach(LibrarySourceMode.allCases) { mode in
                         SourceModeChip(
                             title: mode.localizedTitle,
-                            isSelected: sourceMode == mode
+                            isSelected: sourceMode == mode,
+                            macIsFocused: macIsFocused(LibraryFocusBand.source, mode.rawValue)
                         ) {
                             if sourceMode != mode {
                                 withAnimation(.easeInOut(duration: 0.2)) {
@@ -132,6 +148,9 @@ public struct LibraryView: View {
                     if sourceMode == .saved {
                         FilterMenu(
                             label: "\(L10n.string("library_filter_sort", fallback: "Sort")): \(viewModel.sortOption.localizedTitle)"
+                            ,
+                            macIsFocused: macIsFocused(LibraryFocusBand.controls, "sort"),
+                            macOpen: $macOpenSort
                         ) {
                             ForEach(LibraryViewModel.SortOption.allCases) { option in
                                 Button { viewModel.sortOption = option } label: {
@@ -142,6 +161,9 @@ public struct LibraryView: View {
 
                         FilterMenu(
                             label: "\(L10n.string("tvos_library_group", fallback: "Group")): \(viewModel.groupOption.localizedTitle)"
+                            ,
+                            macIsFocused: macIsFocused(LibraryFocusBand.controls, "group"),
+                            macOpen: $macOpenGroup
                         ) {
                             ForEach(LibraryViewModel.GroupOption.allCases) { option in
                                 Button { viewModel.groupOption = option } label: {
@@ -152,6 +174,9 @@ public struct LibraryView: View {
 
                         FilterMenu(
                             label: "\(L10n.string("tvos_library_content", fallback: "Content")): \(selectedTypeLabel)"
+                            ,
+                            macIsFocused: macIsFocused(LibraryFocusBand.controls, "content"),
+                            macOpen: $macOpenContent
                         ) {
                             Button { viewModel.contentTypeFilter = nil } label: {
                                 menuItem(
@@ -171,6 +196,9 @@ public struct LibraryView: View {
 
                         FilterMenu(
                             label: "\(L10n.string("library_filter_watched_label", fallback: "Watched")): \(viewModel.watchedFilter.localizedTitle)"
+                            ,
+                            macIsFocused: macIsFocused(LibraryFocusBand.controls, "watched"),
+                            macOpen: $macOpenWatched
                         ) {
                             ForEach(LibraryViewModel.WatchedFilter.allCases) { option in
                                 Button { viewModel.watchedFilter = option } label: {
@@ -181,6 +209,9 @@ public struct LibraryView: View {
 
                         FilterMenu(
                             label: "\(L10n.string("library_filter_genre", fallback: "Genre")): \(viewModel.genreFilter ?? L10n.string("library_type_all", fallback: "All"))"
+                            ,
+                            macIsFocused: macIsFocused(LibraryFocusBand.controls, "genre"),
+                            macOpen: $macOpenGenre
                         ) {
                             Button { viewModel.genreFilter = nil } label: {
                                 menuItem(
@@ -321,11 +352,10 @@ public struct LibraryView: View {
         }
         // The Saved/Cloud switch swaps the whole list out from under the caret.
         .onChange(of: sourceMode) { _, _ in macFocus.update(macBands) }
+        .onChange(of: viewModel.groupOption) { _, _ in macFocus.update(macBands) }
+        .onChange(of: viewModel.sortOption) { _, _ in macFocus.update(macBands) }
         .onChange(of: keyRouter.latest) { _, press in
             guard let press else { return }
-            // Cloud mode has its own list and no band model yet; leave its keys
-            // alone rather than moving an invisible caret in the saved grid.
-            guard sourceMode == .saved else { return }
             macFocus.handle(press.key, activate: macActivate)
         }
         #endif
@@ -684,13 +714,23 @@ public struct LibraryView: View {
     /// One band per group. The groups are separate grids on screen, so a flat
     /// index would step across a short final row into the wrong place.
     private var macBands: [MacFocusBand] {
-        viewModel.sortedAndGroupedItems.keys.sorted().map { group in
+        var bands = [MacFocusBand(
+            id: LibraryFocusBand.source,
+            items: LibrarySourceMode.allCases.map(\.rawValue)
+        )]
+        guard sourceMode == .saved else { return bands }
+        bands.append(MacFocusBand(
+            id: LibraryFocusBand.controls,
+            items: LibraryFocusBand.controlItems
+        ))
+        bands += viewModel.sortedAndGroupedItems.keys.sorted().map { group in
             MacFocusBand(
                 id: group,
                 items: (viewModel.sortedAndGroupedItems[group] ?? []).map(\.id),
                 columns: macGridColumns
             )
         }
+        return bands
     }
 
     /// The grid is `.adaptive`, so the column count follows the width the
@@ -706,6 +746,25 @@ public struct LibraryView: View {
     }
 
     private func macActivate(group: String, item: String) {
+        switch group {
+        case LibraryFocusBand.source:
+            guard let mode = LibrarySourceMode(rawValue: item) else { return }
+            withAnimation(.easeInOut(duration: 0.2)) { sourceMode = mode }
+            if mode == .cloud { Task { await cloudViewModel.load() } }
+            return
+        case LibraryFocusBand.controls:
+            // Each menu watches its own flag and clears it once opened.
+            switch item {
+            case "sort": macOpenSort = true
+            case "group": macOpenGroup = true
+            case "content": macOpenContent = true
+            case "watched": macOpenWatched = true
+            default: macOpenGenre = true
+            }
+            return
+        default:
+            break
+        }
         guard let match = (viewModel.sortedAndGroupedItems[group] ?? [])
             .first(where: { $0.id == item })
         else { return }
@@ -873,20 +932,30 @@ extension StremioMeta {
 struct SourceModeChip: View {
     let title: String
     let isSelected: Bool
+    /// Driven by `MacScreenFocus`; macOS has no focus engine to set `focused`.
+    var macIsFocused = false
     let action: () -> Void
     @FocusState private var focused: Bool
+
+    private var showsFocus: Bool {
+        #if os(macOS)
+        return macIsFocused
+        #else
+        return focused
+        #endif
+    }
 
     var body: some View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 24, weight: .semibold))
-                .foregroundColor(isSelected || focused ? .black : .white.opacity(0.9))
+                .foregroundColor(isSelected || showsFocus ? .black : .white.opacity(0.9))
                 .padding(.horizontal, 32)
                 .frame(height: 60)
-                .modifier(GlassChipBackground(filled: isSelected || focused))
+                .modifier(GlassChipBackground(filled: isSelected || showsFocus))
                 .overlay(
                     Capsule()
-                        .strokeBorder(focused ? AppFocusOutline.color : .clear, lineWidth: focused ? AppFocusOutline.width : 0)
+                        .strokeBorder(showsFocus ? AppFocusOutline.color : .clear, lineWidth: showsFocus ? AppFocusOutline.width : 0)
                 )
         }
         .buttonStyle(PosterCardButtonStyle())

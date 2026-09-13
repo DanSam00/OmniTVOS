@@ -1,5 +1,18 @@
 import SwiftUI
 
+/// Band identifiers for the macOS keyboard model, and the filters the host can
+/// open from it. Declared unfenced because the filter bar and grid that use
+/// them are shared with tvOS.
+enum DiscoverFocusBand {
+    static let filters = "discover.filters"
+    static let grid = "discover.grid"
+    /// The grid is the same 210pt posters at the same 28pt gap as Search's
+    /// results, inside the same page inset, so it is the same seven wide.
+    static let gridColumns = 7
+
+    enum Filter { case type, catalog, genre }
+}
+
 private enum DiscoverGridMetrics {
     static let posterWidth: CGFloat = 210
     static let posterHeight: CGFloat = 315
@@ -40,6 +53,16 @@ struct DiscoverSection: View {
     @Environment(\.isEnabled) private var isEnabled
     @Binding private var parentTransitionActive: Bool
     @AppStorage(SettingsKey.hideUnreleased) private var hideUnreleased = false
+    #if os(macOS)
+    /// Discover is always embedded, so it publishes its rows into the host
+    /// screen's keyboard model and reads the caret back out of it rather than
+    /// claiming the key router itself. See `MacFocusContribution`.
+    private var macFocus: MacScreenFocus?
+    private var macContribute: ((MacFocusContribution) -> Void)?
+    @State private var macOpenType = false
+    @State private var macOpenCatalog = false
+    @State private var macOpenGenre = false
+    #endif
 
     init(
         onContentClick: @escaping (String, String) -> Void,
@@ -55,6 +78,85 @@ struct DiscoverSection: View {
         self.onFilterFocus = onFilterFocus
         self.onFocusExit = onFocusExit
         _parentTransitionActive = parentTransitionActive
+    }
+
+    #if os(macOS)
+    /// Attaches the host screen's keyboard model: the caret this section draws
+    /// its highlights from, and where to hand its own rows up to. Set after
+    /// init rather than through it, because these types do not exist on tvOS
+    /// and a shared initialiser could not name them.
+    func macFocusModel(
+        _ focus: MacScreenFocus,
+        contribute: @escaping (MacFocusContribution) -> Void
+    ) -> DiscoverSection {
+        var copy = self
+        copy.macFocus = focus
+        copy.macContribute = contribute
+        return copy
+    }
+    #endif
+
+    #if os(macOS)
+    private var macFilterItems: [String] {
+        var items = ["type"]
+        if !viewModel.catalogs.isEmpty { items.append("catalog") }
+        items.append("genre")
+        return items
+    }
+
+    /// Republished whenever the filter set or the grid changes.
+    private func macPublish() {
+        guard let macContribute else { return }
+        var bands = [MacFocusBand(id: DiscoverFocusBand.filters, items: macFilterItems)]
+        if !visibleItems.isEmpty {
+            bands.append(MacFocusBand(
+                id: DiscoverFocusBand.grid,
+                items: visibleItems.map(\.id),
+                columns: DiscoverFocusBand.gridColumns
+            ))
+        }
+        macContribute(MacFocusContribution(bands: bands, activate: macActivate))
+    }
+
+    private func macActivate(band: String, item: String) {
+        if band == DiscoverFocusBand.filters {
+            switch item {
+            case "type": macOpenType = true
+            case "catalog": macOpenCatalog = true
+            default: macOpenGenre = true
+            }
+            return
+        }
+        guard let meta = visibleItems.first(where: { $0.id == item }) else { return }
+        parentTransitionActive = true
+        overlayRestoreCardID = meta.id
+        lastFocusedCardID = meta.id
+        onContentClick(meta.id, meta.type)
+    }
+    #endif
+
+    /// True when the host's caret is on this control. Always false on tvOS,
+    /// where the focus engine drives the appearance instead.
+    private func macIsFocused(_ band: String, _ item: String) -> Bool {
+        #if os(macOS)
+        return macFocus?.isFocused(band, item) == true
+        #else
+        return false
+        #endif
+    }
+
+    /// Lets the host open a filter menu from the keyboard. Nil on tvOS, where
+    /// the focus engine and Select already do it.
+    private func macOpen(_ filter: DiscoverFocusBand.Filter) -> Binding<Bool>? {
+        #if os(macOS)
+        switch filter {
+        case .type: return $macOpenType
+        case .catalog: return $macOpenCatalog
+        case .genre: return $macOpenGenre
+        }
+        #else
+        return nil
+        #endif
     }
 
     var body: some View {
@@ -106,6 +208,11 @@ struct DiscoverSection: View {
                 restoreOverlayFocus(to: target, generation: overlayRestoreGeneration)
             }
         }
+        #if os(macOS)
+        .onAppear { macPublish() }
+        .onChange(of: visibleItems.map(\.id)) { _, _ in macPublish() }
+        .onChange(of: viewModel.catalogs.count) { _, _ in macPublish() }
+        #endif
     }
 
     /// Arms the restore flag only after focus has stayed off the cards long
@@ -143,7 +250,9 @@ struct DiscoverSection: View {
         HStack(spacing: 16) {
             FilterMenu(
                 label: viewModel.type.title,
-                onFocusChange: { updateDiscoverFocus("filter:type", isFocused: $0) }
+                onFocusChange: { updateDiscoverFocus("filter:type", isFocused: $0) },
+                macIsFocused: macIsFocused(DiscoverFocusBand.filters, "type"),
+                macOpen: macOpen(.type)
             ) {
                 ForEach(viewModel.availableTypes) { type in
                     Button { viewModel.setType(type) } label: {
@@ -157,7 +266,9 @@ struct DiscoverSection: View {
             if !viewModel.catalogs.isEmpty {
                 FilterMenu(
                     label: viewModel.catalog?.name ?? L10n.string("tvos_discover_popular", fallback: "Popular"),
-                    onFocusChange: { updateDiscoverFocus("filter:sort", isFocused: $0) }
+                    onFocusChange: { updateDiscoverFocus("filter:sort", isFocused: $0) },
+                    macIsFocused: macIsFocused(DiscoverFocusBand.filters, "catalog"),
+                    macOpen: macOpen(.catalog)
                 ) {
                     ForEach(viewModel.catalogs) { catalog in
                         Button { viewModel.setCatalog(catalog) } label: {
@@ -169,7 +280,9 @@ struct DiscoverSection: View {
 
             FilterMenu(
                 label: viewModel.genre ?? L10n.string("tvos_discover_all_genres", fallback: "All Genres"),
-                onFocusChange: { updateDiscoverFocus("filter:genre", isFocused: $0) }
+                onFocusChange: { updateDiscoverFocus("filter:genre", isFocused: $0) },
+                macIsFocused: macIsFocused(DiscoverFocusBand.filters, "genre"),
+                macOpen: macOpen(.genre)
             ) {
                 Button { viewModel.setGenre(nil) } label: {
                     menuItem(
@@ -222,6 +335,22 @@ struct DiscoverSection: View {
     }
 
     private var grid: some View {
+        #if os(macOS)
+        // The caret is a plain value, so nothing pulls a row below the fold
+        // into view on its own.
+        ScrollViewReader { proxy in
+            gridScrollView
+                .onChange(of: macFocus?.itemID) { _, id in
+                    guard let id, macFocus?.bandID == DiscoverFocusBand.grid else { return }
+                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .center) }
+                }
+        }
+        #else
+        gridScrollView
+        #endif
+    }
+
+    private var gridScrollView: some View {
         ScrollView {
             LazyVGrid(columns: columns, alignment: .leading, spacing: DiscoverGridMetrics.posterGap) {
                 ForEach(visibleItems) { item in
@@ -230,6 +359,7 @@ struct DiscoverSection: View {
                         externalFocus: $focusedCardID,
                         onFocusChange: { updateDiscoverFocus("card:\(item.id)", isFocused: $0) },
                         retainFocusAppearance: overlayRestoreCardID == item.id,
+                        macIsFocused: macIsFocused(DiscoverFocusBand.grid, item.id),
                         onLongPress: onLongPress.map { cb in { cb(item) } }
                     ) {
                         parentTransitionActive = true
@@ -238,6 +368,7 @@ struct DiscoverSection: View {
                         onContentClick(item.id, item.type)
                     }
                     .disabled(overlayRestoreCardID != nil && overlayRestoreCardID != item.id)
+                    .id(item.id)
                     .onAppear { viewModel.loadMoreIfNeeded(currentItem: item) }
                 }
             }
@@ -321,9 +452,22 @@ struct DiscoverSection: View {
 struct FilterMenu<MenuContent: View>: View {
     let label: String
     var onFocusChange: ((Bool) -> Void)? = nil
+    /// Driven by `MacScreenFocus`; macOS has no focus engine to set `focused`.
+    var macIsFocused = false
+    /// Set by the owning screen to open this menu from the keyboard. Consumed
+    /// immediately, so the screen only has to raise it.
+    var macOpen: Binding<Bool>? = nil
     @ViewBuilder var menu: () -> MenuContent
     @State private var showOptions = false
     @FocusState private var focused: Bool
+
+    private var showsFocus: Bool {
+        #if os(macOS)
+        return macIsFocused
+        #else
+        return focused
+        #endif
+    }
 
     var body: some View {
         Button { showOptions = true } label: { chipLabel }
@@ -331,10 +475,15 @@ struct FilterMenu<MenuContent: View>: View {
             .nuvioFocusable()
             .focused($focused)
             .focusEffectDisabledIfAvailable()
-            .scaleEffect(focused ? 1.05 : 1.0)
-            .animation(.easeOut(duration: 0.14), value: focused)
+            .scaleEffect(showsFocus ? 1.05 : 1.0)
+            .animation(.easeOut(duration: 0.14), value: showsFocus)
             .confirmationDialog(label, isPresented: $showOptions, titleVisibility: .visible, actions: menu)
             .onChange(of: focused) { _, isFocused in onFocusChange?(isFocused) }
+            .onChange(of: macOpen?.wrappedValue ?? false) { _, wantsOpen in
+                guard wantsOpen else { return }
+                showOptions = true
+                macOpen?.wrappedValue = false
+            }
     }
 
     private var chipLabel: some View {
@@ -345,13 +494,13 @@ struct FilterMenu<MenuContent: View>: View {
             Image(systemName: "chevron.down")
                 .font(.system(size: 18, weight: .semibold))
         }
-        .foregroundColor(.white.opacity(focused ? 1.0 : 0.9))
+        .foregroundColor(.white.opacity(showsFocus ? 1.0 : 0.9))
         .padding(.horizontal, 28)
         .frame(height: 60)
         .modifier(GlassChipBackground(filled: false))
         .overlay(
             Capsule()
-                .strokeBorder(focused ? AppFocusOutline.color : .clear, lineWidth: focused ? AppFocusOutline.width : 0)
+                .strokeBorder(showsFocus ? AppFocusOutline.color : .clear, lineWidth: showsFocus ? AppFocusOutline.width : 0)
         )
     }
 }
@@ -363,6 +512,8 @@ private struct DiscoverCard: View {
     var externalFocus: FocusState<String?>.Binding? = nil
     var onFocusChange: ((Bool) -> Void)? = nil
     var retainFocusAppearance = false
+    /// Driven by `MacScreenFocus`; macOS has no focus engine to set `focused`.
+    var macIsFocused = false
     var onLongPress: (() -> Void)? = nil
     let action: () -> Void
     @FocusState private var focused: Bool
@@ -479,6 +630,6 @@ private struct DiscoverCard: View {
     }
 
     private var showsFocusedAppearance: Bool {
-        focused || retainFocusAppearance
+        macIsFocused || focused || retainFocusAppearance
     }
 }

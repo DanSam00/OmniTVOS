@@ -21,6 +21,8 @@ enum AppFocusOutline {
 /// Band identifiers for the macOS keyboard model.
 enum SettingsFocusBand {
     static let categories = "categories"
+    /// The detail pane. Its rows register themselves — see `macSettingsRow`.
+    static let rows = "rows"
 }
 
 private enum SettingsCategory: String, CaseIterable, Identifiable {
@@ -1050,6 +1052,11 @@ struct SettingsView: View {
     /// macOS has no focus engine. The category sidebar is one vertical band;
     /// the detail pane's controls vary per category and are not modelled yet.
     @StateObject private var macFocus = MacScreenFocus("settings")
+    /// The pane's rows, in the order they are laid out. Collected from the
+    /// rows themselves rather than described here — see `MacSettingsRowsKey`.
+    @State private var macDetailRows: [String] = []
+    /// Row to return to when the caret comes back from the sidebar.
+    @State private var macLastDetailRow: String?
     @ObservedObject private var keyRouter = MacKeyRouter.shared
     @ObservedObject private var macTabState = MacTabState.shared
     #endif
@@ -1094,18 +1101,60 @@ struct SettingsView: View {
     }
 
     #if os(macOS)
-    /// The sidebar only: one item per row, so Left always reaches the menu.
+    /// The sidebar, then the detail pane beside it. Both are single columns,
+    /// so Up/Down walks each one and Left/Right crosses between them — see
+    /// `macCrossColumns`, since `MacScreenFocus` stacks bands vertically and
+    /// these two sit side by side.
     private var macBands: [MacFocusBand] {
-        [MacFocusBand(
+        var bands = [MacFocusBand(
             id: SettingsFocusBand.categories,
             items: SettingsCategory.allCases.map(\.rawValue),
             columns: 1
         )]
+        if !macDetailRows.isEmpty {
+            bands.append(MacFocusBand(
+                id: SettingsFocusBand.rows,
+                items: macDetailRows,
+                columns: 1
+            ))
+        }
+        return bands
     }
 
     private func macActivate(band: String, item: String) {
+        if band == SettingsFocusBand.rows {
+            // The row runs its own action: the pane is built from a dozen row
+            // types and only the row itself knows what Return means to it.
+            MacSettingsRowFocus.shared.activate(item)
+            return
+        }
         guard let category = SettingsCategory(rawValue: item) else { return }
         selectedCategory = category
+    }
+
+    /// Left/Right between the sidebar and the pane, and the pane's own top and
+    /// bottom. Without this, Up off the pane's first row would fall into the
+    /// sidebar band, which is beside it rather than above it.
+    /// - Returns: true when the press was handled here.
+    private func macCrossColumns(_ key: MacKey) -> Bool {
+        guard !MacMenuState.shared.isFocused else { return false }
+        switch (macFocus.bandID, key) {
+        case (SettingsFocusBand.categories, .right):
+            guard let target = macDetailRows.first(where: { $0 == macLastDetailRow })
+                ?? macDetailRows.first else { return false }
+            macFocus.focus(band: SettingsFocusBand.rows, item: target)
+            return true
+        case (SettingsFocusBand.rows, .left):
+            macLastDetailRow = macFocus.itemID
+            macFocus.focus(band: SettingsFocusBand.categories, item: selectedCategory.rawValue)
+            return true
+        case (SettingsFocusBand.rows, .up):
+            return macFocus.itemID == macDetailRows.first
+        case (SettingsFocusBand.rows, .down):
+            return macFocus.itemID == macDetailRows.last
+        default:
+            return false
+        }
     }
     #endif
 
@@ -1139,14 +1188,26 @@ struct SettingsView: View {
                         // list isn't cut short with dead space below it.
                         .padding(.top, 56)
                     } else {
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 28) {
-                                selectedCategoryHeader
-                                selectedCategoryContent
+                        ScrollViewReader { paneScroll in
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: 28) {
+                                    selectedCategoryHeader
+                                    selectedCategoryContent
+                                }
+                                .padding(.leading, 44)
+                                .padding(.trailing, 72)
+                                .padding(.vertical, 56)
                             }
-                            .padding(.leading, 44)
-                            .padding(.trailing, 72)
-                            .padding(.vertical, 56)
+                            #if os(macOS)
+                            // The highlight is a plain value, so nothing brings a
+                            // row below the fold into view on its own.
+                            .onChange(of: macFocus.itemID) { _, row in
+                                guard let row, macFocus.bandID == SettingsFocusBand.rows else { return }
+                                withAnimation(.easeOut(duration: 0.18)) {
+                                    paneScroll.scrollTo(row, anchor: .center)
+                                }
+                            }
+                            #endif
                         }
                         // Every category shares this one ScrollView, so without a
                         // per-category identity SwiftUI reuses it and carries the
@@ -1163,6 +1224,14 @@ struct SettingsView: View {
                 // first right-press lands on the first row regardless of which pill
                 // it came from. Cleared once focus enters so re-entry isn't blocked.
                 .environment(\.settingsEntryLocked, focusedCategory != nil && !detailVisited)
+                #if os(macOS)
+                // Collected in view-tree order, so this is exactly the rows on
+                // screen for the selected category, top to bottom.
+                .onPreferenceChange(MacSettingsRowsKey.self) { rows in
+                    macDetailRows = rows
+                    macFocus.update(macBands)
+                }
+                #endif
             }
             .disabled(presentedLanguagePicker != nil || presentedProfilePinMode != nil)
             .allowsHitTesting(presentedLanguagePicker == nil && presentedProfilePinMode == nil)
@@ -1217,16 +1286,27 @@ struct SettingsView: View {
             macFocus.focus(band: SettingsFocusBand.categories, item: selectedCategory.rawValue)
             macFocus.syncClaim(isCurrent: macTabState.current == .settings)
         }
-        .onDisappear { macFocus.release() }
+        .onDisappear {
+            macFocus.release()
+            MacSettingsRowFocus.shared.focusedRowID = nil
+        }
         .onChange(of: macTabState.current, initial: true) { _, tab in
             macFocus.update(macBands)
             macFocus.syncClaim(isCurrent: tab == .settings)
+            if tab != .settings { MacSettingsRowFocus.shared.focusedRowID = nil }
         }
         .onChange(of: keyRouter.latest) { _, press in
             guard let press else { return }
             // A sheet or picker owns the keyboard while it is up.
             guard presentedLanguagePicker == nil, presentedProfilePinMode == nil else { return }
+            guard !macCrossColumns(press.key) else { return }
             macFocus.handle(press.key, activate: macActivate)
+        }
+        // Rows render their highlight from this, and only while the caret is
+        // actually in the pane.
+        .onChange(of: macFocus.itemID, initial: true) { _, item in
+            MacSettingsRowFocus.shared.focusedRowID =
+                macFocus.bandID == SettingsFocusBand.rows ? item : nil
         }
         // Moving the caret opens that category, so the pane always matches the
         // highlighted pill rather than waiting for Return.
@@ -12300,6 +12380,10 @@ private struct SettingsToggleRow: View {
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .entryLockable()
+        .macSettingsRow(title) {
+            guard enabled else { return }
+            isOn.toggle()
+        }
         .opacity(enabled ? 1 : 0.46)
         .disabled(!enabled)
     }
@@ -12340,6 +12424,7 @@ private struct SettingsOptionRow: View {
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .entryLockable()
+        .macSettingsRow(title, action: selectNext)
     }
 
     private var currentStored: String {
@@ -12392,6 +12477,7 @@ private struct SettingsChoiceRow: View {
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .entryLockable()
+        .macSettingsRow(title) { showOptions = true }
         .confirmationDialog(title, isPresented: $showOptions, titleVisibility: .visible) {
             ForEach(options, id: \.self) { option in
                 Button(L10n.optionLabel(option)) { selection = option }
@@ -12447,6 +12533,11 @@ private struct SettingsStepperRow: View {
         .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
+        // No button of its own: Return steps it, wrapping at the top so the
+        // whole range is reachable from the keyboard.
+        .macSettingsRow(title) {
+            value = value >= range.upperBound ? range.lowerBound : min(range.upperBound, value + step)
+        }
     }
 }
 
@@ -12492,6 +12583,7 @@ private struct SettingsTextFieldRow: View {
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .entryLockable()
+        .macSettingsRow(title) { isEditing = true }
     }
 }
 
@@ -12847,6 +12939,7 @@ private struct SettingsActionRow: View {
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .entryLockable()
+        .macSettingsRow(title, action: action)
     }
 }
 
@@ -12957,10 +13050,35 @@ private struct SettingsSwatchButton: View {
     }
 }
 
+#if !os(macOS)
+extension View {
+    /// No-op on tvOS, where the focus engine already places, highlights and
+    /// activates these rows. The real one is in `MacTabCommands.swift`; the
+    /// call sites are shared, so this has to exist on both platforms.
+    func macSettingsRow(_ id: String, action: @escaping () -> Void) -> some View { self }
+}
+#endif
+
 private struct SettingsRowShell<Content: View>: View {
     let isFocused: Bool
     let accentColor: Color
     @ViewBuilder let content: Content
+    #if os(macOS)
+    /// Set by `macSettingsRow`, so every row type picks the macOS highlight up
+    /// from one place rather than each growing its own parameter.
+    @Environment(\.macSettingsRowID) private var macRowID
+    @ObservedObject private var macRows = MacSettingsRowFocus.shared
+    #endif
+
+    /// tvOS reads the focus engine; macOS has none, so the caret decides.
+    private var highlighted: Bool {
+        #if os(macOS)
+        guard let macRowID else { return isFocused }
+        return macRows.focusedRowID == macRowID
+        #else
+        return isFocused
+        #endif
+    }
 
     var body: some View {
         HStack(spacing: 16) {
@@ -12972,9 +13090,9 @@ private struct SettingsRowShell<Content: View>: View {
         .settingsGlass(shape: RoundedRectangle(cornerRadius: 24, style: .continuous), isProminent: false)
         .overlay(
             RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .strokeBorder(isFocused ? AppFocusOutline.color : Color.white.opacity(0.10), lineWidth: isFocused ? AppFocusOutline.width : 1)
+                .strokeBorder(highlighted ? AppFocusOutline.color : Color.white.opacity(0.10), lineWidth: highlighted ? AppFocusOutline.width : 1)
         )
-        .animation(.easeOut(duration: 0.18), value: isFocused)
+        .animation(.easeOut(duration: 0.18), value: highlighted)
     }
 }
 

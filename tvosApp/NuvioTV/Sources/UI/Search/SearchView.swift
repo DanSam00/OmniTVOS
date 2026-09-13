@@ -10,6 +10,8 @@ import AppKit
 /// only because of `pageInset` — the old 80pt inset left room for six.
 /// Band identifiers for the macOS keyboard model.
 enum SearchFocusBand {
+    /// Recent-search chips, shown above Discover before anything is typed.
+    static let recent = "recent"
     static let field = "field"
     static let filters = "filters"
     static let results = "results"
@@ -63,6 +65,11 @@ struct SearchView: View {
     @State private var discoverOverlayTransitionActive = false
     @Environment(\.isEnabled) private var isEnabled
     @State private var searchTextInputActive = false
+    #if os(macOS)
+    /// Discover's own rows, handed up by the section — see
+    /// `MacFocusContribution`.
+    @State private var macDiscover = MacFocusContribution()
+    #endif
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     @AppStorage(SettingsKey.hideUnreleased) private var hideUnreleased = false
@@ -89,17 +96,29 @@ struct SearchView: View {
     /// the results. Republished whenever any of the three changes.
     private var macBands: [MacFocusBand] {
         var bands = [MacFocusBand(id: SearchFocusBand.field, items: [SearchFocusBand.field])]
-        if viewModel.hasQuery {
-            bands.append(MacFocusBand(
-                id: SearchFocusBand.filters,
-                items: SearchContentType.allCases.map(\.rawValue)
-            ))
-            bands.append(MacFocusBand(
-                id: SearchFocusBand.results,
-                items: visibleResults.map(\.id),
-                columns: Int(SearchGridMetrics.columnCount)
-            ))
+        guard viewModel.hasQuery else {
+            // Nothing typed yet, so the screen is the recent chips above the
+            // embedded Discover section — which describes its own rows, since
+            // its contents live in its view model. Without these the screen had
+            // exactly one band and Down from the field went nowhere.
+            if !viewModel.recentSearches.isEmpty {
+                bands.append(MacFocusBand(
+                    id: SearchFocusBand.recent,
+                    items: viewModel.recentSearches + ["clear"]
+                ))
+            }
+            if showDiscover { bands += macDiscover.bands }
+            return bands
         }
+        bands.append(MacFocusBand(
+            id: SearchFocusBand.filters,
+            items: SearchContentType.allCases.map(\.rawValue)
+        ))
+        bands.append(MacFocusBand(
+            id: SearchFocusBand.results,
+            items: visibleResults.map(\.id),
+            columns: Int(SearchGridMetrics.columnCount)
+        ))
         return bands
     }
 
@@ -111,6 +130,10 @@ struct SearchView: View {
         case SearchFocusBand.filters:
             guard let type = SearchContentType(rawValue: item) else { return }
             viewModel.setType(type)
+        case SearchFocusBand.recent:
+            if item == "clear" { viewModel.clearRecent() } else { viewModel.applyRecent(item) }
+        case DiscoverFocusBand.filters, DiscoverFocusBand.grid:
+            macDiscover.activate(band, item)
         default:
             guard let result = visibleResults.first(where: { $0.id == item }) else { return }
             lastFocusedResultID = item
@@ -143,11 +166,7 @@ struct SearchView: View {
                             .disabled(discoverOverlayTransitionActive)
                     }
                     if showDiscover {
-                        DiscoverSection(
-                            onContentClick: onContentClick,
-                            onLongPress: onLongPress,
-                            parentTransitionActive: $discoverOverlayTransitionActive
-                        )
+                        discoverSection
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     } else {
                         centeredState {
@@ -183,14 +202,29 @@ struct SearchView: View {
         }
         .onChange(of: visibleResults.map(\.id)) { _, _ in macFocus.update(macBands) }
         .onChange(of: viewModel.hasQuery) { _, _ in macFocus.update(macBands) }
+        .onChange(of: viewModel.recentSearches) { _, _ in macFocus.update(macBands) }
         .onChange(of: keyRouter.latest) { _, press in
             guard let press else { return }
             macFocus.handle(press.key, activate: macActivate)
         }
         // The caret being on the field means the field is ready to type into —
         // a focus ring that does not accept text is worse than none.
+        //
+        // `searchBarFocused` is a `@FocusState` and only draws the ring; the
+        // text field is an `NSViewRepresentable` whose editing is driven by
+        // `searchTextInputActive`, which calls `makeFirstResponder` itself.
+        // Setting the focus state alone left the ring on a field that could
+        // not be typed into.
         .onChange(of: macFocus.bandID, initial: true) { _, band in
-            searchBarFocused = (band == SearchFocusBand.field)
+            let onField = band == SearchFocusBand.field
+            // Deliberately NOT `searchBarFocused`. Writing that focus state
+            // makes SwiftUI focus the capsule's hidden proxy view, which takes
+            // the window's first responder away from the text field a moment
+            // after it was given it — the log showed the caret land on
+            // `KeyViewProxy` every time. The ring already reads the caret
+            // directly (see `GlassCapsule` below).
+            guard searchTextInputActive != onField else { return }
+            searchTextInputActive = onField
         }
         #endif
         .onChange(of: focusedResultID) { _, newValue in
@@ -244,6 +278,25 @@ struct SearchView: View {
                 overlayRestoreResultID = nil
             }
         }
+    }
+
+    /// Discover, wired to this screen's caret on macOS so its filters and grid
+    /// are part of the same keyboard model as the field above them.
+    @ViewBuilder
+    private var discoverSection: some View {
+        let section = DiscoverSection(
+            onContentClick: onContentClick,
+            onLongPress: onLongPress,
+            parentTransitionActive: $discoverOverlayTransitionActive
+        )
+        #if os(macOS)
+        section.macFocusModel(macFocus) { contribution in
+            macDiscover = contribution
+            macFocus.update(macBands)
+        }
+        #else
+        section
+        #endif
     }
 
     // MARK: - Header + glass search bar
@@ -459,6 +512,11 @@ struct SearchView: View {
 
     // MARK: Recent searches (shown above Discover when idle)
 
+    /// tvOS reads the focus engine; macOS reads the caret.
+    private var clearRecentShowsFocus: Bool {
+        clearRecentFocused || macIsFocused(SearchFocusBand.recent, "clear")
+    }
+
     private var recentRow: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -470,7 +528,12 @@ struct SearchView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
                     ForEach(viewModel.recentSearches, id: \.self) { term in
-                        GlassChip(title: term, isSelected: false, leadingSystemImage: "clock.arrow.circlepath") {
+                        GlassChip(
+                            title: term,
+                            isSelected: false,
+                            leadingSystemImage: "clock.arrow.circlepath",
+                            macIsFocused: macIsFocused(SearchFocusBand.recent, term)
+                        ) {
                             viewModel.applyRecent(term)
                         }
                     }
@@ -481,17 +544,17 @@ struct SearchView: View {
                             Text(L10n.string("action_clear", fallback: "Clear"))
                         }
                         .font(.system(size: 20, weight: .semibold))
-                        .foregroundColor(clearRecentFocused ? .black : .white.opacity(0.85))
+                        .foregroundColor(clearRecentShowsFocus ? .black : .white.opacity(0.85))
                         .padding(.horizontal, 22)
                         .frame(height: 50)
-                        .modifier(GlassChipBackground(filled: clearRecentFocused))
+                        .modifier(GlassChipBackground(filled: clearRecentShowsFocus))
                     }
                     .buttonStyle(PosterCardButtonStyle())
                     .nuvioFocusable()
                     .focused($clearRecentFocused)
                     .focusEffectDisabledIfAvailable()
-                    .scaleEffect(clearRecentFocused ? 1.06 : 1.0)
-                    .animation(.easeOut(duration: 0.14), value: clearRecentFocused)
+                    .scaleEffect(clearRecentShowsFocus ? 1.06 : 1.0)
+                    .animation(.easeOut(duration: 0.14), value: clearRecentShowsFocus)
                 }
                 .padding(.vertical, 8)
                 .padding(.horizontal, 4)
@@ -560,17 +623,7 @@ struct HiddenSearchTextField: NSViewRepresentable {
         if nsView.stringValue != text {
             nsView.stringValue = text
         }
-
-        guard let window = nsView.window else { return }
-        let isFirstResponder = window.firstResponder === nsView.currentEditor()
-            || window.firstResponder === nsView
-        if isEditing, !isFirstResponder {
-            DispatchQueue.main.async {
-                window.makeFirstResponder(nsView)
-            }
-        } else if !isEditing, isFirstResponder {
-            window.makeFirstResponder(nil)
-        }
+        context.coordinator.apply(isEditing: isEditing, to: nsView)
     }
 
     func makeCoordinator() -> Coordinator {
@@ -580,10 +633,43 @@ struct HiddenSearchTextField: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextFieldDelegate {
         private let text: Binding<String>
         private let isEditing: Binding<Bool>
+        private var caretTask: Task<Void, Never>?
 
         init(text: Binding<String>, isEditing: Binding<Bool>) {
             self.text = text
             self.isEditing = isEditing
+        }
+
+        private func holdsCaret(_ field: NSTextField) -> Bool {
+            guard let responder = field.window?.firstResponder else { return false }
+            return responder === field || responder === field.currentEditor()
+        }
+
+        /// Takes or gives up the caret.
+        ///
+        /// Search asks for it as the screen appears, which is before the field
+        /// is in a window — a single `makeFirstResponder` then is dropped on
+        /// the floor, and nothing calls back to try again because `isEditing`
+        /// has not changed. So keep asking until it takes.
+        @MainActor
+        func apply(isEditing: Bool, to field: NSTextField) {
+            caretTask?.cancel()
+            caretTask = nil
+            guard isEditing else {
+                if holdsCaret(field) { field.window?.makeFirstResponder(nil) }
+                return
+            }
+            guard !holdsCaret(field) else { return }
+            caretTask = Task { @MainActor [weak field] in
+                for _ in 0..<30 {
+                    guard let field, !Task.isCancelled else { return }
+                    if let window = field.window {
+                        window.makeFirstResponder(field)
+                        if self.holdsCaret(field) { return }
+                    }
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                }
+            }
         }
 
         func controlTextDidChange(_ notification: Notification) {
