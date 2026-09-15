@@ -210,6 +210,29 @@ struct StreamQualityTags: Equatable, Codable {
         return 0
     }
 
+    /// Seeders, when a torrent add-on publishes them — "👤 123",
+    /// "Seeders: 123" or "S:123" are the forms in the wild. Nil for a direct or
+    /// debrid link, which has no swarm behind it to report.
+    static func seeders(in text: String) -> Int? {
+        let patterns = [
+            #"👤\s*([0-9]{1,6})"#,
+            #"seeders?\s*[:=]?\s*([0-9]{1,6})"#,
+            #"(?:^|[^a-z0-9])s\s*[:=]\s*([0-9]{1,6})"#,
+        ]
+        let lower = text.lowercased()
+        let range = NSRange(lower.startIndex..<lower.endIndex, in: lower)
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+                  let match = regex.firstMatch(in: lower, options: [], range: range),
+                  match.numberOfRanges > 1,
+                  let captured = Range(match.range(at: 1), in: lower),
+                  let value = Int(lower[captured])
+            else { continue }
+            return value
+        }
+        return nil
+    }
+
     /// Height from a `WIDTHxHEIGHT` frame size, snapped to the standard rung
     /// below it so broadcast sizes that are not exactly 1080 still classify.
     private static func frameHeight(in lower: String) -> Int? {

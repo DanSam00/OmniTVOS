@@ -1832,57 +1832,7 @@ enum SmartPlaybackSelector {
             let res = tags.resolution > 0 ? tags.resolution : inferredResolution(for: stream)
             return !isLowQualityOrTicketStream(stream) && res >= 720
         }
-        traceStreamFunnel(
-            streams: streams,
-            playable: playable,
-            compatible: compatible,
-            nonPromotional: nonPromotional,
-            withoutPaywalls: withoutPaywalls,
-            valid: valid
-        )
         return valid.isEmpty ? result : valid
-    }
-
-    /// Which stage of the funnel each stream died at.
-    ///
-    /// Five filters run here in sequence and each has a fallback that makes it
-    /// invisible when it empties the list, so a short list says nothing about
-    /// which one shortened it.
-    private static func traceStreamFunnel(
-        streams: [NuvioStream],
-        playable: [NuvioStream],
-        compatible: [NuvioStream],
-        nonPromotional: [NuvioStream],
-        withoutPaywalls: [NuvioStream],
-        valid: [NuvioStream]
-    ) {
-        #if os(macOS)
-        guard !streams.isEmpty else { return }
-        MacDiagnostics.log(
-            "stream.funnel in=\(streams.count) url=\(playable.count)"
-                + " compatible=\(compatible.count) nonPromo=\(nonPromotional.count)"
-                + " nonPaywall=\(withoutPaywalls.count) valid=\(valid.count)"
-        )
-        let kept = Set(valid.map(\.id))
-        for stream in streams {
-            let tags = StreamQualityTags.parse(stream: stream)
-            let res = tags.resolution > 0 ? tags.resolution : inferredResolution(for: stream)
-            let reason: String
-            if !playable.contains(where: { $0.id == stream.id }) { reason = "no-url" }
-            else if !compatible.contains(where: { $0.id == stream.id }) { reason = "incompatible" }
-            else if !nonPromotional.contains(where: { $0.id == stream.id }) { reason = "promotional" }
-            else if !withoutPaywalls.contains(where: { $0.id == stream.id }) { reason = "paywall" }
-            else if isLowQualityOrTicketStream(stream) { reason = "ticket" }
-            else if res < 720 { reason = "res<720" }
-            else if kept.contains(stream.id) { reason = "kept" }
-            else { reason = "other" }
-            let addon: String = stream.addonName ?? "?"
-            let name: String = String((stream.name ?? "-").prefix(48))
-            let title: String = String((stream.description ?? "-").prefix(64))
-            let head: String = "stream.item \(reason) res=\(res) tagRes=\(tags.resolution)"
-            MacDiagnostics.log(head + " addon=" + addon + " name=" + name + " title=" + title)
-        }
-        #endif
     }
 
     /// Prefer DV / HDR / Atmos when aiming for highest quality.
@@ -2394,6 +2344,16 @@ enum StreamPickerListBuilder {
 
 /// Small Equatable key used by the picker cache. It deliberately contains no
 /// stream URLs, descriptions, or subtitle payloads, so focus changes are O(1).
+#if os(macOS)
+/// Memo box for the details rail's stream list. A reference type so a computed
+/// property can fill it during a body pass without publishing state into the
+/// update it is part of.
+final class MacStreamListCache {
+    var key: StreamPickerListCacheKey?
+    var streams: [NuvioStream] = []
+}
+#endif
+
 struct StreamPickerListCacheKey: Equatable {
     /// Part of the key: changing the filter must rebuild the list.
     var resolutionFilter: StreamResolutionFilter = .any
@@ -2464,6 +2424,9 @@ struct TvDetailsContent: View {
     /// The scroll proxy lives inside the reader, but the key handler has to sit
     /// on an ancestor of every control to receive the arrows at all.
     @State private var macScrollProxy: ScrollViewProxy?
+    /// Memo for `macDisplayedStreams`. See the note there on why it is a
+    /// reference type rather than `@State`.
+    @State private var macStreamsCache = MacStreamListCache()
     @ObservedObject private var keyRouter = MacKeyRouter.shared
     /// This page's place in the router's stack.
     @State private var macKeyToken: UUID?
@@ -3028,8 +2991,28 @@ struct TvDetailsContent: View {
             .sorted { $0.episode < $1.episode }
     }
 
+    /// Inputs that can change the visible list — not the caret.
+    private var macStreamsCacheKey: StreamPickerListCacheKey {
+        StreamPickerListBuilder.cacheKey(
+            revision: uiState.streamsRevision,
+            selectedAddonId: macSelectedAddonId,
+            sortOption: macSortOption,
+            includeDebrid: includeDebrid,
+            cachedOnly: macCachedOnly,
+            resolutionFilter: macResolutionFilter
+        )
+    }
+
+    /// The rail's streams, memoised.
+    ///
+    /// This was a plain computed property, so the whole pipeline — five
+    /// filters, a regex-heavy tag parse per stream, then a sort — re-ran on
+    /// every SwiftUI body pass, and the rail redraws on every caret move. With
+    /// eighty streams that is what made walking the list crawl. The tvOS picker
+    /// has always cached it against exactly this key for the same reason.
     private var macDisplayedStreams: [NuvioStream] {
-        StreamPickerListBuilder.displayedStreams(
+        if macStreamsCache.key == macStreamsCacheKey { return macStreamsCache.streams }
+        let streams = StreamPickerListBuilder.displayedStreams(
             streams: uiState.streams,
             groups: uiState.streamGroups,
             selectedAddonId: macSelectedAddonId,
@@ -3038,6 +3021,11 @@ struct TvDetailsContent: View {
             cachedOnly: macCachedOnly,
             resolutionFilter: macResolutionFilter
         )
+        // A class, not `@State`: reading a computed property during a body pass
+        // cannot publish state without re-entering the update it is part of.
+        macStreamsCache.key = macStreamsCacheKey
+        macStreamsCache.streams = streams
+        return streams
     }
 
     /// Add-ons that actually returned something, so the filter never offers a
@@ -3195,8 +3183,43 @@ struct TvDetailsContent: View {
             leading: stream.addonName,
             title: stream.name?.replacingOccurrences(of: "\n", with: " ") ?? "Stream",
             subtitle: stream.filename ?? stream.description?.replacingOccurrences(of: "\n", with: " "),
+            detail: macStreamDetail(stream),
             badge: resolution > 0 ? macResolutionLabel(resolution) : nil
         )
+    }
+
+    /// What the row says about a stream beyond its name: how big it is, what it
+    /// is encoded as, and whether it will actually play well.
+    ///
+    /// The add-on buries all of this in a free-text description that the row
+    /// already truncates to one line, so it is parsed out and stated plainly —
+    /// size and swarm health are what decide between two otherwise identical
+    /// 2160p entries.
+    private func macStreamDetail(_ stream: NuvioStream) -> String? {
+        let tags = StreamQualityTags.parse(stream: stream)
+        var parts: [String] = []
+
+        if let size = StreamBadgeSizing.fileSizeLabel(for: stream) {
+            parts.append(size.replacingOccurrences(of: "Size ", with: ""))
+        }
+        if tags.quality != .unknown { parts.append(tags.quality.label) }
+        if tags.isAV1 { parts.append("AV1") }
+        else if tags.isHEVC { parts.append("HEVC") }
+        else if tags.isAVC { parts.append("H.264") }
+        if tags.isDolbyVision { parts.append("Dolby Vision") }
+        else if tags.isHDR { parts.append("HDR") }
+        if tags.isAtmos { parts.append("Atmos") }
+
+        let searchText = [stream.name, stream.description, stream.filename]
+            .compactMap { $0 }
+            .joined(separator: " ")
+        if let seeders = StreamQualityTags.seeders(in: searchText) {
+            parts.append("\(seeders) seeders")
+        }
+        // Cached last: it is the strongest signal, so it reads as the verdict.
+        if tags.isCached || stream.isLikelyCached { parts.append("Cached") }
+
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private func macSeasonTitle(_ season: Int) -> String {
