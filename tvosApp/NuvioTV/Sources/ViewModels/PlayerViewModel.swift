@@ -1024,13 +1024,19 @@ class PlayerViewModel: ObservableObject {
                 if self.time.duration > 0,
                    !intervals.isEmpty,
                    intervals.allSatisfy({ $0.provider == "introdb" }) {
-                    IntroDBSkipService.shared.seedSeasonTemplate(
-                        imdbId: imdbId,
-                        season: episodeNumbers?.season,
-                        episode: episodeNumbers?.episode,
-                        intervals: intervals,
-                        duration: self.time.duration
-                    )
+                    // Fire and forget: seeding only warms a same-season
+                    // template for the next episode, so the hop onto the actor
+                    // costs nothing anyone is waiting on.
+                    let seedDuration = self.time.duration
+                    Task {
+                        await IntroDBSkipService.shared.seedSeasonTemplate(
+                            imdbId: imdbId,
+                            season: episodeNumbers?.season,
+                            episode: episodeNumbers?.episode,
+                            intervals: intervals,
+                            duration: seedDuration
+                        )
+                    }
                     self.didSeedIntroDBSeasonTemplate = true
                 }
                 self.updateSkipIntervalState()
@@ -1070,13 +1076,19 @@ class PlayerViewModel: ObservableObject {
            skipIntervals.allSatisfy({ $0.provider == "introdb" }),
            let meta = activeMeta {
             let imdbId = meta.imdbId ?? (meta.id.hasPrefix("tt") ? meta.id : nil)
-            IntroDBSkipService.shared.seedSeasonTemplate(
-                imdbId: imdbId,
-                season: activeEpisodeNumbers?.season,
-                episode: activeEpisodeNumbers?.episode,
-                intervals: skipIntervals,
-                duration: time.duration
-            )
+            let seedSeason = activeEpisodeNumbers?.season
+            let seedEpisode = activeEpisodeNumbers?.episode
+            let seedIntervals = skipIntervals
+            let seedDuration = time.duration
+            Task {
+                await IntroDBSkipService.shared.seedSeasonTemplate(
+                    imdbId: imdbId,
+                    season: seedSeason,
+                    episode: seedEpisode,
+                    intervals: seedIntervals,
+                    duration: seedDuration
+                )
+            }
             didSeedIntroDBSeasonTemplate = true
         }
         guard !skipIntervals.isEmpty,

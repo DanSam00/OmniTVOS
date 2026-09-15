@@ -105,7 +105,20 @@ private struct FlexibleSeconds: Decodable {
     }
 }
 
-final class IntroDBSkipService {
+/// An actor, not a class.
+///
+/// Both dictionaries below were mutable state on a shared singleton reached
+/// from `async` methods with no isolation, so every caller touched them on
+/// whatever cooperative-pool thread it happened to land on. Returning from the
+/// mini player kicks off a reload while the previous lookup is still in flight,
+/// and the two raced on `seasonSamples`: one reading the dictionary while the
+/// other resized it, which is a read through a stale bucket pointer and a
+/// SIGSEGV (`Dictionary.subscript.getter`, far=0x8000000000000010).
+///
+/// A lock around each access would have fixed the crash just as well. An actor
+/// is used instead because the compiler then enforces it: the next accessor
+/// added here cannot forget to take it.
+actor IntroDBSkipService {
     static let shared = IntroDBSkipService()
 
     private let session: URLSession
