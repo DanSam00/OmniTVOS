@@ -323,6 +323,9 @@ final class LiveTelemetrySampler {
         // Feed the extractor yield gate (#93 startup): nil on non-native paths keeps the
         // gate conservative there, but those paths have no active session to gate anyway.
         engine.extractorYieldState.setForwardBuffer(forwardBufferSeconds)
+        // Same reading, same reason, for the subtitle side readers: a starving consumer takes the
+        // link back off elective lookahead. See `SideReaderLinkPolicy`.
+        engine.sideReaderLinkGate.setForwardBuffer(forwardBufferSeconds)
 
         if let readings = nativeReadings {
             emitLagDiag(engine: engine, readings: readings, netMbps: instantBitrateMbps)

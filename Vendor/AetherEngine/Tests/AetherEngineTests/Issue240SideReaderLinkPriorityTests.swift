@@ -29,16 +29,16 @@ struct Issue240SideReaderLinkPriorityTests {
     @Test("a seek in flight takes the link, grace window or not")
     func seekWins() {
         #expect(SideReaderLinkPolicy.shouldYield(
-            seeking: true, videoProducing: false, inAnchorGrace: false, yieldedSeconds: 0))
+            seeking: true, videoProducing: false, starving: false, inAnchorGrace: false, yieldedSeconds: 0))
         #expect(SideReaderLinkPolicy.shouldYield(
-            seeking: true, videoProducing: true, inAnchorGrace: true, yieldedSeconds: 0))
+            seeking: true, videoProducing: true, starving: false, inAnchorGrace: true, yieldedSeconds: 0))
     }
 
     /// A pump that is pulling from the source outranks lookahead.
     @Test("a fetching producer takes the link from a settled side reader")
     func producerWinsOutsideGrace() {
         #expect(SideReaderLinkPolicy.shouldYield(
-            seeking: false, videoProducing: true, inAnchorGrace: false, yieldedSeconds: 0))
+            seeking: false, videoProducing: true, starving: false, inAnchorGrace: false, yieldedSeconds: 0))
     }
 
     /// The grace window: a freshly anchored reader has nothing in the store for the new position,
@@ -49,16 +49,16 @@ struct Issue240SideReaderLinkPriorityTests {
     @Test("a just-anchored reader fetches through a busy pump, a settled one does not")
     func anchorGraceIsBounded() {
         #expect(!SideReaderLinkPolicy.shouldYield(
-            seeking: false, videoProducing: true, inAnchorGrace: true, yieldedSeconds: 0))
+            seeking: false, videoProducing: true, starving: false, inAnchorGrace: true, yieldedSeconds: 0))
         #expect(SideReaderLinkPolicy.shouldYield(
-            seeking: false, videoProducing: true, inAnchorGrace: false, yieldedSeconds: 0))
+            seeking: false, videoProducing: true, starving: false, inAnchorGrace: false, yieldedSeconds: 0))
     }
 
     /// A parked pump has a full buffer and no use for the link.
     @Test("an idle video path leaves the link to the side reader")
     func idleVideoPathYieldsTheLink() {
         #expect(!SideReaderLinkPolicy.shouldYield(
-            seeking: false, videoProducing: false, inAnchorGrace: false, yieldedSeconds: 0))
+            seeking: false, videoProducing: false, starving: false, inAnchorGrace: false, yieldedSeconds: 0))
     }
 
     /// The valve. A wedged pump never parks and a host that reports no producer at all never claims
@@ -66,10 +66,34 @@ struct Issue240SideReaderLinkPriorityTests {
     @Test("a continuous yield past the cap takes the link back")
     func yieldCapIsAValve() {
         #expect(SideReaderLinkPolicy.shouldYield(
-            seeking: true, videoProducing: true, inAnchorGrace: false,
+            seeking: true, videoProducing: true, starving: false, inAnchorGrace: false,
             yieldedSeconds: SideReaderLinkPolicy.maxYieldSeconds - 0.01))
         #expect(!SideReaderLinkPolicy.shouldYield(
-            seeking: true, videoProducing: true, inAnchorGrace: false,
+            seeking: true, videoProducing: true, starving: false, inAnchorGrace: false,
+            yieldedSeconds: SideReaderLinkPolicy.maxYieldSeconds))
+    }
+
+    /// The rule this file did not have. The grace window assumes the link has room to spare for
+    /// eight seconds, which inverts on a link with no headroom: a starved session re-anchors, every
+    /// re-anchor re-arms the grace, and the reader spends the session inside an unconditional fetch
+    /// window. Measured on a 17-track remux over a slow origin, 31 MB to the side reader against
+    /// 8 MB to the video path in one 30 s window, muxer output zero, forward buffer zero.
+    @Test("a starving consumer takes the link back, grace window or not")
+    func starvationOutranksTheGraceWindow() {
+        #expect(SideReaderLinkPolicy.shouldYield(
+            seeking: false, videoProducing: true, starving: true, inAnchorGrace: true,
+            yieldedSeconds: 0))
+        #expect(SideReaderLinkPolicy.shouldYield(
+            seeking: false, videoProducing: false, starving: true, inAnchorGrace: true,
+            yieldedSeconds: 0))
+    }
+
+    /// But it stays under the valve, so a buffer reading that never recovers — or a path that
+    /// reports one and then stops — cannot mute lookahead for the rest of the session.
+    @Test("the yield cap still outranks starvation")
+    func valveOutranksStarvation() {
+        #expect(!SideReaderLinkPolicy.shouldYield(
+            seeking: false, videoProducing: true, starving: true, inAnchorGrace: false,
             yieldedSeconds: SideReaderLinkPolicy.maxYieldSeconds))
     }
 
@@ -93,6 +117,31 @@ struct Issue240SideReaderLinkPriorityTests {
 
         gate.videoFetchEnded()      // unbalanced extra
         #expect(gate.state.videoProducing == false, "the count floors at zero")
+    }
+
+    /// Two thresholds, not one: the buffer crosses a single threshold on every catch-up burst, and
+    /// a reader that resumes on each crossing keeps taking the link back from a pipeline that has
+    /// not recovered. Unknown is not starving — a path that never reports must behave as it did
+    /// before the rule existed.
+    @Test("starvation latches below the floor and clears only once recovered")
+    func gateHysteresisOnForwardBuffer() {
+        let gate = SideReaderLinkGate()
+        #expect(gate.state.starving == false)
+
+        gate.setForwardBuffer(nil)
+        #expect(gate.state.starving == false, "no reading is not a starvation report")
+
+        gate.setForwardBuffer(SideReaderLinkPolicy.starvingBelowSeconds - 0.01)
+        #expect(gate.state.starving)
+
+        gate.setForwardBuffer(SideReaderLinkPolicy.recoveredAtSeconds - 0.01)
+        #expect(gate.state.starving, "a burst part-way back is not a recovery")
+
+        gate.setForwardBuffer(SideReaderLinkPolicy.recoveredAtSeconds)
+        #expect(gate.state.starving == false)
+
+        gate.setForwardBuffer(nil)
+        #expect(gate.state.starving == false, "and an absent reading does not re-arm it")
     }
 
     @Test("the seek flag mirrors what it is set to")
@@ -147,12 +196,12 @@ struct Issue240SideReaderLinkPriorityTests {
     }
 
     private static func arbiter(
-        seeking: Bool = false, videoProducing: Bool = false,
+        seeking: Bool = false, videoProducing: Bool = false, starving: Bool = false,
         maxYieldSeconds: Double = SideReaderLinkPolicy.maxYieldSeconds,
         valveGrantSeconds: Double = SideReaderLinkPolicy.maxYieldSeconds,
         anchorGraceSeconds: Double = 0
     ) -> SideReaderLinkArbiter {
-        var a = SideReaderLinkArbiter(state: { (seeking, videoProducing) })
+        var a = SideReaderLinkArbiter(state: { (seeking, videoProducing, starving) })
         a.maxYieldSeconds = maxYieldSeconds
         a.valveGrantSeconds = valveGrantSeconds
         a.anchorGraceSeconds = anchorGraceSeconds
