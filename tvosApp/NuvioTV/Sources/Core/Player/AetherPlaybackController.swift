@@ -1540,6 +1540,25 @@ enum AetherPlaybackLifecyclePolicy {
 /// Long-lived wrapper around a single `AetherEngine` instance (reused across titles).
 @MainActor
 final class AetherPlaybackController: UIViewController, PlaybackEngineControlling {
+    #if os(macOS)
+    /// Mirrors the engine's own diagnostics into the app log.
+    ///
+    /// Aether serves every source to AVPlayer through a local HLS loopback, so
+    /// when playback stalls the app's own traces can only say "rebuffering" —
+    /// they cannot see whether the upstream fetch, the muxer or the local
+    /// server is the one behind. The engine's 30-second probe reports exactly
+    /// that (buffer ahead, bytes fetched, segment cache, server bytes) and it
+    /// already runs on every load; it just had nowhere to go.
+    private static let engineLogBridge: Void = {
+        EngineLog.handler = { line in
+            // Only the periodic probe and session lifecycle. Per-segment
+            // chatter would bury the app's own traces.
+            guard line.contains("rss=") || line.contains("[NativeAVPlayerHost]") else { return }
+            MacDiagnostics.log("aether " + line)
+        }
+    }()
+    #endif
+
     var onPlaybackSuspended: ((Int64, Int64) -> Void)?
     /// Terminal load/runtime failures the coordinator may use for MPV fallback.
     var onTerminalError: ((String) -> Void)?
@@ -1560,6 +1579,9 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
     private var currentHTTPHeaders: [String: String] = [:]
     private var didReportTerminalError = false
     private var sourceProbe: SourceProbe?
+    #if os(macOS)
+    private let engineLogBridgeInstalled: Void = AetherPlaybackController.engineLogBridge
+    #endif
     private var subtitleDelaySeconds: Double = 0
     private var aiSubtitleStartupHoldCueID: Int?
     private var aiSubtitleStartupHoldTimeoutTask: Task<Void, Never>?

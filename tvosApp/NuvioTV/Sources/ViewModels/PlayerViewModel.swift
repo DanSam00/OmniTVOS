@@ -61,6 +61,11 @@ final class PlaybackClock: ObservableObject {
 @MainActor
 class PlayerViewModel: ObservableObject {
     @Published var status: PlayerStatus = .idle
+    #if os(macOS)
+    /// True only while the mini player was opened by losing focus, so a PiP the
+    /// viewer started by hand survives coming back to the app.
+    private var autoPictureInPictureActive = false
+    #endif
     var time: PlayerTime = PlayerTime()
     /// High-frequency time/scrub state for HUDs. Mirrors `time` on each tick.
     let clock = PlaybackClock()
@@ -382,6 +387,9 @@ class PlayerViewModel: ObservableObject {
         sessionCoordinator.prepareControllers()
         bindSessionCoordinatorCallbacks()
         setupPipObservers()
+        #if os(macOS)
+        observeWindowFocusForPictureInPicture()
+        #endif
         postPlayController.$uiState
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
@@ -3759,7 +3767,62 @@ class PlayerViewModel: ObservableObject {
         } else {
             startPictureInPicture()
         }
+        #if os(macOS)
+        // A PiP the viewer asked for is theirs to close, so returning to the
+        // app must not cancel it.
+        autoPictureInPictureActive = false
+        #endif
     }
+
+    #if os(macOS)
+    /// Sends playback to the mini player when the app loses focus, and brings
+    /// it back when focus returns.
+    ///
+    /// A Mac has no "app went to background" the way tvOS does — the window
+    /// just goes behind something else and keeps playing where the viewer can
+    /// no longer see it. PiP is the system's answer to that, so it is driven
+    /// automatically rather than left as a button nobody presses.
+    func observeWindowFocusForPictureInPicture() {
+        let center = NotificationCenter.default
+        center.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.enterAutomaticPictureInPicture() }
+        }
+        center.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.leaveAutomaticPictureInPicture() }
+        }
+    }
+
+    private func enterAutomaticPictureInPicture() {
+        guard status == .playing,
+              isPictureInPictureSupported,
+              isPictureInPicturePossible,
+              !isPictureInPictureActive,
+              // Nothing to shrink into a mini player if the viewer is mid-task
+              // in a panel or the post-play card.
+              sidePanel == nil,
+              !postPlayState.isVisible
+        else { return }
+        autoPictureInPictureActive = true
+        MacDiagnostics.log("player.pip auto=start")
+        startPictureInPicture()
+    }
+
+    private func leaveAutomaticPictureInPicture() {
+        guard autoPictureInPictureActive else { return }
+        autoPictureInPictureActive = false
+        guard isPictureInPictureActive else { return }
+        MacDiagnostics.log("player.pip auto=stop")
+        stopPictureInPicture()
+    }
+    #endif
 
     private func setupPipObservers() {
         isPictureInPictureActive = PictureInPictureManager.shared.isPictureInPictureActive
