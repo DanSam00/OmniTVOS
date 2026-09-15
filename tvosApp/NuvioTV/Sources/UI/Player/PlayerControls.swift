@@ -831,6 +831,198 @@ struct PlayerSettingsPanel: View {
     @State private var selectedLanguage: String?
     @State private var style = SubtitleStyle.current
     @FocusState private var focus: Focus?
+    #if os(macOS)
+    /// The caret. macOS has no focus engine to drive `focus`, so the panel
+    /// keeps its own and every control reads it through `isFocused(_:)`.
+    @State private var macFocus: Focus?
+    @ObservedObject private var keyRouter = MacKeyRouter.shared
+    @State private var macKeyToken: UUID?
+    #endif
+
+    /// tvOS reads the focus engine; macOS reads the caret.
+    private func isFocused(_ key: Focus) -> Bool {
+        #if os(macOS)
+        return macFocus == key
+        #else
+        return focus == key
+        #endif
+    }
+
+    #if os(macOS)
+    /// The page's controls, column by column, as laid out on screen.
+    ///
+    /// Derived from the same values the columns render from rather than
+    /// written out separately, so a row that is conditionally shown — AI
+    /// Translation, the background colour and opacity rows — is in the model
+    /// exactly when it is on screen.
+    private var macColumns: [[Focus]] {
+        switch tab {
+        case .subtitles:
+            let snapshot = visibleOptions
+            let language = resolvedLanguage(in: snapshot)
+            let languageColumn: [Focus] = [.noneRow] + languages.map { .language($0.name) }
+            let optionColumn: [Focus] = snapshot
+                .filter { $0.language == language }
+                .map { .option($0.id) }
+            return [languageColumn, optionColumn, macStyleColumn].filter { !$0.isEmpty }
+        case .audio:
+            let tracks: [Focus] = orderedAudioTracks.map { .audio($0.id) }
+            let controls: [Focus] = [
+                .audioControl(.delayMinus), .audioControl(.delayPlus),
+                .audioControl(.ampMinus), .audioControl(.ampPlus),
+            ]
+            return [tracks, controls].filter { !$0.isEmpty }
+        case .speed:
+            let speeds: [Focus] = PlaybackSpeed.allCases.map { .speed($0.rawValue) }
+            var others: [Focus] = PlayerSeekSettings.validSteps.map { .seekStep($0) }
+            others.append(.debugOverlay)
+            return [speeds, others].filter { !$0.isEmpty }
+        }
+    }
+
+    private var macStyleColumn: [Focus] {
+        var controls: [StyleControl] = [.delayMinus, .delayPlus]
+        if viewModel.canManuallyToggleAISubtitleTranslation { controls.append(.aiTranslation) }
+        controls += [.sizeMinus, .sizePlus, .bold]
+        controls += Self.palette.map { .color($0) }
+        controls += [.opacityMinus, .opacityPlus, .outline, .background]
+        if style.backgroundEnabled {
+            controls += Self.backgroundPalette.map { .backgroundColor($0) }
+            controls += [.backgroundOpacityMinus, .backgroundOpacityPlus]
+        }
+        return controls.map { .style($0) }
+    }
+
+    /// Where the caret is now, as (column, row). Nil while it is on the tabs.
+    private var macPosition: (column: Int, row: Int)? {
+        guard let macFocus else { return nil }
+        for (column, items) in macColumns.enumerated() {
+            if let row = items.firstIndex(of: macFocus) { return (column, row) }
+        }
+        return nil
+    }
+
+    /// Return. Each case does exactly what the control's own Button does —
+    /// there is no way to invoke a SwiftUI Button from a key handler, so the
+    /// action is stated once more here rather than left unreachable.
+    private func macActivate() {
+        guard let macFocus else { return }
+        switch macFocus {
+        case .tab(let item):
+            tab = item
+        case .noneRow:
+            if let off = viewModel.subtitles.first(where: { $0.id == "off" }) {
+                viewModel.selectSubtitle(off)
+            }
+        case .language(let name):
+            selectedLanguage = name
+        case .option(let id):
+            guard let option = visibleOptions.first(where: { $0.id == id }) else { return }
+            switch option.kind {
+            case .track(let track): viewModel.selectSubtitle(track)
+            case .external(let subtitle): viewModel.selectExternalSubtitle(subtitle)
+            }
+        case .audio(let id):
+            guard let track = orderedAudioTracks.first(where: { $0.id == id }) else { return }
+            viewModel.selectAudio(track)
+        case .audioControl(let control):
+            switch control {
+            case .delayMinus: viewModel.setAudioDelayMs(viewModel.audioDelayMs - 50)
+            case .delayPlus: viewModel.setAudioDelayMs(viewModel.audioDelayMs + 50)
+            case .ampMinus: viewModel.setAudioAmplificationDb(viewModel.audioAmplificationDb - 1)
+            case .ampPlus: viewModel.setAudioAmplificationDb(viewModel.audioAmplificationDb + 1)
+            }
+        case .speed(let value):
+            guard let speed = PlaybackSpeed(rawValue: value) else { return }
+            viewModel.setSpeed(speed)
+        case .seekStep(let seconds):
+            viewModel.setSeekStepSeconds(seconds)
+        case .debugOverlay:
+            viewModel.togglePlaybackDebugHUD()
+        case .aspect:
+            break
+        case .style(let control):
+            macActivateStyle(control)
+        }
+    }
+
+    private func macActivateStyle(_ control: StyleControl) {
+        switch control {
+        case .delayMinus: viewModel.setSubtitleDelayMs(viewModel.subtitleDelayMs - 50)
+        case .delayPlus: viewModel.setSubtitleDelayMs(viewModel.subtitleDelayMs + 50)
+        case .aiTranslation:
+            viewModel.setAISubtitleTranslationManuallyEnabled(
+                !viewModel.isAISubtitleTranslationManuallyEnabled
+            )
+        case .sizeMinus: updateStyle { $0.textSize = max($0.textSize - 5, 60) }
+        case .sizePlus: updateStyle { $0.textSize = min($0.textSize + 5, 200) }
+        case .bold: updateStyle { $0.bold.toggle() }
+        case .color(let hex): updateStyle { $0.textColorHex = hex }
+        case .opacityMinus: updateStyle { $0.textOpacity = max($0.textOpacity - 5, 20) }
+        case .opacityPlus: updateStyle { $0.textOpacity = min($0.textOpacity + 5, 100) }
+        case .outline: updateStyle { $0.outlineEnabled.toggle() }
+        case .background: updateStyle { $0.backgroundEnabled.toggle() }
+        case .backgroundColor(let hex): updateStyle { $0.backgroundColorHex = hex }
+        case .backgroundOpacityMinus: updateStyle { $0.backgroundOpacity = max($0.backgroundOpacity - 5, 10) }
+        case .backgroundOpacityPlus: updateStyle { $0.backgroundOpacity = min($0.backgroundOpacity + 5, 100) }
+        }
+    }
+
+    private func macMove(_ key: MacKey) {
+        let columns = macColumns
+        guard !columns.isEmpty else { return }
+
+        // On the tab row: left/right walk the tabs, down drops into the page.
+        if case .tab(let current)? = macFocus {
+            let tabs = Tab.allCases
+            guard let index = tabs.firstIndex(of: current) else { return }
+            switch key {
+            case .left:
+                if index > 0 { macFocus = .tab(tabs[index - 1]) }
+            case .right:
+                if index < tabs.count - 1 { macFocus = .tab(tabs[index + 1]) }
+            case .down:
+                macFocus = columns.first?.first
+            case .activate:
+                tab = tabs[index]
+                // The page under it is new, so the caret cannot stay where it was.
+                macFocus = .tab(tabs[index])
+            case .up:
+                break
+            }
+            return
+        }
+
+        guard let position = macPosition else {
+            macFocus = columns.first?.first
+            return
+        }
+
+        switch key {
+        case .up:
+            if position.row > 0 {
+                macFocus = columns[position.column][position.row - 1]
+            } else {
+                macFocus = .tab(tab)
+            }
+        case .down:
+            let next = position.row + 1
+            if next < columns[position.column].count {
+                macFocus = columns[position.column][next]
+            }
+        case .left:
+            guard position.column > 0 else { return }
+            let target = columns[position.column - 1]
+            macFocus = target[min(position.row, target.count - 1)]
+        case .right:
+            guard position.column + 1 < columns.count else { return }
+            let target = columns[position.column + 1]
+            macFocus = target[min(position.row, target.count - 1)]
+        case .activate:
+            macActivate()
+        }
+    }
+    #endif
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -862,14 +1054,42 @@ struct PlayerSettingsPanel: View {
                 if let language = effectiveLanguage {
                     selectedLanguage = language
                     focus = .language(language)
+                    #if os(macOS)
+                    macFocus = .language(language)
+                    #endif
                 } else {
                     focus = .noneRow
+                    #if os(macOS)
+                    macFocus = .noneRow
+                    #endif
                 }
             }
+            #if os(macOS)
+            // The panel covers the player, so it takes the keyboard outright.
+            if macKeyToken == nil { macKeyToken = MacKeyRouter.shared.claim() }
+            #endif
         }
         .onDisappear {
             viewModel.setControlsAutoHideSuspended(false)
+            #if os(macOS)
+            MacKeyRouter.shared.release(macKeyToken)
+            macKeyToken = nil
+            #endif
         }
+        #if os(macOS)
+        .onChange(of: keyRouter.latest) { _, press in
+            guard let press, MacKeyRouter.shared.isFront(macKeyToken) else { return }
+            macMove(press.key)
+        }
+        // Changing tab rebuilds the page, so the caret has to land somewhere
+        // that exists in the new one.
+        .onChange(of: tab) { _, _ in
+            guard case .tab = macFocus else {
+                macFocus = macColumns.first?.first
+                return
+            }
+        }
+        #endif
         .onChange(of: focus) { _, newValue in
             // Focusing a language filters the middle column live.
             if case .language(let language) = newValue {
@@ -885,7 +1105,7 @@ struct PlayerSettingsPanel: View {
     private var tabBar: some View {
         HStack(spacing: 22) {
             ForEach(Tab.allCases, id: \.self) { item in
-                let isFocused = focus == .tab(item)
+                let isFocused = isFocused(.tab(item))
                 let isSelected = tab == item
                 Button {
                     tab = item
@@ -1067,7 +1287,7 @@ struct PlayerSettingsPanel: View {
         focusKey: Focus,
         action: @escaping () -> Void
     ) -> some View {
-        let isFocused = focus == focusKey
+        let isFocused = isFocused(focusKey)
         return Button(action: action) {
             HStack(spacing: 12) {
                 Text(title)
@@ -1143,7 +1363,7 @@ struct PlayerSettingsPanel: View {
     }
 
     private func optionCard(_ option: SubtitlePanelOption) -> some View {
-        let isFocused = focus == .option(option.id)
+        let isFocused = isFocused(.option(option.id))
         return Button {
             switch option.kind {
             case .track(let track):
@@ -1321,7 +1541,7 @@ struct PlayerSettingsPanel: View {
     }
 
     private func stepButton(_ systemName: String, focusKey: StyleControl, action: @escaping () -> Void) -> some View {
-        let isFocused = focus == .style(focusKey)
+        let isFocused = isFocused(.style(focusKey))
         return Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 23, weight: .bold))
@@ -1339,7 +1559,7 @@ struct PlayerSettingsPanel: View {
     }
 
     private func toggleRow(title: String, isOn: Bool, focusKey: StyleControl, action: @escaping () -> Void) -> some View {
-        let isFocused = focus == .style(focusKey)
+        let isFocused = isFocused(.style(focusKey))
         return VStack(alignment: .leading, spacing: 14) {
             styleLabel(title)
             Button(action: action) {
@@ -1370,7 +1590,7 @@ struct PlayerSettingsPanel: View {
     }
 
     private func colorSwatch(_ hex: String) -> some View {
-        let isFocused = focus == .style(.color(hex))
+        let isFocused = isFocused(.style(.color(hex)))
         let isSelected = style.textColorHex.caseInsensitiveCompare(hex) == .orderedSame
         return Button {
             updateStyle { $0.textColorHex = hex }
@@ -1409,7 +1629,7 @@ struct PlayerSettingsPanel: View {
     }
 
     private func backgroundColorSwatch(_ hex: String) -> some View {
-        let isFocused = focus == .style(.backgroundColor(hex))
+        let isFocused = isFocused(.style(.backgroundColor(hex)))
         let isSelected = style.backgroundColorHex.caseInsensitiveCompare(hex) == .orderedSame
         return Button {
             updateStyle { $0.backgroundColorHex = hex }
@@ -1496,7 +1716,7 @@ struct PlayerSettingsPanel: View {
     }
 
     private func audioTrackCard(_ track: AudioTrack) -> some View {
-        let isFocused = focus == .audio(track.id)
+        let isFocused = isFocused(.audio(track.id))
         return Button {
             viewModel.selectAudio(track)
         } label: {
@@ -1654,7 +1874,7 @@ struct PlayerSettingsPanel: View {
         disabled: Bool,
         action: @escaping () -> Void
     ) -> some View {
-        let isFocused = focus == .audioControl(focusKey)
+        let isFocused = isFocused(.audioControl(focusKey))
         return Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 23, weight: .bold))
@@ -1756,7 +1976,7 @@ struct PlayerSettingsPanel: View {
     }
 
     private func aspectRow(_ mode: PlayerAspectMode) -> some View {
-        let isFocused = focus == .aspect(mode.rawValue)
+        let isFocused = isFocused(.aspect(mode.rawValue))
         let isSelected = viewModel.aspectMode == mode
         return Button {
             viewModel.setAspectMode(mode)
@@ -1796,7 +2016,7 @@ struct PlayerSettingsPanel: View {
         focusKey: Focus,
         action: @escaping () -> Void
     ) -> some View {
-        let isFocused = focus == focusKey
+        let isFocused = isFocused(focusKey)
         return Button(action: action) {
             HStack(spacing: 14) {
                 Text(title)

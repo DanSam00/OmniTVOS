@@ -113,18 +113,31 @@ struct PlayerView: View {
             onRevealControls: { viewModel.revealControls() },
             onEpisodes: {
                 guard viewModel.canShowEpisodesPanel else { return }
-                viewModel.openSidePanel(.episodes)
+                viewModel.macToggleSidePanel(.episodes)
             },
             onSources: {
                 guard viewModel.canShowSourcesPanel else { return }
-                viewModel.openSidePanel(.sources)
+                viewModel.macToggleSidePanel(.sources)
+            },
+            onSettings: {
+                if viewModel.showSettingsPanel {
+                    viewModel.showSettingsPanel = false
+                } else {
+                    viewModel.closeSidePanel()
+                    viewModel.showSettingsPanel = true
+                }
             },
             seekStep: { Double(viewModel.seekStepSeconds) },
             onToggleHelp: { showKeyboardHelp.toggle() },
-            // The help sheet takes the keyboard while it is up, apart from the
-            // keys that close it again.
-            isEnabled: { viewModel.sidePanel == nil && !showKeyboardHelp },
-            isHelpVisible: { showKeyboardHelp }
+            isPanelOpen: { viewModel.sidePanel != nil },
+            onPanelMove: { viewModel.macPanelMove($0) },
+            onPanelActivate: { viewModel.macPanelActivate() },
+            onDismissTopmost: {
+                if showKeyboardHelp { showKeyboardHelp = false; return true }
+                return viewModel.macDismissTopmost()
+            },
+            isHelpVisible: { showKeyboardHelp },
+            isSettingsOpen: { viewModel.showSettingsPanel }
         )
     }
     #endif

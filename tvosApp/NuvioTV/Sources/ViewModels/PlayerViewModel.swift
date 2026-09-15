@@ -65,6 +65,10 @@ class PlayerViewModel: ObservableObject {
     /// True only while the mini player was opened by losing focus, so a PiP the
     /// viewer started by hand survives coming back to the app.
     private var autoPictureInPictureActive = false
+    /// The row the side panels highlight. They drove this from `@FocusState`,
+    /// which nothing sets on macOS — there is no focus engine — so the caret is
+    /// a plain value here, as it is on every other screen.
+    @Published var macPanelFocusedID: String?
     #endif
     var time: PlayerTime = PlayerTime()
     /// High-frequency time/scrub state for HUDs. Mirrors `time` on each tick.
@@ -3113,8 +3117,84 @@ class PlayerViewModel: ObservableObject {
         }
     }
 
+    #if os(macOS)
+    /// Row ids in the open panel, in display order.
+    var macPanelRowIDs: [String] {
+        switch sidePanel {
+        case .episodes:
+            return panelEpisodes.isEmpty ? ["empty"] : panelEpisodes.map(\.id)
+        case .sources:
+            if isLoadingSources { return [] }
+            return availableSources.isEmpty ? ["empty"] : availableSources.map(\.id)
+        case nil:
+            return []
+        }
+    }
+
+    /// Where the caret starts: what is playing now, so the list opens on the
+    /// viewer's place in it rather than at the top.
+    func macSeedPanelFocus() {
+        let rows = macPanelRowIDs
+        guard !rows.isEmpty else { macPanelFocusedID = nil; return }
+        let current: String?
+        switch sidePanel {
+        case .episodes: current = panelCurrentEpisodeId
+        case .sources: current = availableSources.first(where: { isCurrentSource($0) })?.id
+        case nil: current = nil
+        }
+        macPanelFocusedID = current.flatMap { rows.contains($0) ? $0 : nil } ?? rows.first
+    }
+
+    func macPanelMove(_ delta: Int) {
+        let rows = macPanelRowIDs
+        guard !rows.isEmpty else { return }
+        guard let current = macPanelFocusedID, let index = rows.firstIndex(of: current) else {
+            macPanelFocusedID = rows.first
+            return
+        }
+        macPanelFocusedID = rows[min(max(index + delta, 0), rows.count - 1)]
+    }
+
+    func macPanelActivate() {
+        guard let id = macPanelFocusedID else { return }
+        switch sidePanel {
+        case .episodes:
+            guard let episode = panelEpisodes.first(where: { $0.id == id }) else { return }
+            selectEpisode(episode)
+        case .sources:
+            guard let source = availableSources.first(where: { $0.id == id }) else { return }
+            selectSource(source)
+        case nil:
+            break
+        }
+    }
+
+    /// `E` and `S` toggle their own panel and swap straight to the other one,
+    /// rather than only ever opening.
+    func macToggleSidePanel(_ panel: PlayerSidePanel) {
+        if sidePanel == panel {
+            closeSidePanel()
+        } else {
+            openSidePanel(panel)
+            macSeedPanelFocus()
+        }
+    }
+
+    /// Escape backs out of whatever is on top. Returns false when there was
+    /// nothing to close, so the caller can let the press exit the player.
+    @discardableResult
+    func macDismissTopmost() -> Bool {
+        if showSettingsPanel { showSettingsPanel = false; return true }
+        if sidePanel != nil { closeSidePanel(); return true }
+        return false
+    }
+    #endif
+
     func closeSidePanel() {
         sidePanel = nil
+        #if os(macOS)
+        macPanelFocusedID = nil
+        #endif
         controlsAutoHideSuspended = false
         if status == .paused {
             showControls = false

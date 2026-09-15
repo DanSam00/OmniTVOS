@@ -153,12 +153,22 @@ struct MacPlayerKeyCatcher: NSViewRepresentable {
     let onRevealControls: () -> Void
     let onEpisodes: () -> Void
     let onSources: () -> Void
+    let onSettings: () -> Void
     let seekStep: () -> Double
     let onToggleHelp: () -> Void
-    /// False while a side panel owns directional input.
-    let isEnabled: () -> Bool
+    /// A panel owns Up/Down/Return while it is open: the same keys move its
+    /// rows instead of seeking the film behind it.
+    let isPanelOpen: () -> Bool
+    let onPanelMove: (Int) -> Void
+    let onPanelActivate: () -> Void
+    /// Closes whatever is on top. False when there was nothing to close, which
+    /// lets Escape fall through to leaving the player.
+    let onDismissTopmost: () -> Bool
     /// While the reference is up it swallows everything except its own keys.
     let isHelpVisible: () -> Bool
+    /// The settings panel drives its own caret through `MacKeyRouter`, so this
+    /// monitor must let its keys past rather than seeking the film behind it.
+    let isSettingsOpen: () -> Bool
 
     func makeNSView(context: Context) -> PlayerKeyHostView {
         let view = PlayerKeyHostView()
@@ -181,9 +191,14 @@ struct MacPlayerKeyCatcher: NSViewRepresentable {
         view.onEpisodes = onEpisodes
         view.onSources = onSources
         view.seekStep = seekStep
+        view.onSettings = onSettings
         view.onToggleHelp = onToggleHelp
-        view.isEnabled = isEnabled
+        view.isPanelOpen = isPanelOpen
+        view.onPanelMove = onPanelMove
+        view.onPanelActivate = onPanelActivate
+        view.onDismissTopmost = onDismissTopmost
         view.isHelpVisible = isHelpVisible
+        view.isSettingsOpen = isSettingsOpen
     }
 }
 
@@ -194,9 +209,14 @@ final class PlayerKeyHostView: NSView {
     var onEpisodes: () -> Void = {}
     var onSources: () -> Void = {}
     var seekStep: () -> Double = { 10 }
+    var onSettings: () -> Void = {}
     var onToggleHelp: () -> Void = {}
-    var isEnabled: () -> Bool = { true }
+    var isPanelOpen: () -> Bool = { false }
+    var onPanelMove: (Int) -> Void = { _ in }
+    var onPanelActivate: () -> Void = {}
+    var onDismissTopmost: () -> Bool = { false }
     var isHelpVisible: () -> Bool = { false }
+    var isSettingsOpen: () -> Bool = { false }
 
     private enum Key {
         static let space: UInt16 = 49
@@ -211,6 +231,9 @@ final class PlayerKeyHostView: NSView {
         static let downArrow: UInt16 = 125
         static let slash: UInt16 = 44
         static let escape: UInt16 = 53
+        static let comma: UInt16 = 43
+        static let returnKey: UInt16 = 36
+        static let keypadEnter: UInt16 = 76
     }
 
     private var monitor: Any?
@@ -239,7 +262,55 @@ final class PlayerKeyHostView: NSView {
                 if event.keyCode == Key.escape { self.onToggleHelp() }
                 return nil
             }
-            guard self.isEnabled() else { return event }
+
+            // Escape backs out one layer at a time. Only once there is nothing
+            // left to close does it fall through to leaving the player.
+            if event.keyCode == Key.escape {
+                guard !event.isARepeat else { return nil }
+                return self.onDismissTopmost() ? nil : event
+            }
+
+            // The settings panel owns everything else while it is up. Comma
+            // still closes it, and Escape was handled just above.
+            if self.isSettingsOpen() {
+                guard event.keyCode == Key.comma else { return event }
+                guard !event.isARepeat else { return nil }
+                self.onSettings()
+                return nil
+            }
+
+            // E, S and comma always reach here, panel open or not — that is
+            // what makes them toggles rather than one-way doors.
+            switch event.keyCode {
+            case Key.e:
+                guard !event.isARepeat else { return nil }
+                self.onEpisodes()
+                return nil
+            case Key.s:
+                guard !event.isARepeat else { return nil }
+                self.onSources()
+                return nil
+            case Key.comma:
+                guard !event.isARepeat else { return nil }
+                self.onSettings()
+                return nil
+            default:
+                break
+            }
+
+            // An open panel owns the arrows and Return; the film behind it must
+            // not seek while the viewer is picking an episode.
+            if self.isPanelOpen() {
+                switch event.keyCode {
+                case Key.upArrow: self.onPanelMove(-1)
+                case Key.downArrow: self.onPanelMove(1)
+                case Key.returnKey, Key.keypadEnter:
+                    guard !event.isARepeat else { return nil }
+                    self.onPanelActivate()
+                default: return event
+                }
+                return nil
+            }
 
             switch event.keyCode {
             case Key.space, Key.k:
@@ -253,12 +324,6 @@ final class PlayerKeyHostView: NSView {
             case Key.upArrow, Key.downArrow:
                 guard !event.isARepeat else { return nil }
                 self.onRevealControls()
-            case Key.e:
-                guard !event.isARepeat else { return nil }
-                self.onEpisodes()
-            case Key.s:
-                guard !event.isARepeat else { return nil }
-                self.onSources()
             default:
                 return event
             }
@@ -299,10 +364,12 @@ struct MacPlayerShortcutsOverlay: View {
             ("Hold ←  ·  Hold →", "Continuous seek"),
             ("↑  ·  ↓", "Show the controls"),
         ]
-        if showsEpisodes { rows.append(("E", "Episodes")) }
-        if showsSources { rows.append(("S", "Sources")) }
+        if showsEpisodes { rows.append(("E", "Episodes — press again to close")) }
+        if showsSources { rows.append(("S", "Sources — press again to close")) }
+        rows.append((",", "Playback settings"))
+        rows.append(("↑  ·  ↓  ·  ↩", "Move and choose, in a panel"))
         rows.append(("?", "This list"))
-        rows.append(("Esc", "Close"))
+        rows.append(("Esc", "Back out one layer"))
         return rows.map { (keys: $0.0, action: $0.1) }
     }
 

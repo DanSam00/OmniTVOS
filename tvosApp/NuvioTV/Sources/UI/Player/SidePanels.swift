@@ -138,6 +138,17 @@ struct PlayerEpisodesPanel: View {
         viewModel.panelEpisodes
     }
 
+    /// tvOS has the focus engine set `focusedID`; macOS has none, so the row
+    /// highlight comes from the view model's caret instead.
+    private func isRowFocused(_ id: String) -> Bool {
+        #if os(macOS)
+        return viewModel.macPanelFocusedID == id
+        #else
+        return focusedID == id
+        #endif
+    }
+
+
     private var targetEpisodeId: String? {
         viewModel.panelCurrentEpisodeId ?? episodes.first?.id
     }
@@ -152,7 +163,7 @@ struct PlayerEpisodesPanel: View {
                                 PlayerPanelRow(
                                     title: "Episodes unavailable",
                                     subtitle: "No episode list for this session.",
-                                    isFocused: focusedID == "empty"
+                                    isFocused: isRowFocused("empty")
                                 )
                             }
                             .buttonStyle(PosterCardButtonStyle())
@@ -166,7 +177,7 @@ struct PlayerEpisodesPanel: View {
                                 Button {
                                     viewModel.selectEpisode(episode)
                                 } label: {
-                                    episodeRow(episode, isCurrent: isCurrent, isFocused: focusedID == episode.id)
+                                    episodeRow(episode, isCurrent: isCurrent, isFocused: isRowFocused(episode.id))
                                 }
                                 .buttonStyle(PosterCardButtonStyle())
                                 .focusEffectDisabledIfAvailable()
@@ -183,6 +194,12 @@ struct PlayerEpisodesPanel: View {
                 .onAppear {
                     scrollToTarget(proxy: proxy)
                 }
+                #if os(macOS)
+                .onChange(of: viewModel.macPanelFocusedID) { _, id in
+                    guard let id else { return }
+                    withAnimation(.easeOut(duration: 0.16)) { proxy.scrollTo(id, anchor: .center) }
+                }
+                #endif
             }
         }
     }
@@ -263,6 +280,17 @@ struct PlayerSourcesPanel: View {
     @ObservedObject var viewModel: PlayerViewModel
     @FocusState private var focusedID: String?
 
+
+    /// tvOS has the focus engine set `focusedID`; macOS has none, so the row
+    /// highlight comes from the view model's caret instead.
+    private func isRowFocused(_ id: String) -> Bool {
+        #if os(macOS)
+        return viewModel.macPanelFocusedID == id
+        #else
+        return focusedID == id
+        #endif
+    }
+
     private var targetSourceId: String? {
         if let current = viewModel.availableSources.first(where: { viewModel.isCurrentSource($0) }) {
             return current.id
@@ -291,7 +319,7 @@ struct PlayerSourcesPanel: View {
                                 PlayerPanelRow(
                                     title: L10n.string("player_no_sources_found", fallback: "No sources found"),
                                     subtitle: L10n.string("player_no_sources_found_subtitle", fallback: "None of your stream add-ons returned a link."),
-                                    isFocused: focusedID == "empty"
+                                    isFocused: isRowFocused("empty")
                                 )
                             }
                             .buttonStyle(PosterCardButtonStyle())
@@ -310,7 +338,7 @@ struct PlayerSourcesPanel: View {
                                         subtitle: stream.panelSubtitle,
                                         trailing: stream.panelResolutionLabel,
                                         selected: selected,
-                                        isFocused: focusedID == stream.id
+                                        isFocused: isRowFocused(stream.id)
                                     )
                                 }
                                 .buttonStyle(PosterCardButtonStyle())
@@ -325,6 +353,18 @@ struct PlayerSourcesPanel: View {
                     .padding(.vertical, 12)
                 }
                 .focusSection()
+                #if os(macOS)
+                .onChange(of: viewModel.macPanelFocusedID) { _, id in
+                    guard let id else { return }
+                    withAnimation(.easeOut(duration: 0.16)) { proxy.scrollTo(id, anchor: .center) }
+                }
+                // Sources arrive after the panel opens, so the caret cannot be
+                // seeded with the rest of it.
+                .onChange(of: viewModel.availableSources.count) { _, _ in
+                    guard viewModel.macPanelFocusedID == nil else { return }
+                    viewModel.macSeedPanelFocus()
+                }
+                #endif
                 .onAppear {
                     viewModel.loadSourcesIfNeeded()
                     scrollToTarget(proxy: proxy)
