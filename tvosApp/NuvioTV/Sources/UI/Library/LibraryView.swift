@@ -147,131 +147,62 @@ public struct LibraryView: View {
                 HStack(spacing: 16) {
                     if sourceMode == .saved {
                         FilterMenu(
-                            label: "\(L10n.string("library_filter_sort", fallback: "Sort")): \(viewModel.sortOption.localizedTitle)"
-                            ,
+                            label: "\(L10n.string("library_filter_sort", fallback: "Sort")): \(viewModel.sortOption.localizedTitle)",
+                            options: LibraryViewModel.SortOption.allCases.map { option in
+                                FilterOption(option.localizedTitle, isSelected: viewModel.sortOption == option) {
+                                    viewModel.sortOption = option
+                                }
+                            },
                             macIsFocused: macIsFocused(LibraryFocusBand.controls, "sort"),
                             macOpen: $macOpenSort
-                        ) {
-                            ForEach(LibraryViewModel.SortOption.allCases) { option in
-                                Button { viewModel.sortOption = option } label: {
-                                    menuItem(option.localizedTitle, selected: viewModel.sortOption == option)
-                                }
-                            }
-                        }
+                        )
 
                         FilterMenu(
-                            label: "\(L10n.string("tvos_library_group", fallback: "Group")): \(viewModel.groupOption.localizedTitle)"
-                            ,
+                            label: "\(L10n.string("tvos_library_group", fallback: "Group")): \(viewModel.groupOption.localizedTitle)",
+                            options: LibraryViewModel.GroupOption.allCases.map { option in
+                                FilterOption(option.localizedTitle, isSelected: viewModel.groupOption == option) {
+                                    viewModel.groupOption = option
+                                }
+                            },
                             macIsFocused: macIsFocused(LibraryFocusBand.controls, "group"),
                             macOpen: $macOpenGroup
-                        ) {
-                            ForEach(LibraryViewModel.GroupOption.allCases) { option in
-                                Button { viewModel.groupOption = option } label: {
-                                    menuItem(option.localizedTitle, selected: viewModel.groupOption == option)
-                                }
-                            }
-                        }
+                        )
 
                         FilterMenu(
-                            label: "\(L10n.string("tvos_library_content", fallback: "Content")): \(selectedTypeLabel)"
-                            ,
+                            label: "\(L10n.string("tvos_library_content", fallback: "Content")): \(selectedTypeLabel)",
+                            options: contentTypeOptions,
                             macIsFocused: macIsFocused(LibraryFocusBand.controls, "content"),
                             macOpen: $macOpenContent
-                        ) {
-                            Button { viewModel.contentTypeFilter = nil } label: {
-                                menuItem(
-                                    L10n.string("library_type_all", fallback: "All"),
-                                    selected: viewModel.contentTypeFilter == nil
-                                )
-                            }
-                            ForEach(viewModel.availableContentTypes, id: \.self) { type in
-                                Button { viewModel.contentTypeFilter = type } label: {
-                                    menuItem(
-                                        viewModel.typeLabel(type),
-                                        selected: viewModel.contentTypeFilter == type
-                                    )
-                                }
-                            }
-                        }
+                        )
 
                         FilterMenu(
-                            label: "\(L10n.string("library_filter_watched_label", fallback: "Watched")): \(viewModel.watchedFilter.localizedTitle)"
-                            ,
+                            label: "\(L10n.string("library_filter_watched_label", fallback: "Watched")): \(viewModel.watchedFilter.localizedTitle)",
+                            options: LibraryViewModel.WatchedFilter.allCases.map { option in
+                                FilterOption(option.localizedTitle, isSelected: viewModel.watchedFilter == option) {
+                                    viewModel.watchedFilter = option
+                                }
+                            },
                             macIsFocused: macIsFocused(LibraryFocusBand.controls, "watched"),
                             macOpen: $macOpenWatched
-                        ) {
-                            ForEach(LibraryViewModel.WatchedFilter.allCases) { option in
-                                Button { viewModel.watchedFilter = option } label: {
-                                    menuItem(option.localizedTitle, selected: viewModel.watchedFilter == option)
-                                }
-                            }
-                        }
+                        )
 
                         FilterMenu(
-                            label: "\(L10n.string("library_filter_genre", fallback: "Genre")): \(viewModel.genreFilter ?? L10n.string("library_type_all", fallback: "All"))"
-                            ,
+                            label: "\(L10n.string("library_filter_genre", fallback: "Genre")): \(viewModel.genreFilter ?? L10n.string("library_type_all", fallback: "All"))",
+                            options: genreOptions,
                             macIsFocused: macIsFocused(LibraryFocusBand.controls, "genre"),
                             macOpen: $macOpenGenre
-                        ) {
-                            Button { viewModel.genreFilter = nil } label: {
-                                menuItem(
-                                    L10n.string("library_type_all", fallback: "All"),
-                                    selected: viewModel.genreFilter == nil
-                                )
-                            }
-                            ForEach(viewModel.availableGenres, id: \.self) { genre in
-                                Button { viewModel.genreFilter = genre } label: {
-                                    menuItem(genre, selected: viewModel.genreFilter == genre)
-                                }
-                            }
-                        }
+                        )
                     } else {
                         // Cloud filters: Select provider & Select type
                         FilterMenu(
-                            label: "\(L10n.string("cloud_library_select_provider", fallback: "Select provider")): \(cloudSelectedProviderLabel)"
-                        ) {
-                            Button {
-                                cloudViewModel.selectedProviderId = nil
-                            } label: {
-                                menuItem(
-                                    L10n.string("cloud_library_provider_all", fallback: L10n.string("library_type_all", fallback: "All")),
-                                    selected: cloudViewModel.selectedProviderId == nil
-                                )
-                            }
-                            ForEach(cloudViewModel.availableProviders) { prov in
-                                Button {
-                                    cloudViewModel.selectedProviderId = prov.id
-                                } label: {
-                                    menuItem(
-                                        prov.displayName,
-                                        selected: cloudViewModel.selectedProviderId == prov.id
-                                    )
-                                }
-                            }
-                        }
+                            label: "\(L10n.string("cloud_library_select_provider", fallback: "Select provider")): \(cloudSelectedProviderLabel)",
+                            options: cloudProviderOptions
+                        )
 
                         FilterMenu(
-                            label: "\(L10n.string("cloud_library_select_type", fallback: "Select type")): \(cloudSelectedTypeLabel)"
-                        ) {
-                            Button {
-                                cloudViewModel.selectedType = nil
-                            } label: {
-                                menuItem(
-                                    L10n.string("cloud_library_type_all", fallback: L10n.string("library_type_all", fallback: "All")),
-                                    selected: cloudViewModel.selectedType == nil
-                                )
-                            }
-                            ForEach(cloudViewModel.availableTypes) { type in
-                                Button {
-                                    cloudViewModel.selectedType = type
-                                } label: {
-                                    menuItem(
-                                        type.localizedTitle,
-                                        selected: cloudViewModel.selectedType == type
-                                    )
-                                }
-                            }
-                        }
+                            label: "\(L10n.string("cloud_library_select_type", fallback: "Select type")): \(cloudSelectedTypeLabel)",
+                            options: cloudTypeOptions
+                        )
                     }
                 }
                 .disabled(overlayRestoreItemID != nil || overlayRestoreCloudItemID != nil)
@@ -691,12 +622,61 @@ public struct LibraryView: View {
         }
     }
 
-    @ViewBuilder
-    private func menuItem(_ title: String, selected: Bool) -> some View {
-        if selected {
-            Label(title, systemImage: "checkmark")
-        } else {
-            Text(title)
+    /// The three filter lists that carry an "All" entry ahead of the values.
+
+    private var contentTypeOptions: [FilterOption] {
+        let all = FilterOption(
+            L10n.string("library_type_all", fallback: "All"),
+            isSelected: viewModel.contentTypeFilter == nil
+        ) {
+            viewModel.contentTypeFilter = nil
+        }
+        return [all] + viewModel.availableContentTypes.map { type in
+            FilterOption(viewModel.typeLabel(type), isSelected: viewModel.contentTypeFilter == type) {
+                viewModel.contentTypeFilter = type
+            }
+        }
+    }
+
+    private var genreOptions: [FilterOption] {
+        let all = FilterOption(
+            L10n.string("library_type_all", fallback: "All"),
+            isSelected: viewModel.genreFilter == nil
+        ) {
+            viewModel.genreFilter = nil
+        }
+        return [all] + viewModel.availableGenres.map { genre in
+            FilterOption(genre, isSelected: viewModel.genreFilter == genre) {
+                viewModel.genreFilter = genre
+            }
+        }
+    }
+
+    private var cloudProviderOptions: [FilterOption] {
+        let all = FilterOption(
+            L10n.string("cloud_library_provider_all", fallback: L10n.string("library_type_all", fallback: "All")),
+            isSelected: cloudViewModel.selectedProviderId == nil
+        ) {
+            cloudViewModel.selectedProviderId = nil
+        }
+        return [all] + cloudViewModel.availableProviders.map { provider in
+            FilterOption(provider.displayName, isSelected: cloudViewModel.selectedProviderId == provider.id) {
+                cloudViewModel.selectedProviderId = provider.id
+            }
+        }
+    }
+
+    private var cloudTypeOptions: [FilterOption] {
+        let all = FilterOption(
+            L10n.string("cloud_library_type_all", fallback: L10n.string("library_type_all", fallback: "All")),
+            isSelected: cloudViewModel.selectedType == nil
+        ) {
+            cloudViewModel.selectedType = nil
+        }
+        return [all] + cloudViewModel.availableTypes.map { type in
+            FilterOption(type.localizedTitle, isSelected: cloudViewModel.selectedType == type) {
+                cloudViewModel.selectedType = type
+            }
         }
     }
 

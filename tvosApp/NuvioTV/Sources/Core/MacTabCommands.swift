@@ -447,4 +447,110 @@ extension View {
         modifier(MacSettingsRowModifier(id: id, action: action))
     }
 }
+
+/// The one dropdown presenter for the whole app.
+///
+/// `confirmationDialog` becomes an `NSAlert` on macOS, which shows at most
+/// three buttons and silently drops the rest — it hid every stream provider
+/// past the third, half the resolution filters, most of Library's sort
+/// options, and reduced Calendar's sport picker to all-or-nothing.
+///
+/// The stream picker already worked around this with `MacPickerOptionsPanel`,
+/// but owned the presentation state itself. Four more hosts would have meant
+/// four more copies of it, so the state lives here instead and a control's
+/// only job is to hand over its options. Like the menu, this claims the key
+/// router while it is up, which is what stops the screen underneath from also
+/// acting on the arrow keys.
+@MainActor
+final class MacOptionPanel: ObservableObject {
+    static let shared = MacOptionPanel()
+
+    @Published private(set) var title = ""
+    @Published private(set) var options: [FilterOption] = []
+    @Published private(set) var highlighted = 0
+    private var token: UUID?
+
+    var isPresented: Bool { !options.isEmpty }
+
+    func present(title: String, options: [FilterOption]) {
+        guard !options.isEmpty else { return }
+        self.title = title
+        self.options = options
+        // Open on what is already chosen, so a long list does not start at the
+        // top and make the current value look unset.
+        highlighted = options.firstIndex(where: \.isSelected) ?? 0
+        if token == nil { token = MacKeyRouter.shared.claim() }
+        MacDiagnostics.log("panel.present \(title) options=\(options.count)")
+    }
+
+    func dismiss() {
+        guard isPresented || token != nil else { return }
+        options = []
+        MacKeyRouter.shared.release(token)
+        token = nil
+        MacDiagnostics.log("panel.dismiss")
+    }
+
+    /// - Returns: true when the press was consumed.
+    @discardableResult
+    func handle(_ key: MacKey) -> Bool {
+        guard isPresented, MacKeyRouter.shared.isFront(token) else { return false }
+        switch key {
+        case .up:
+            highlighted = max(0, highlighted - 1)
+        case .down:
+            highlighted = min(options.count - 1, highlighted + 1)
+        case .activate:
+            let choice = options[min(highlighted, options.count - 1)]
+            // Dismiss first: applying can rebuild the screen underneath, and
+            // the router token has to be back before it re-claims.
+            dismiss()
+            choice.apply()
+        case .left, .right:
+            // A dropdown is one column. Sideways means "leave it alone".
+            dismiss()
+        }
+        return true
+    }
+}
+
+/// Hosts `MacOptionPanel` inside the canvas, so it is scaled and positioned
+/// with the rest of the app rather than against the window.
+struct MacOptionPanelHost: View {
+    @ObservedObject private var panel = MacOptionPanel.shared
+    @ObservedObject private var keyRouter = MacKeyRouter.shared
+
+    var body: some View {
+        ZStack {
+            if panel.isPresented {
+                Color.black.opacity(0.45)
+                    .ignoresSafeArea()
+                    .onTapGesture { panel.dismiss() }
+
+                MacPickerOptionsPanel(
+                    list: MacPickerOptionList(
+                        title: panel.title,
+                        options: panel.options.map {
+                            MacPickerOption(label: $0.label, isSelected: $0.isSelected, apply: $0.apply)
+                        }
+                    ),
+                    highlighted: panel.highlighted,
+                    onSelect: { index in
+                        guard panel.options.indices.contains(index) else { return }
+                        let choice = panel.options[index]
+                        panel.dismiss()
+                        choice.apply()
+                    },
+                    onDismiss: { panel.dismiss() }
+                )
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.14), value: panel.isPresented)
+        .onChange(of: keyRouter.latest) { _, press in
+            guard let press else { return }
+            panel.handle(press.key)
+        }
+    }
+}
 #endif

@@ -42,6 +42,12 @@ struct NuvioTVApp: App {
             ContentView()
                 .macTVCanvas()
                 .ignoresSafeArea()
+                // Every highlight in this app is drawn from a plain value —
+                // macOS has no focus engine, so nothing here wants AppKit's
+                // own ring. Left on, it draws an accent-coloured hairline
+                // around whatever holds focus, which on a full-screen view is
+                // a 1px blue border around the entire window.
+                .focusEffectDisabledIfAvailable()
                 .macFullBleedWindow()
             #else
             ContentView()
@@ -1348,6 +1354,13 @@ struct ContentView: View {
                     .transition(.opacity)
                     .zIndex(1.5)
             }
+
+            // Every dropdown in the app, drawn once here. Inside the canvas so
+            // it is scaled with everything else — the reason `sheet` was no use
+            // for this — and above the menu, since a dropdown opened from a
+            // screen should not be reachable behind it.
+            MacOptionPanelHost()
+                .zIndex(1.6)
             #endif
 
             if case .player(let url, let meta, let subtitle, let httpHeaders, let externalSubtitles, let resumeFrom) = activeScreen {

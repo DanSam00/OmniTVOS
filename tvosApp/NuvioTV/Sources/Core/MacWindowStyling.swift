@@ -62,6 +62,10 @@ struct MacWindowConfigurator: NSViewRepresentable {
         // The app draws its own backdrop; without this the window flashes the
         // system background during resize and fullscreen transitions.
         window.backgroundColor = .black
+        // Belt and braces with `focusEffectDisabled` in the SwiftUI tree: with
+        // Full Keyboard Access on, AppKit will ring the key view in the accent
+        // colour, and the key view here is the whole canvas.
+        window.contentView?.focusRingType = .none
         window.isMovableByWindowBackground = true
         window.minSize = Self.minimumSize
 

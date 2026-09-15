@@ -213,26 +213,45 @@ struct CalendarView: View {
             }
             Spacer(minLength: 0)
         }
-        // Same system dialog Search and Discover use for their filters.
+        // Same dialog Search and Discover use for their filters. On macOS that
+        // is an NSAlert, which shows three buttons and drops the rest — which
+        // is why this chip read as all-or-nothing there.
+        #if !os(macOS)
         .confirmationDialog(
             L10n.string("calendar_sports_picker_title", fallback: "Sports"),
             isPresented: $showSportMenu,
             titleVisibility: .visible
         ) {
-            Button {
-                viewModel.selectedSportGenre = nil
-            } label: {
-                menuItem(
-                    L10n.string("calendar_sports_all", fallback: "All Sports"),
-                    selected: viewModel.selectedSportGenre == nil
-                )
-            }
-            ForEach(viewModel.availableSportGenres, id: \.self) { genre in
-                Button {
-                    viewModel.selectedSportGenre = genre
-                } label: {
-                    menuItem(genre, selected: viewModel.selectedSportGenre == genre)
+            ForEach(sportOptions) { option in
+                Button { option.apply() } label: {
+                    menuItem(option.label, selected: option.isSelected)
                 }
+            }
+        }
+        #endif
+        .onChange(of: showSportMenu) { _, wantsOpen in
+            #if os(macOS)
+            guard wantsOpen else { return }
+            showSportMenu = false
+            MacOptionPanel.shared.present(
+                title: L10n.string("calendar_sports_picker_title", fallback: "Sports"),
+                options: sportOptions
+            )
+            #endif
+        }
+    }
+
+    /// Competitions, with "All Sports" ahead of them.
+    private var sportOptions: [FilterOption] {
+        let all = FilterOption(
+            L10n.string("calendar_sports_all", fallback: "All Sports"),
+            isSelected: viewModel.selectedSportGenre == nil
+        ) {
+            viewModel.selectedSportGenre = nil
+        }
+        return [all] + viewModel.availableSportGenres.map { genre in
+            FilterOption(genre, isSelected: viewModel.selectedSportGenre == genre) {
+                viewModel.selectedSportGenre = genre
             }
         }
     }

@@ -12452,7 +12452,7 @@ private struct SettingsChoiceRow: View {
     @State private var showOptions = false
 
     var body: some View {
-        Button { showOptions = true } label: {
+        Button(action: open) {
             SettingsRowShell(isFocused: isFocused, accentColor: accentColor) {
                 SettingsRowText(title: title, subtitle: subtitle)
 
@@ -12477,12 +12477,32 @@ private struct SettingsChoiceRow: View {
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .entryLockable()
-        .macSettingsRow(title) { showOptions = true }
+        .macSettingsRow(title, action: open)
+        #if !os(macOS)
+        // tvOS presents the system dialog, which has no button limit. AppKit's
+        // NSAlert caps at three and drops the rest silently, so macOS draws the
+        // list itself — see `MacOptionPanel`.
         .confirmationDialog(title, isPresented: $showOptions, titleVisibility: .visible) {
             ForEach(options, id: \.self) { option in
                 Button(L10n.optionLabel(option)) { selection = option }
             }
         }
+        #endif
+    }
+
+    private func open() {
+        #if os(macOS)
+        MacOptionPanel.shared.present(
+            title: title,
+            options: options.map { option in
+                FilterOption(L10n.optionLabel(option), isSelected: option == currentStored) {
+                    selection = option
+                }
+            }
+        )
+        #else
+        showOptions = true
+        #endif
     }
 
     private var currentStored: String {

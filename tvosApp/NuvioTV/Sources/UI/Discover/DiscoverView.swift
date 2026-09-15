@@ -250,57 +250,54 @@ struct DiscoverSection: View {
         HStack(spacing: 16) {
             FilterMenu(
                 label: viewModel.type.title,
+                options: viewModel.availableTypes.map { type in
+                    FilterOption(type.title, isSelected: viewModel.type == type) {
+                        viewModel.setType(type)
+                    }
+                },
                 onFocusChange: { updateDiscoverFocus("filter:type", isFocused: $0) },
                 macIsFocused: macIsFocused(DiscoverFocusBand.filters, "type"),
                 macOpen: macOpen(.type)
-            ) {
-                ForEach(viewModel.availableTypes) { type in
-                    Button { viewModel.setType(type) } label: {
-                        menuItem(type.title, selected: viewModel.type == type)
-                    }
-                }
-            }
+            )
 
             // Catalogs come from the installed add-ons, so this list changes
             // with the selected type (and is empty until manifests load).
             if !viewModel.catalogs.isEmpty {
                 FilterMenu(
                     label: viewModel.catalog?.name ?? L10n.string("tvos_discover_popular", fallback: "Popular"),
+                    options: viewModel.catalogs.map { catalog in
+                        FilterOption(catalog.title, isSelected: viewModel.catalog == catalog) {
+                            viewModel.setCatalog(catalog)
+                        }
+                    },
                     onFocusChange: { updateDiscoverFocus("filter:sort", isFocused: $0) },
                     macIsFocused: macIsFocused(DiscoverFocusBand.filters, "catalog"),
                     macOpen: macOpen(.catalog)
-                ) {
-                    ForEach(viewModel.catalogs) { catalog in
-                        Button { viewModel.setCatalog(catalog) } label: {
-                            menuItem(catalog.title, selected: viewModel.catalog == catalog)
-                        }
-                    }
-                }
+                )
             }
 
             FilterMenu(
                 label: viewModel.genre ?? L10n.string("tvos_discover_all_genres", fallback: "All Genres"),
+                options: genreOptions,
                 onFocusChange: { updateDiscoverFocus("filter:genre", isFocused: $0) },
                 macIsFocused: macIsFocused(DiscoverFocusBand.filters, "genre"),
                 macOpen: macOpen(.genre)
-            ) {
-                Button { viewModel.setGenre(nil) } label: {
-                    menuItem(
-                        L10n.string("tvos_discover_all_genres", fallback: "All Genres"),
-                        selected: viewModel.genre == nil
-                    )
-                }
-                ForEach(viewModel.genres, id: \.self) { genre in
-                    Button { viewModel.setGenre(genre) } label: {
-                        menuItem(genre, selected: viewModel.genre == genre)
-                    }
-                }
-            }
+            )
         }
     }
 
-    private func menuItem(_ title: String, selected: Bool) -> some View {
-        Text(selected ? "✓  \(title)" : title)
+    private var genreOptions: [FilterOption] {
+        let all = FilterOption(
+            L10n.string("tvos_discover_all_genres", fallback: "All Genres"),
+            isSelected: viewModel.genre == nil
+        ) {
+            viewModel.setGenre(nil)
+        }
+        return [all] + viewModel.genres.map { genre in
+            FilterOption(genre, isSelected: viewModel.genre == genre) {
+                viewModel.setGenre(genre)
+            }
+        }
     }
 
     // MARK: - Content
@@ -447,17 +444,41 @@ struct DiscoverSection: View {
 
 // MARK: - Filter dropdown
 
+/// One option in a dropdown, as data rather than as a view.
+///
+/// `FilterMenu` used to take its options as a `@ViewBuilder` of `Button`s.
+/// A ViewBuilder cannot be enumerated, so macOS had no way to draw the list
+/// itself and fell back to `confirmationDialog` — an `NSAlert`, which shows at
+/// most three buttons and drops the rest with no indication. Passing data
+/// instead lets each platform present the same options its own way: the system
+/// dialog on tvOS, an in-canvas panel on macOS.
+struct FilterOption: Identifiable {
+    let id: String
+    let label: String
+    let isSelected: Bool
+    let apply: () -> Void
+
+    init(_ label: String, isSelected: Bool, apply: @escaping () -> Void) {
+        self.id = label
+        self.label = label
+        self.isSelected = isSelected
+        self.apply = apply
+    }
+}
+
 /// A glass chip that opens a dropdown menu of options. Falls back to a static
 /// chip on tvOS < 17 (where `Menu` is unavailable). Shared by Discover & Library.
-struct FilterMenu<MenuContent: View>: View {
+struct FilterMenu: View {
     let label: String
+    /// The options, as data — see `FilterOption` for why this is not a
+    /// `@ViewBuilder` of buttons any more.
+    let options: [FilterOption]
     var onFocusChange: ((Bool) -> Void)? = nil
     /// Driven by `MacScreenFocus`; macOS has no focus engine to set `focused`.
     var macIsFocused = false
     /// Set by the owning screen to open this menu from the keyboard. Consumed
     /// immediately, so the screen only has to raise it.
     var macOpen: Binding<Bool>? = nil
-    @ViewBuilder var menu: () -> MenuContent
     @State private var showOptions = false
     @FocusState private var focused: Bool
 
@@ -470,20 +491,38 @@ struct FilterMenu<MenuContent: View>: View {
     }
 
     var body: some View {
-        Button { showOptions = true } label: { chipLabel }
+        Button(action: open) { chipLabel }
             .buttonStyle(PosterCardButtonStyle())
             .nuvioFocusable()
             .focused($focused)
             .focusEffectDisabledIfAvailable()
             .scaleEffect(showsFocus ? 1.05 : 1.0)
             .animation(.easeOut(duration: 0.14), value: showsFocus)
-            .confirmationDialog(label, isPresented: $showOptions, titleVisibility: .visible, actions: menu)
+            #if !os(macOS)
+            // tvOS presents the system dialog, which has no button limit and
+            // is what the focus engine expects. Only AppKit's NSAlert caps it.
+            .confirmationDialog(label, isPresented: $showOptions, titleVisibility: .visible) {
+                ForEach(options) { option in
+                    Button { option.apply() } label: {
+                        Text(option.isSelected ? "✓  \(option.label)" : option.label)
+                    }
+                }
+            }
+            #endif
             .onChange(of: focused) { _, isFocused in onFocusChange?(isFocused) }
             .onChange(of: macOpen?.wrappedValue ?? false) { _, wantsOpen in
                 guard wantsOpen else { return }
-                showOptions = true
+                open()
                 macOpen?.wrappedValue = false
             }
+    }
+
+    private func open() {
+        #if os(macOS)
+        MacOptionPanel.shared.present(title: label, options: options)
+        #else
+        showOptions = true
+        #endif
     }
 
     private var chipLabel: some View {
