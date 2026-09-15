@@ -346,14 +346,26 @@ struct PlayerControls: View {
             focusedControl = focusKey
             action()
         } label: {
-            icon()
-                .font(.system(size: iconSize, weight: .semibold))
-                .foregroundColor(isFocused ? .black : .white)
+            // The circle is drawn at a fixed size and the glyph laid over it,
+            // rather than the background being wrapped around the glyph.
+            //
+            // Wrapping made the button's size intrinsic — the play/pause
+            // control, whose label is a ZStack of two glyphs behind an opacity
+            // crossfade, came out visibly larger than the four single-glyph
+            // buttons beside it even though all five ask for the same 70pt.
+            // Sizing the shape directly cannot pick anything up from its
+            // contents.
+            Circle()
+                .fill(Color.clear)
                 .frame(width: size, height: size)
                 .modifier(PlayerGlassCircleButtonBackground(filled: isFocused))
-                .shadow(color: .black.opacity(0.82), radius: 14, x: 0, y: 7)
+                .overlay {
+                    icon()
+                        .font(.system(size: iconSize, weight: .semibold))
+                        .foregroundColor(isFocused ? .black : .white)
+                }
                 .frame(width: size, height: size)
-                .clipShape(Circle())
+                .shadow(color: .black.opacity(0.82), radius: 14, x: 0, y: 7)
                 .contentShape(Circle())
         }
         .buttonStyle(PosterCardButtonStyle())

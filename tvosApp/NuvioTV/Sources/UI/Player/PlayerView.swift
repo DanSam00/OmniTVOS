@@ -95,6 +95,39 @@ struct PlayerView: View {
     @FocusState private var cancelAutoPlayFocused: Bool
     @FocusState private var skipSegmentFocused: Bool
     @FocusState private var postPlayFocus: PostPlayFocusItem?
+    #if os(macOS)
+    /// The keyboard reference, opened with ? and closed with ? or Escape.
+    @State private var showKeyboardHelp = false
+    #endif
+
+    #if os(macOS)
+    /// Pulled out of `body`: inline, these closures pushed the player's
+    /// view builder past what the type checker will solve in reasonable time.
+    private var macKeyCatcher: some View {
+        MacPlayerKeyCatcher(
+            onTogglePlayPause: { viewModel.togglePlayPause() },
+            onSeek: { seconds in
+                viewModel.revealControls()
+                viewModel.nudgeSeek(seconds)
+            },
+            onRevealControls: { viewModel.revealControls() },
+            onEpisodes: {
+                guard viewModel.canShowEpisodesPanel else { return }
+                viewModel.openSidePanel(.episodes)
+            },
+            onSources: {
+                guard viewModel.canShowSourcesPanel else { return }
+                viewModel.openSidePanel(.sources)
+            },
+            seekStep: { Double(viewModel.seekStepSeconds) },
+            onToggleHelp: { showKeyboardHelp.toggle() },
+            // The help sheet takes the keyboard while it is up, apart from the
+            // keys that close it again.
+            isEnabled: { viewModel.sidePanel == nil && !showKeyboardHelp },
+            isHelpVisible: { showKeyboardHelp }
+        )
+    }
+    #endif
 
     var body: some View {
         ZStack {
@@ -141,7 +174,14 @@ struct PlayerView: View {
                     width: viewModel.postPlayState.isVisible ? 580 : nil,
                     height: viewModel.postPlayState.isVisible ? 326 : nil
                 )
-                .clipShape(RoundedRectangle(cornerRadius: viewModel.postPlayState.isVisible ? 16 : 0))
+                // Only clip for the rounded mini window. A zero-radius
+                // `clipShape` still antialiases its own edge, and that blend
+                // against the black behind it is the hairline border that ran
+                // around the whole video full-screen.
+                .clipShape(
+                    RoundedRectangle(cornerRadius: viewModel.postPlayState.isVisible ? 16 : 0),
+                    style: FillStyle(eoFill: false, antialiased: viewModel.postPlayState.isVisible)
+                )
                 .scaleEffect(viewModel.postPlayState.isVisible && postPlayFocus == .miniPlayer ? 1.05 : 1.0)
                 .animation(.easeOut(duration: 0.16), value: postPlayFocus)
                 .overlay {
@@ -318,6 +358,21 @@ struct PlayerView: View {
                 .transition(.opacity)
                 .zIndex(4)
             }
+
+            #if os(macOS)
+            // Keyboard reference. Nothing on screen says these keys exist, and
+            // a player is the one place a viewer will not go hunting for them.
+            if showKeyboardHelp {
+                MacPlayerShortcutsOverlay(
+                    seekStep: viewModel.seekStepSeconds,
+                    showsEpisodes: viewModel.canShowEpisodesPanel,
+                    showsSources: viewModel.canShowSourcesPanel,
+                    onDismiss: { showKeyboardHelp = false }
+                )
+                .transition(.opacity)
+                .zIndex(6)
+            }
+            #endif
 
             // Accumulated D-pad skip preview over bare video.
             if viewModel.pendingSeekDelta != 0, !viewModel.showControls, !viewModel.isScrubbing {
@@ -646,7 +701,9 @@ struct PlayerView: View {
             }
         }
         #if os(macOS)
-        .background(MacPlayPauseKeyCatcher { viewModel.togglePlayPause() })
+        .background(macKeyCatcher)
+        // The pointer has no business sitting over a playing film.
+        .background(MacCursorAutoHide(isActive: viewModel.status == .playing))
         #else
         .onPlayPauseCommand {
             viewModel.togglePlayPause()
