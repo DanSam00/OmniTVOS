@@ -26,6 +26,36 @@ private struct CollectionFolderSourceLoad {
     let errorMessage: String?
 }
 
+#if os(macOS)
+/// Band ids for the collection browser's keyboard model. Rows mode stacks one
+/// band per catalog strip; Tabs mode is the tab bar above a single grid band.
+enum CollectionFolderFocusBand {
+    static let tabs = "collection.tabs"
+    static let grid = "collection.grid"
+
+    static func row(_ id: String) -> String { "collection.row.\(id)" }
+}
+#endif
+
+/// Drags the viewport along with the caret.
+///
+/// The highlight is a plain value, so on macOS it lands on rows and cards
+/// below the fold that the scroll view never follows by itself. On tvOS the
+/// focus engine already does this and the target stays nil.
+private struct MacCaretScroll: ViewModifier {
+    let target: String?
+    let proxy: ScrollViewProxy
+
+    func body(content: Content) -> some View {
+        content.onChange(of: target) { _, id in
+            guard let id else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo(id, anchor: .center)
+            }
+        }
+    }
+}
+
 /// Full-screen folder browser. Honors collection `viewMode`:
 /// - **Tabs** (`TABBED_GRID`): poster grid (optional source tabs + All).
 /// - **Rows** / **Follow layout**: Home-style horizontal catalog rows per source.
@@ -49,6 +79,12 @@ struct CollectionFolderBrowseView: View {
     @State private var watchedTitleKeys: Set<String> = []
     @State private var cachedCollectionMetadata: [String: NuvioMeta] = [:]
     @State private var collectionEnrichmentTask: Task<Void, Never>?
+    #if os(macOS)
+    /// macOS has no focus engine, so the screen carries its own caret. Without
+    /// one nothing here was reachable from the keyboard at all.
+    @StateObject private var macFocus = MacScreenFocus("collections")
+    @ObservedObject private var macKeyRouter = MacKeyRouter.shared
+    #endif
     @Environment(\.isEnabled) private var isEnabled
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
@@ -136,11 +172,29 @@ struct CollectionFolderBrowseView: View {
         .onExitCommand(perform: onBack)
         .onAppear {
             requestLoadingFocusIfNeeded()
+            #if os(macOS)
+            // Presented over Home rather than as a tab, so it takes the front
+            // of the key router for as long as it is up.
+            macFocus.update(macBands)
+            macFocus.syncClaim(isCurrent: true)
+            #endif
         }
         .onDisappear {
             collectionEnrichmentTask?.cancel()
             collectionEnrichmentTask = nil
+            #if os(macOS)
+            macFocus.release()
+            #endif
         }
+        #if os(macOS)
+        .onChange(of: macBandSignature, initial: true) { _, _ in
+            macFocus.update(macBands)
+        }
+        .onChange(of: macKeyRouter.latest) { _, press in
+            guard let press else { return }
+            macFocus.handle(press.key, activate: macActivate)
+        }
+        #endif
         .task {
             refreshWatchedTitles()
             await load()
@@ -223,7 +277,8 @@ struct CollectionFolderBrowseView: View {
         ZStack(alignment: .top) {
             cinematicBackdrop
 
-            ScrollView {
+            ScrollViewReader { macHeroScroll in
+              ScrollView {
                 VStack(alignment: .leading, spacing: 34) {
                     cinematicHero
 
@@ -251,6 +306,7 @@ struct CollectionFolderBrowseView: View {
                                 layoutMode: collectionRowLayoutMode,
                                 showPosterLabels: posterLabels,
                                 externalFocus: $focusedItemID,
+                                macFocusedCardKey: macCaretItemID,
                                 watchedTitleKeys: watchedTitleKeys,
                                 onFocus: enrichCollectionItemIfNeeded,
                                 onApproachEnd: { item in
@@ -259,13 +315,16 @@ struct CollectionFolderBrowseView: View {
                                 onLongPress: onLongPress,
                                 onSelect: onSelect
                             )
+                            .id("collection.row.\(row.id)")
                         }
                     }
                 }
                 .padding(.bottom, 70)
+              }
+              .focusSection()
+              .defaultFocusIfAvailable($focusedItemID, firstFocusID)
+              .modifier(MacCaretScroll(target: macCaretRowAnchor, proxy: macHeroScroll))
             }
-            .focusSection()
-            .defaultFocusIfAvailable($focusedItemID, firstFocusID)
         }
         .ignoresSafeArea(edges: .top)
     }
@@ -401,7 +460,13 @@ struct CollectionFolderBrowseView: View {
             Spacer()
         }
         .padding(.horizontal, 60)
+        // Start below the collapsed menu rather than behind it: the title was
+        // drawn straight over the hamburger in the window's top-left corner.
+        #if os(macOS)
+        .padding(.top, MacMenuMetrics.headerTopInset)
+        #else
         .padding(.top, 48)
+        #endif
     }
 
     private var subtitleLine: String {
@@ -419,7 +484,8 @@ struct CollectionFolderBrowseView: View {
                 ForEach(Array(tabLabels.enumerated()), id: \.offset) { index, label in
                     CollectionFolderTabButton(
                         label: label,
-                        isSelected: selectedTabIndex == index
+                        isSelected: selectedTabIndex == index,
+                        macIsFocused: macCaretIsOnTab(index)
                     ) {
                         selectedTabIndex = index
                     }
@@ -443,7 +509,8 @@ struct CollectionFolderBrowseView: View {
                     .frame(maxWidth: .infinity)
                 Spacer()
             } else {
-                ScrollView {
+                ScrollViewReader { macRowScroll in
+                  ScrollView {
                     VStack(alignment: .leading, spacing: TVHomeLayout.sectionSpacing) {
                         ForEach(catalogRows) { row in
                             CollectionFolderHomeStyleRow(
@@ -454,6 +521,7 @@ struct CollectionFolderBrowseView: View {
                                 layoutMode: collectionRowLayoutMode,
                                 showPosterLabels: posterLabels,
                                 externalFocus: $focusedItemID,
+                                macFocusedCardKey: macCaretItemID,
                                 watchedTitleKeys: watchedTitleKeys,
                                 onFocus: enrichCollectionItemIfNeeded,
                                 onApproachEnd: { item in
@@ -462,18 +530,22 @@ struct CollectionFolderBrowseView: View {
                                 onLongPress: onLongPress,
                                 onSelect: onSelect
                             )
+                            .id("collection.row.\(row.id)")
                         }
                     }
                     .padding(.top, 8)
                     .padding(.bottom, 60)
+                  }
+                  .focusSection()
+                  .defaultFocusIfAvailable($focusedItemID, firstFocusID)
+                  .modifier(MacCaretScroll(target: macCaretRowAnchor, proxy: macRowScroll))
                 }
-                .focusSection()
-                .defaultFocusIfAvailable($focusedItemID, firstFocusID)
             }
         }
     }
 
     private var gridContent: some View {
+      ScrollViewReader { macGridScroll in
         ScrollView {
             LazyVGrid(columns: columns, alignment: .leading, spacing: CollectionFolderGridMetrics.posterGap) {
                 ForEach(displayedGridItems) { item in
@@ -482,10 +554,12 @@ struct CollectionFolderBrowseView: View {
                         tileShape: tileShape,
                         externalFocus: $focusedItemID,
                         isWatched: isTitleWatched(item),
+                        macIsFocused: macCaretIsOnGridItem(item.id),
                         onLongPress: { onLongPress(item) }
                     ) {
                         onSelect(item)
                     }
+                    .id(item.id)
                     .onAppear {
                         loadMoreGridIfNeeded(currentItem: item)
                     }
@@ -506,6 +580,8 @@ struct CollectionFolderBrowseView: View {
         .focusSection()
         .defaultFocusIfAvailable($focusedItemID, firstFocusID)
         .id(selectedTabIndex)
+        .modifier(MacCaretScroll(target: macCaretGridAnchor, proxy: macGridScroll))
+      }
     }
 
     private var firstFocusID: String? {
@@ -518,6 +594,140 @@ struct CollectionFolderBrowseView: View {
         }
         return displayedGridItems.first?.id
     }
+
+    /// The caret's card key. The card views are shared with tvOS, where the
+    /// focus engine owns the highlight and this stays nil.
+    private var macCaretItemID: String? {
+        #if os(macOS)
+        return macFocus.itemID
+        #else
+        return nil
+        #endif
+    }
+
+    /// The strip the caret is in, as a scroll id, so a Down onto an off-screen
+    /// row brings it into view. Nil on tvOS, where the focus engine scrolls.
+    private var macCaretRowAnchor: String? {
+        #if os(macOS)
+        guard let band = macFocus.bandID, band.hasPrefix("collection.row.") else { return nil }
+        return band
+        #else
+        return nil
+        #endif
+    }
+
+    private var macCaretGridAnchor: String? {
+        #if os(macOS)
+        guard macFocus.bandID == CollectionFolderFocusBand.grid else { return nil }
+        return macFocus.itemID
+        #else
+        return nil
+        #endif
+    }
+
+    private func macCaretIsOnTab(_ index: Int) -> Bool {
+        #if os(macOS)
+        return macFocus.isFocused(CollectionFolderFocusBand.tabs, String(index))
+        #else
+        return false
+        #endif
+    }
+
+    private func macCaretIsOnGridItem(_ id: String) -> Bool {
+        #if os(macOS)
+        return macFocus.isFocused(CollectionFolderFocusBand.grid, id)
+        #else
+        return false
+        #endif
+    }
+
+    #if os(macOS)
+    // MARK: - macOS keyboard focus
+
+    /// The screen as a vertical stack of bands. Rows mode is one band per
+    /// catalog strip, each `items.count` wide so Left/Right walks the strip;
+    /// Tabs mode is the tab bar over a single grid band that knows its own
+    /// column count.
+    private var macBands: [MacFocusBand] {
+        guard !isLoading else { return [] }
+
+        if usesRows {
+            return catalogRows.compactMap { row in
+                guard !row.items.isEmpty else { return nil }
+                return MacFocusBand(
+                    id: CollectionFolderFocusBand.row(row.id),
+                    items: row.items.map { "\(row.id)\u{1}\($0.id)" }
+                )
+            }
+        }
+
+        var bands: [MacFocusBand] = []
+        if !tabLabels.isEmpty {
+            bands.append(MacFocusBand(
+                id: CollectionFolderFocusBand.tabs,
+                items: tabLabels.indices.map(String.init)
+            ))
+        }
+        let items = displayedGridItems
+        if !items.isEmpty {
+            bands.append(MacFocusBand(
+                id: CollectionFolderFocusBand.grid,
+                items: items.map(\.id),
+                columns: macGridColumns
+            ))
+        }
+        return bands
+    }
+
+    /// The grid is `.adaptive`, so the column count follows the width the
+    /// canvas actually gives it rather than a constant.
+    private var macGridColumns: Int {
+        // `MacTVCanvas` is generic over its content, so the static needs a
+        // concrete parameter to name the canvas the app actually renders on.
+        let available = MacTVCanvas<EmptyView>.canvasSize.width - 120
+        let step = tileSize.width + CollectionFolderGridMetrics.posterGap
+        return max(Int((available + CollectionFolderGridMetrics.posterGap) / step), 1)
+    }
+
+    /// Cheap stand-in for the bands themselves, which are not `Equatable`.
+    /// The caret only has to be rebuilt when the shape of the screen changes —
+    /// a row gaining a page, a tab switching, the load finishing.
+    private var macBandSignature: String {
+        if usesRows {
+            let rows = catalogRows.map { "\($0.id):\($0.items.count)" }.joined(separator: ",")
+            return "rows:\(isLoading):\(rows)"
+        }
+        return "grid:\(isLoading):\(selectedTabIndex):\(displayedGridItems.count)"
+    }
+
+    private func macIsFocused(_ band: String, _ item: String) -> Bool {
+        macFocus.isFocused(band, item)
+    }
+
+    private func macActivate(band: String, item: String) {
+        if band == CollectionFolderFocusBand.tabs {
+            guard let index = Int(item), tabLabels.indices.contains(index) else { return }
+            selectedTabIndex = index
+            return
+        }
+
+        if band == CollectionFolderFocusBand.grid {
+            guard let match = displayedGridItems.first(where: { $0.id == item }) else { return }
+            onSelect(match)
+            return
+        }
+
+        // A row's key is "rowId\u{1}itemId"; the meta id is the tail, and it
+        // can itself contain the separator's neighbours, so split once only.
+        guard let separator = item.firstIndex(of: "\u{1}") else { return }
+        let rowId = String(item[item.startIndex..<separator])
+        let metaId = String(item[item.index(after: separator)...])
+        guard let row = catalogRows.first(where: { $0.id == rowId }),
+              let match = row.items.first(where: { $0.id == metaId })
+        else { return }
+        onSelect(match)
+    }
+    #endif
 
     private func refreshWatchedTitles() {
         watchedTitleKeys = WatchedStore.visibleWholeTitleIdentityKeys()
@@ -787,6 +997,9 @@ private struct CollectionFolderHomeStyleRow: View {
     var layoutMode: String = "Modern"
     var showPosterLabels: Bool = false
     var externalFocus: FocusState<String?>.Binding? = nil
+    /// The screen's caret, as a plain value so the cards actually redraw as it
+    /// passes. `.focused` bindings are not render dependencies.
+    var macFocusedCardKey: String? = nil
     let watchedTitleKeys: Set<String>
     let onFocus: (NuvioMeta) -> Void
     let onApproachEnd: (NuvioMeta) -> Void
@@ -880,6 +1093,7 @@ private struct CollectionFolderHomeStyleRow: View {
                             let key = "\(rowId)\u{1}\(blurred.id)"
                             clearLandscapeFocus(cardKey: key)
                         },
+                        macFocusedCardKey: macFocusedCardKey,
                         externalFocus: externalFocus,
                         externalFocusValue: cardKey,
                         onLongPress: onLongPress,
@@ -970,11 +1184,22 @@ private struct CollectionFolderHomeStyleRow: View {
 private struct CollectionFolderTabButton: View {
     let label: String
     let isSelected: Bool
+    /// Driven by `MacScreenFocus`; macOS has no focus engine to set `focused`.
+    var macIsFocused = false
     let action: () -> Void
 
-    @FocusState private var isFocused: Bool
+    @FocusState private var focused: Bool
     @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
     @AppStorage(SettingsKey.focusHighlighter) private var focusHighlighter = false
+
+    /// tvOS reads the focus engine; macOS has none, so the caret decides.
+    private var isFocused: Bool {
+        #if os(macOS)
+        return macIsFocused
+        #else
+        return focused
+        #endif
+    }
 
     var body: some View {
         Button(action: action) {
@@ -1001,7 +1226,7 @@ private struct CollectionFolderTabButton: View {
         }
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
-        .focused($isFocused)
+        .focused($focused)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(isFocused ? 1.08 : 1.0)
         .animation(smoothFocus ? .spring(response: 0.28, dampingFraction: 0.75) : .easeOut(duration: 0.12), value: isFocused)
@@ -1029,10 +1254,14 @@ struct CollectionFolderResultCard: View {
     var tileShape: CollectionTileShape = .poster
     var externalFocus: FocusState<String?>.Binding? = nil
     var isWatched: Bool? = nil
+    /// Driven by `MacScreenFocus`: macOS has no focus engine to set `focused`,
+    /// and a focus binding is not a render dependency, so the card would never
+    /// redraw as the caret passed over it.
+    var macIsFocused = false
     var onLongPress: (() -> Void)? = nil
     let action: () -> Void
 
-    @FocusState private var focused: Bool
+    @FocusState private var isFocused: Bool
     @AppStorage(SettingsKey.posterLabels) private var posterLabels = false
     @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
     @AppStorage(SettingsKey.focusHighlighter) private var focusHighlighter = false
@@ -1049,6 +1278,15 @@ struct CollectionFolderResultCard: View {
 
     private var tileSize: (width: CGFloat, height: CGFloat) {
         CollectionFolderGridMetrics.tileSize(for: tileShape)
+    }
+
+    /// tvOS reads the focus engine; macOS has none, so the caret decides.
+    private var focused: Bool {
+        #if os(macOS)
+        return macIsFocused
+        #else
+        return isFocused
+        #endif
     }
 
     var body: some View {
@@ -1116,7 +1354,7 @@ struct CollectionFolderResultCard: View {
         }
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
-        .focused($focused)
+        .focused($isFocused)
         .modifier(ExternalFocusBinding(binding: externalFocus, id: meta.id))
         .focusEffectDisabledIfAvailable()
         .titleActionsContextMenu(

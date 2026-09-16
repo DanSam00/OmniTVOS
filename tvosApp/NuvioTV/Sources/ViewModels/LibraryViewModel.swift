@@ -157,8 +157,21 @@ public class LibraryViewModel: ObservableObject {
         }
 
         displayedSource = .local
-        items = LibraryStore.items().map(\.stremioMeta)
+        items = Self.deduplicated(LibraryStore.items().map(\.stremioMeta))
         validateFilters()
+    }
+
+    /// One card per title, keyed on id alone.
+    ///
+    /// The store keys on id *and* type, so a live channel saved once as `tv`
+    /// and once as `series` is two legitimate entries to it — but the grid
+    /// identifies cards by id, and `ForEach` draws nothing for the second of
+    /// two rows sharing an identity. That left every other cell blank and the
+    /// grid looking shuffled. The store is left alone, so the in-library
+    /// checks that do key on type still answer for either spelling.
+    private static func deduplicated(_ items: [StremioMeta]) -> [StremioMeta] {
+        var seen = Set<String>()
+        return items.filter { seen.insert($0.id).inserted }
     }
 
     public func refreshSelectedLibrary() async {
@@ -186,7 +199,7 @@ public class LibraryViewModel: ObservableObject {
         }
 
         displayedSource = TraktSettingsStore.librarySourceMode
-        items = remoteItems.map(\.stremioMeta)
+        items = Self.deduplicated(remoteItems.map(\.stremioMeta))
         validateFilters()
     }
 
@@ -200,14 +213,12 @@ public class LibraryViewModel: ObservableObject {
     private func applyTraktMutation(_ mutation: TraktLibraryMutation) {
         guard usesRemoteLibrary else { return }
         let item = LibraryStoreItem(meta: mutation.meta, addedAt: Date()).stremioMeta
+        // Keyed on id alone, like the grid: matching on type as well would let
+        // the same title back in under a second spelling and blank a cell.
         if mutation.isInWatchlist {
-            items = [item] + items.filter {
-                !($0.id == item.id && $0.contentType.caseInsensitiveCompare(item.contentType) == .orderedSame)
-            }
+            items = [item] + items.filter { $0.id != item.id }
         } else {
-            items.removeAll {
-                $0.id == item.id && $0.contentType.caseInsensitiveCompare(item.contentType) == .orderedSame
-            }
+            items.removeAll { $0.id == item.id }
         }
         displayedSource = TraktSettingsStore.librarySourceMode
         validateFilters()

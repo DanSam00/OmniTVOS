@@ -119,6 +119,10 @@ public struct LibraryView: View {
                     .font(.system(size: 46, weight: .bold))
                     .foregroundColor(.white)
                     #if os(macOS)
+                    // Sit the title on the collapsed menu glyph's own centre
+                    // line. Left to its natural height it landed below and
+                    // right of the icon, so the two read as unrelated.
+                    .frame(height: MacMenuMetrics.collapsedHeight, alignment: .center)
                     .padding(.leading, MacMenuMetrics.headerInset)
                     #endif
 
@@ -215,7 +219,13 @@ public struct LibraryView: View {
                 }
             }
             .padding(.horizontal, LibraryGridMetrics.pageInset)
+            #if os(macOS)
+            // Matches the menu's own top inset, so the title's centred frame
+            // lines the two up exactly.
+            .padding(.top, MacMenuMetrics.edgeTop)
+            #else
             .padding(.top, 56)
+            #endif
             .ignoresSafeArea(edges: .bottom)
         }
         .onExitCommand {

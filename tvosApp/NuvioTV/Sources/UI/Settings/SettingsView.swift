@@ -2228,8 +2228,14 @@ private struct AppearanceSettingsView: View {
                     fallback: "Accent color used for focused cards and controls"
                 )
             ) {
-                SettingsSwatchRow(swatches: accentSwatches, selection: $theme, accentColor: accentColor)
-                    .settingsEntryAnchor()
+                SettingsSwatchRow(
+                    swatches: accentSwatches,
+                    selection: $theme,
+                    accentColor: accentColor,
+                    macRowID: "appearance.focusOutline",
+                    macTitle: L10n.string("tvos_appearance_focus_outline", fallback: "Focus Outline")
+                )
+                .settingsEntryAnchor()
             }
 
             SettingsGroup(
@@ -2239,7 +2245,13 @@ private struct AppearanceSettingsView: View {
                     fallback: "Body background color behind every screen"
                 )
             ) {
-                SettingsSwatchRow(swatches: backgroundSwatches, selection: $bodyColor, accentColor: accentColor)
+                SettingsSwatchRow(
+                    swatches: backgroundSwatches,
+                    selection: $bodyColor,
+                    accentColor: accentColor,
+                    macRowID: "appearance.appBackground",
+                    macTitle: L10n.string("tvos_appearance_app_background", fallback: "App Background")
+                )
 
                 SettingsToggleRow(
                     title: L10n.string("appearance_amoled_mode", fallback: "AMOLED Mode"),
@@ -9534,6 +9546,11 @@ private struct HomeCatalogOrderSection: View {
                         onMove: { up in move(index, up: up) },
                         onMoveToEdge: { top in moveToEdge(index, top: top) }
                     )
+                    #if os(macOS)
+                    .macSettingsRow("layout.catalog.\(row.id)") {
+                        presentRowActions(row, index: index)
+                    }
+                    #endif
                 }
             }
         }
@@ -9592,6 +9609,51 @@ private struct HomeCatalogOrderSection: View {
         TVHomeCatalogOrder.writeSnapshotRows(rows)
         NuvioSyncManager.current?.noteHomeCatalogSettingsChangedLocally()
     }
+
+    #if os(macOS)
+    /// Everything the row's five buttons do, as a list the keyboard can pick
+    /// from. The buttons themselves are a horizontal strip, and Left/Right
+    /// already cross between the sidebar and the pane, so Return opens this
+    /// instead of the caret trying to walk into the row.
+    private func presentRowActions(_ row: TVHomeCatalogOrder.SnapshotRow, index: Int) {
+        var options: [FilterOption] = []
+
+        if row.settingsKey != nil {
+            let isEnabled = enabledByRowId[row.id] ?? true
+            let label = isEnabled
+                ? L10n.string("tvos_settings_hide_row", fallback: "Hide")
+                : L10n.string("tvos_settings_show_row", fallback: "Show")
+            options.append(FilterOption(label, isSelected: false) {
+                setEnabled(row, isEnabled: !isEnabled)
+            })
+        }
+
+        if index > 0 {
+            options.append(FilterOption(
+                L10n.string("tvos_settings_move_to_top", fallback: "Move to Top"),
+                isSelected: false
+            ) { moveToEdge(index, top: true) })
+            options.append(FilterOption(
+                L10n.string("tvos_settings_move_up", fallback: "Move Up"),
+                isSelected: false
+            ) { move(index, up: true) })
+        }
+
+        if index < rows.count - 1 {
+            options.append(FilterOption(
+                L10n.string("tvos_settings_move_down", fallback: "Move Down"),
+                isSelected: false
+            ) { move(index, up: false) })
+            options.append(FilterOption(
+                L10n.string("tvos_settings_move_to_bottom", fallback: "Move to Bottom"),
+                isSelected: false
+            ) { moveToEdge(index, top: false) })
+        }
+
+        guard !options.isEmpty else { return }
+        MacOptionPanel.shared.present(title: row.title, options: options)
+    }
+    #endif
 }
 
 private struct HomeCatalogOrderRow: View {
@@ -13045,6 +13107,10 @@ private struct SettingsSwatchRow: View {
     let swatches: [SettingsSwatch]
     @Binding var selection: String
     let accentColor: Color
+    /// macOS only: the caret's id for this row, and the title its option panel
+    /// carries. Without one the row is skipped by the keyboard entirely.
+    var macRowID: String? = nil
+    var macTitle: String = ""
 
     var body: some View {
         HStack(spacing: 14) {
@@ -13061,8 +13127,76 @@ private struct SettingsSwatchRow: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        #if os(macOS)
+        .modifier(MacSwatchRowFocus(
+            rowID: macRowID,
+            title: macTitle,
+            swatches: swatches,
+            selection: $selection
+        ))
+        #endif
     }
 }
+
+#if os(macOS)
+/// Puts a swatch strip into the macOS settings caret.
+///
+/// The swatches are a horizontal strip inside a single row, but Left and Right
+/// are already spoken for — they cross between the category sidebar and the
+/// pane. So the row takes Return instead and offers the colours through the
+/// same option panel the filter menus use, which also copes with the twelve
+/// backgrounds far better than a twelve-stop arrow walk would.
+private struct MacSwatchRowFocus: ViewModifier {
+    let rowID: String?
+    let title: String
+    let swatches: [SettingsSwatch]
+    @Binding var selection: String
+    @ObservedObject private var macRows = MacSettingsRowFocus.shared
+
+    init(rowID: String?, title: String, swatches: [SettingsSwatch], selection: Binding<String>) {
+        self.rowID = rowID
+        self.title = title
+        self.swatches = swatches
+        _selection = selection
+    }
+
+    private var highlighted: Bool {
+        guard let rowID else { return false }
+        return macRows.focusedRowID == rowID
+    }
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let rowID {
+            content
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .strokeBorder(
+                            highlighted ? AppFocusOutline.color : Color.clear,
+                            lineWidth: AppFocusOutline.width
+                        )
+                )
+                .animation(.easeOut(duration: 0.18), value: highlighted)
+                .macSettingsRow(rowID) { present() }
+        } else {
+            content
+        }
+    }
+
+    private func present() {
+        MacOptionPanel.shared.present(
+            title: title,
+            options: swatches.map { swatch in
+                FilterOption(swatch.label, isSelected: selection == swatch.id) {
+                    selection = swatch.id
+                }
+            }
+        )
+    }
+}
+#endif
 
 private struct SettingsSwatchButton: View {
     let swatch: SettingsSwatch

@@ -67,10 +67,33 @@ final class MacMenuState: ObservableObject {
 }
 
 enum MacMenuMetrics {
+    /// The collapsed menu is drawn in the window's top-left corner, outside
+    /// any screen's own layout, so screens have to be told how much room it
+    /// takes. These mirror the paddings in `MacHomeMenu`: 28pt in from each
+    /// edge, then the column's 12 and the row's 14/12 around a 30×26 glyph.
+    static let edgeLeading: CGFloat = 28
+    static let edgeTop: CGFloat = 28
+    static let collapsedWidth: CGFloat = 82
+    static let collapsedHeight: CGFloat = 74
+
+    /// Right edge of the collapsed icon, measured from the window.
+    static let collapsedTrailing: CGFloat = edgeLeading + collapsedWidth
+    /// Vertical centre of the collapsed icon, for a header that lines its
+    /// title up with the glyph rather than clearing it.
+    static let collapsedCenterY: CGFloat = edgeTop + collapsedHeight / 2
+
     /// Space a screen must leave clear at its top-left so the collapsed menu
     /// icon is not drawn over. Home needs none — its tvOS inset is already
     /// wider — but the screens that start their header at the very edge do.
-    static let headerInset: CGFloat = 78
+    ///
+    /// Measured from the screen's own container, which already carries a page
+    /// inset of its own, so this only has to cover the difference plus a gap
+    /// wide enough that the icon reads as separate from the title.
+    static let headerInset: CGFloat = 96
+
+    /// Clearance for a screen whose title cannot sit beside the icon and has
+    /// to start below it instead.
+    static let headerTopInset: CGFloat = edgeTop + collapsedHeight + 14
 }
 
 /// The visible menu: a column of tabs that keyboard focus can reach.

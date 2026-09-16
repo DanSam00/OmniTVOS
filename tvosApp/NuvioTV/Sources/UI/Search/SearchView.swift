@@ -366,14 +366,17 @@ struct SearchView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         // The caret starts here on macOS, so the capsule has to show it —
         // otherwise the screen looks unfocused until something is clicked.
-        #if os(macOS)
-        .padding(.leading, MacMenuMetrics.headerInset)
-        #endif
         .modifier(GlassCapsule(
             focused: searchBarFocused
                 || searchTextInputActive
                 || macIsFocused(SearchFocusBand.field, SearchFocusBand.field)
         ))
+        // Outside the capsule, so the bar itself starts clear of the collapsed
+        // menu. Inside it, the padding only moved the magnifier inwards and
+        // left the capsule's left edge under the icon.
+        #if os(macOS)
+        .padding(.leading, MacMenuMetrics.headerInset)
+        #endif
     }
 
     // MARK: - Type filter
