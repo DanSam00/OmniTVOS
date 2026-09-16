@@ -580,6 +580,12 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
         #else
         let cache = PlaybackCacheSettings.current
         #endif
+        // Every source here is a direct URL or the engine's local server, so the
+        // youtube-dl fallback can never help — but mpv's default runs it on any
+        // failed open and youtube-dl is not bundled. That put two junk lines
+        // ("Subprocess failed: init", "not found or not enough permissions") on
+        // every failure, which then crowded the real cause out of the panel.
+        checkError(mpv_set_option_string(mpv, "ytdl", "no"))
         checkError(mpv_set_option_string(mpv, "cache", "yes"))
         // Starting point only — `applyBufferWindow` overrides both per load,
         // from Settings → Playback → Buffer (separate values for on-demand and
@@ -1943,9 +1949,13 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
         }
         #endif
         errorStateLock.lock()
-        recentPlaybackLogs.append("[\(prefix)] \(trimmed)")
-        if recentPlaybackLogs.count > 4 {
-            recentPlaybackLogs.removeFirst(recentPlaybackLogs.count - 4)
+        // The buffer keeps the *earliest* lines of a failure, since mpv reports
+        // causally: the first error is the reason and everything after it is a
+        // consequence. Capped so a stream that fails noisily cannot push the
+        // reason out; `clearPlaybackError` empties it before each load, so
+        // these always belong to the attempt being reported.
+        if recentPlaybackLogs.count < 8 {
+            recentPlaybackLogs.append("[\(prefix)] \(trimmed)")
         }
         errorStateLock.unlock()
     }
@@ -1954,7 +1964,11 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
         let trimmedFallback = fallback.trimmingCharacters(in: .whitespacesAndNewlines)
         errorStateLock.lock()
         _didReachCleanEndOfFile = false
-        var parts = recentPlaybackLogs.suffix(3)
+        // Earliest first, not last. `suffix` showed the tail of the cascade and
+        // dropped its cause: a dead host reported "[ffmpeg] Failed to resolve
+        // hostname" first, then three downstream lines — and the panel showed
+        // only the three, so a DNS failure read as a youtube-dl error.
+        var parts = Array(recentPlaybackLogs.prefix(3))
         if !trimmedFallback.isEmpty && !parts.contains(trimmedFallback) {
             parts.append(trimmedFallback)
         }
