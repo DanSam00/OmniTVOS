@@ -1437,7 +1437,13 @@ struct SettingsView: View {
             Text(L10n.string("nav_settings", fallback: "Settings"))
                 .font(.system(size: 42, weight: .bold))
                 .foregroundColor(.white)
+                #if os(macOS)
+                // The sidebar's own 58 plus this title's 10, so the shared
+                // helper knows where the text would otherwise land.
+                .macMenuAlignedHeader(containerLeading: 68)
+                #else
                 .padding(.leading, 10)
+                #endif
 
             VStack(alignment: .leading, spacing: 14) {
                 ForEach(SettingsCategory.allCases) { category in
@@ -1479,7 +1485,11 @@ struct SettingsView: View {
         }
         .padding(.leading, 58)
         .padding(.trailing, 22)
+        #if os(macOS)
+        .padding(.top, MacMenuMetrics.edgeTop)
+        #else
         .padding(.top, 58)
+        #endif
         .frame(width: 510)
         .frame(maxHeight: .infinity, alignment: .topLeading)
     }

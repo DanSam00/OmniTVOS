@@ -148,6 +148,12 @@ struct SearchView: View {
 
             VStack(alignment: .leading, spacing: 24) {
                 header
+                    // Outside the capsule: applied within it, the inset only
+                    // moved the magnifier inwards and left the bar's own left
+                    // edge sitting under the menu icon.
+                    #if os(macOS)
+                    .macMenuAlignedHeader(containerLeading: SearchGridMetrics.pageInset)
+                    #endif
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .disabled(overlayRestoreResultID != nil || discoverOverlayTransitionActive)
                     .zIndex(1)
@@ -182,7 +188,11 @@ struct SearchView: View {
                 }
             }
             .padding(.horizontal, SearchGridMetrics.pageInset)
+            #if os(macOS)
+            .padding(.top, MacMenuMetrics.edgeTop)
+            #else
             .padding(.top, 56)
+            #endif
             // Let the results viewport use the space below tvOS's bottom safe
             // area instead of leaving a black bar at the screen edge.
             .ignoresSafeArea(.container, edges: .bottom)
@@ -371,12 +381,7 @@ struct SearchView: View {
                 || searchTextInputActive
                 || macIsFocused(SearchFocusBand.field, SearchFocusBand.field)
         ))
-        // Outside the capsule, so the bar itself starts clear of the collapsed
-        // menu. Inside it, the padding only moved the magnifier inwards and
-        // left the capsule's left edge under the icon.
-        #if os(macOS)
-        .padding(.leading, MacMenuMetrics.headerInset)
-        #endif
+
     }
 
     // MARK: - Type filter

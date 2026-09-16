@@ -82,18 +82,42 @@ enum MacMenuMetrics {
     /// title up with the glyph rather than clearing it.
     static let collapsedCenterY: CGFloat = edgeTop + collapsedHeight / 2
 
+    /// Where a screen's title starts, measured from the window's leading edge
+    /// rather than from the screen's own container: far enough right of the
+    /// icon that the two read as a pair instead of a collision.
+    static let headerLeading: CGFloat = collapsedTrailing + 22
+
     /// Space a screen must leave clear at its top-left so the collapsed menu
     /// icon is not drawn over. Home needs none — its tvOS inset is already
     /// wider — but the screens that start their header at the very edge do.
     ///
-    /// Measured from the screen's own container, which already carries a page
-    /// inset of its own, so this only has to cover the difference plus a gap
-    /// wide enough that the icon reads as separate from the title.
+    /// Prefer `macMenuAlignedHeader(containerLeading:)`, which works out this
+    /// gap from the inset the screen already carries. A single constant cannot:
+    /// Library indents its page by 36 and Settings its sidebar by 58, so the
+    /// same number lands the two titles in different places.
     static let headerInset: CGFloat = 96
 
     /// Clearance for a screen whose title cannot sit beside the icon and has
     /// to start below it instead.
     static let headerTopInset: CGFloat = edgeTop + collapsedHeight + 14
+}
+
+extension View {
+    /// Lines a screen's title up with the collapsed menu icon: centred on the
+    /// glyph's own centre line, and indented clear of it.
+    ///
+    /// The menu is drawn in the window's corner, outside every screen's own
+    /// layout, so each screen would otherwise guess its own inset — and they
+    /// drifted apart, some overlapping the icon and others sitting well below
+    /// it. `containerLeading` is the inset the screen already applies, so the
+    /// title lands at the same place on every screen whatever that is.
+    ///
+    /// The caller still has to start its content at `MacMenuMetrics.edgeTop`
+    /// for the vertical half to line up.
+    func macMenuAlignedHeader(containerLeading: CGFloat) -> some View {
+        frame(height: MacMenuMetrics.collapsedHeight, alignment: .leading)
+            .padding(.leading, max(0, MacMenuMetrics.headerLeading - containerLeading))
+    }
 }
 
 /// The visible menu: a column of tabs that keyboard focus can reach.
