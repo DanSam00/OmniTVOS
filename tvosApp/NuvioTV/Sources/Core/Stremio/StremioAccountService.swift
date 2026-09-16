@@ -19,6 +19,16 @@ enum StremioAccountService {
     private static let emailKey = "nuvio.tv.stremio.email"
     private static let lastImportKey = "nuvio.tv.stremio.lastImport"
 
+    /// Recorded in `WatchedStoreItem.sources` beside whichever backend the
+    /// viewer has selected, so a Stremio-confirmed mark can be recognised later
+    /// without becoming invisible now.
+    ///
+    /// Deliberately a bare string rather than a `TraktWatchProgressSource`
+    /// case: that enum is `CaseIterable` and feeds the watch-progress picker in
+    /// Settings, so adding to it would offer Stremio as a progress backend,
+    /// which it is not — nothing is written back to it.
+    static let watchSourceTag = "STREMIO"
+
     // MARK: - Account state
 
     static var authKey: String? {
@@ -103,6 +113,12 @@ enum StremioAccountService {
 
     // MARK: - Import
 
+    struct SyncSummary {
+        var addonsAdded = 0
+        var addonsAlreadyPresent = 0
+        var library = ImportSummary()
+    }
+
     struct ImportSummary {
         var libraryAdded = 0
         var libraryskipped = 0
@@ -180,10 +196,16 @@ enum StremioAccountService {
                     watchedToAdd.append(
                         WatchedStoreItem(
                             meta: meta.persistenceSnapshot,
-                            watchedAt: Date(),
+                            // Stremio's own modification time, not "now". Dated
+                            // now, a years-old Stremio row would outrank a mark
+                            // made here this morning in every later comparison.
+                            watchedAt: item.mtime ?? Date(),
                             season: hasEpisode ? season : nil,
                             episode: hasEpisode ? episode : nil,
-                            sources: [watchSource]
+                            // Both: the selected backend so the tick stays
+                            // visible under it, and Stremio so the row's real
+                            // origin is still knowable. See `watchSourceTag`.
+                            sources: [watchSource, Self.watchSourceTag]
                         )
                     )
                     summary.watchedMarked += 1
@@ -200,6 +222,83 @@ enum StremioAccountService {
 
         ProfileSettings.current.set(Date().timeIntervalSince1970, forKey: lastImportKey)
         NotificationCenter.default.post(name: changedNotification, object: nil)
+        return summary
+    }
+
+    // MARK: - Add-ons
+
+    /// The account's add-on collection, merged in additively.
+    ///
+    /// Add-ons are only ever *added*. An add-on already configured here is left
+    /// exactly as it is — not re-enabled, not reordered, not rewritten — because
+    /// its enabled state and position are local decisions the viewer made, and
+    /// Stremio has no opinion worth overriding them with. Nothing is ever
+    /// removed either: an add-on absent from Stremio is not evidence it should
+    /// go, only that Stremio does not have it.
+    static func importAddons() async throws -> (added: Int, alreadyPresent: Int) {
+        guard let authKey else {
+            throw ServiceError.badCredentials(
+                L10n.string("stremio_error_signed_out", fallback: "Not signed in to Stremio.")
+            )
+        }
+
+        struct CollectionRequest: Encodable {
+            let authKey: String
+            let update = true
+        }
+        struct CollectionResponse: Decodable {
+            struct Result: Decodable {
+                struct Addon: Decodable { let transportUrl: String? }
+                let addons: [Addon]?
+            }
+            let result: Result?
+        }
+
+        let body = try JSONEncoder().encode(CollectionRequest(authKey: authKey))
+        let data = try await post(path: "addonCollectionGet", body: body)
+        guard let decoded = try? JSONDecoder().decode(CollectionResponse.self, from: data) else {
+            throw ServiceError.malformedResponse
+        }
+        let remoteURLs = (decoded.result?.addons ?? []).compactMap(\.transportUrl)
+
+        var preferences = CinemetaCatalogRepository.configuredStreamAddonPreferences()
+        // Compared on the normalised URL, so the same add-on written two ways
+        // is recognised as one rather than installed twice.
+        var known = Set(
+            preferences.compactMap {
+                CinemetaCatalogRepository.normalizedManifestURL(from: $0.url)?.absoluteString
+            }
+        )
+
+        var added = 0
+        var alreadyPresent = 0
+        for raw in remoteURLs {
+            guard let normalized = CinemetaCatalogRepository.normalizedManifestURL(from: raw) else { continue }
+            if known.contains(normalized.absoluteString) {
+                alreadyPresent += 1
+                continue
+            }
+            known.insert(normalized.absoluteString)
+            preferences.append(StreamAddonPreference(url: normalized.absoluteString, enabled: true))
+            added += 1
+        }
+
+        if added > 0 {
+            CinemetaCatalogRepository.setConfiguredStreamAddonPreferences(preferences)
+        }
+        return (added, alreadyPresent)
+    }
+
+    /// One button: pull the add-on collection, then the library.
+    ///
+    /// Add-ons first, because a library row whose catalogs come from an add-on
+    /// this device does not have yet resolves better once it does.
+    static func sync() async throws -> SyncSummary {
+        var summary = SyncSummary()
+        let addons = try await importAddons()
+        summary.addonsAdded = addons.added
+        summary.addonsAlreadyPresent = addons.alreadyPresent
+        summary.library = try await importLibrary()
         return summary
     }
 
@@ -253,6 +352,10 @@ struct StremioLibraryItem: Decodable {
     }
 
     let _id: String
+    /// Stremio's own modification time for the row. It has always been on the
+    /// wire; this type simply never decoded it, which left nothing to compare
+    /// a local edit against and made every merge a guess.
+    let mtime: Date?
     let name: String?
     let type: String?
     let poster: String?
@@ -264,12 +367,30 @@ struct StremioLibraryItem: Decodable {
     let state: State?
 
     private enum CodingKeys: String, CodingKey {
-        case _id, name, type, poster, background, logo, year, removed, temp, state
+        case _id, _mtime, name, type, poster, background, logo, year, removed, temp, state
+    }
+
+    /// Stremio has shipped `_mtime` both with and without fractional seconds.
+    private static let mtimeFormatters: [ISO8601DateFormatter] = {
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        return [withFraction, plain]
+    }()
+
+    static func parseMtime(_ raw: String?) -> Date? {
+        guard let raw, !raw.isEmpty else { return nil }
+        for formatter in mtimeFormatters {
+            if let date = formatter.date(from: raw) { return date }
+        }
+        return nil
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         _id = try container.decode(String.self, forKey: ._id)
+        mtime = Self.parseMtime(try? container.decodeIfPresent(String.self, forKey: ._mtime))
         name = try? container.decodeIfPresent(String.self, forKey: .name)
         type = try? container.decodeIfPresent(String.self, forKey: .type)
         poster = try? container.decodeIfPresent(String.self, forKey: .poster)

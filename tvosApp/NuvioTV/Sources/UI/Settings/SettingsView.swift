@@ -3489,6 +3489,32 @@ private struct IntegrationSettingsView: View {
         }
     }
 
+    private func runStremioSync() {
+        guard !stremioBusy else { return }
+        stremioBusy = true
+        stremioStatus = ""
+        Task { @MainActor in
+            defer { stremioBusy = false }
+            do {
+                let summary = try await StremioAccountService.sync()
+                stremioStatus = stremioSyncSummaryText(summary)
+            } catch {
+                stremioStatus = error.localizedDescription
+            }
+            stremioRevision += 1
+        }
+    }
+
+    private func stremioSyncSummaryText(_ summary: StremioAccountService.SyncSummary) -> String {
+        let addons = L10n.format(
+            "tvos_settings_stremio_sync_addons",
+            fallback: "%@ add-ons added (%@ already here)",
+            String(summary.addonsAdded),
+            String(summary.addonsAlreadyPresent)
+        )
+        return addons + " · " + stremioSummaryText(summary.library)
+    }
+
     private func stremioSummaryText(_ summary: StremioAccountService.ImportSummary) -> String {
         L10n.format(
             "tvos_settings_stremio_import_summary",
@@ -3562,6 +3588,20 @@ private struct IntegrationSettingsView: View {
                         accentColor: accentColor
                     ) {
                         runStremioImport()
+                    }
+
+                    SettingsActionRow(
+                        title: L10n.string("tvos_settings_stremio_sync", fallback: "Sync From Stremio"),
+                        subtitle: L10n.string(
+                            "tvos_settings_stremio_sync_sub",
+                            fallback: "Pulls add-ons and library. Only adds what is missing — nothing here is overwritten or removed."
+                        ),
+                        value: stremioBusy
+                            ? L10n.string("tvos_common_working", fallback: "Working…")
+                            : L10n.string("tvos_settings_stremio_sync_action", fallback: "Sync"),
+                        accentColor: accentColor
+                    ) {
+                        runStremioSync()
                     }
 
                     SettingsActionRow(
