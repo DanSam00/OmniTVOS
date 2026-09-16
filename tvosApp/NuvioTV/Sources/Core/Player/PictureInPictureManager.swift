@@ -51,6 +51,18 @@ struct ActivePlaybackContext: Equatable {
     }
 }
 
+/// AVKit's own account of what Picture in Picture did.
+///
+/// On macOS it joins the app log beside the player traces, which is where the
+/// rest of a PiP problem is visible; on tvOS it stays on the console, as it was.
+private func pipLog(_ line: String) {
+    #if os(macOS)
+    MacDiagnostics.log("pip.avkit " + line)
+    #else
+    print("[PictureInPicture] " + line)
+    #endif
+}
+
 /// Central Picture-in-Picture manager for tvOS.
 /// Bridges `AVPictureInPictureController` with `AetherEngine` (native AVPlayerLayer & sample-buffer paths).
 @MainActor
@@ -81,6 +93,57 @@ final class PictureInPictureManager: NSObject, ObservableObject {
 
     /// Invoked when PiP begins so the active full-screen PlayerView can dismiss to the background.
     var onDidStartPiP: (() -> Void)?
+
+    #if os(macOS)
+    /// True while the mini player was opened by the app losing focus, so a PiP
+    /// the viewer opened by hand is not closed out from under them on return.
+    private var startedAutomatically = false
+    private var focusObserver: NSObjectProtocol?
+
+    /// Open the mini player because the app lost focus, and arm the return.
+    ///
+    /// Owned here rather than by `PlayerViewModel` because starting PiP
+    /// unmounts the full-screen player, which takes that view model with it:
+    /// its `didBecomeActive` observer then held a nil `self` and the film
+    /// stayed in the mini player forever. This object is a singleton and
+    /// outlives the transition, which is the whole requirement.
+    func startAutomatically() {
+        guard !isPictureInPictureActive else { return }
+        startedAutomatically = true
+        observeReturnToForeground()
+        startPictureInPicture()
+        // AVKit starts asynchronously and may refuse. Do not leave the flag
+        // set if it never began — it would swallow the next real restore.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard let self, self.startedAutomatically, !self.isPictureInPictureActive else { return }
+            pipLog("auto start never became active")
+            self.startedAutomatically = false
+        }
+    }
+
+    /// The viewer opened or closed PiP themselves; the app no longer owns it.
+    func forgetAutomaticStart() {
+        startedAutomatically = false
+    }
+
+    private func observeReturnToForeground() {
+        guard focusObserver == nil else { return }
+        focusObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                pipLog("focus returned auto=\(self.startedAutomatically) active=\(self.isPictureInPictureActive)")
+                guard self.startedAutomatically else { return }
+                self.startedAutomatically = false
+                self.stopPictureInPicture()
+            }
+        }
+    }
+    #endif
 
     /// Invoked when PiP is closed by the user (via X button) without restoring full-screen UI.
     var onDidStopPiPWithoutRestoring: (() -> Void)?
@@ -189,11 +252,11 @@ final class PictureInPictureManager: NSObject, ObservableObject {
         rebuildPipControllerIfNeeded()
 
         guard let pip = pipController else {
-            print("[PictureInPicture] Cannot start: no AVPictureInPictureController instance")
+            pipLog("Cannot start: no AVPictureInPictureController instance")
             return
         }
 
-        print("[PictureInPicture] Requesting startPictureInPicture (isPossible=\(pip.isPictureInPicturePossible))")
+        pipLog("Requesting startPictureInPicture (isPossible=\(pip.isPictureInPicturePossible))")
         pip.startPictureInPicture()
     }
 
@@ -247,13 +310,13 @@ final class PictureInPictureManager: NSObject, ObservableObject {
 extension PictureInPictureManager: @preconcurrency AVPictureInPictureControllerDelegate {
     func pictureInPictureControllerWillStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         guard pipController === pictureInPictureController else { return }
-        print("[PictureInPicture] willStartPictureInPicture")
+        pipLog("willStartPictureInPicture")
         activeAetherController?.engine.pictureInPictureActive = true
     }
 
     func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         guard pipController === pictureInPictureController else { return }
-        print("[PictureInPicture] didStartPictureInPicture")
+        pipLog("didStartPictureInPicture")
         isPictureInPictureActive = true
         activeAetherController?.engine.pictureInPictureActive = true
         onDidStartPiP?()
@@ -264,19 +327,19 @@ extension PictureInPictureManager: @preconcurrency AVPictureInPictureControllerD
         failedToStartPictureInPictureWithError error: Error
     ) {
         guard pipController === pictureInPictureController else { return }
-        print("[PictureInPicture] failedToStartPictureInPictureWithError: \(error.localizedDescription)")
+        pipLog("failedToStartPictureInPictureWithError: \(error.localizedDescription)")
         isPictureInPictureActive = false
         activeAetherController?.engine.pictureInPictureActive = false
     }
 
     func pictureInPictureControllerWillStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         guard pipController === pictureInPictureController else { return }
-        print("[PictureInPicture] willStopPictureInPicture (isRestoringUI=\(isRestoringUI))")
+        pipLog("willStopPictureInPicture (isRestoringUI=\(isRestoringUI))")
     }
 
     func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         guard pipController === pictureInPictureController else { return }
-        print("[PictureInPicture] didStopPictureInPicture (isRestoringUI=\(isRestoringUI))")
+        pipLog("didStopPictureInPicture (isRestoringUI=\(isRestoringUI))")
         isPictureInPictureActive = false
         activeAetherController?.engine.pictureInPictureActive = false
         activeAetherController?.rebindSurface()
@@ -316,7 +379,7 @@ extension PictureInPictureManager: @preconcurrency AVPictureInPictureControllerD
             completionHandler(false)
             return
         }
-        print("[PictureInPicture] restoreUserInterfaceForPictureInPictureStop")
+        pipLog("restoreUserInterfaceForPictureInPictureStop")
         isRestoringUI = true
         pendingRestoreCompletion = completionHandler
         pendingRestoreResult = nil

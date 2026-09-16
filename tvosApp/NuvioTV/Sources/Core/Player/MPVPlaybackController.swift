@@ -686,6 +686,15 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
             && sampledPositionMs - verifiedPositionMs > 30_000
         let safePositionMs = max(0, jumpedToEnd ? verifiedPositionMs : sampledPositionMs)
 
+        #if os(macOS)
+        // `didEnterBackgroundNotification` is `NSApplication.didResignActive`
+        // here (see `PlatformShims`), which is the viewer clicking another
+        // window — not the system suspending the app. The process keeps
+        // running and so should the film: record the position for resume and
+        // leave playback alone. Pausing and dropping the video track made
+        // every click outside the window stop the picture.
+        onPlaybackSuspended?(safePositionMs, max(referenceDurationMs, durationMs))
+        #else
         let mpvStillPlaying = !getFlag("pause") && !getFlag("eof-reached")
         wasPlayingBeforeBackground = mpvStillPlaying || (jumpedToEnd && lastVerifiedWasPlaying)
         lifecyclePositionMs = safePositionMs
@@ -699,10 +708,16 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
         setStringProperty("vid", "no")
         publishLifecycleSnapshot()
         onPlaybackSuspended?(safePositionMs, lifecycleDurationMs ?? 0)
+        #endif
     }
 
     @objc private func enterForeground() {
         guard mpv != nil else { return }
+        #if os(macOS)
+        // Nothing was torn down on the way out, so there is nothing to
+        // restore on the way back.
+        return
+        #else
         let shouldResume = wasPlayingBeforeBackground
         setStringProperty("vid", "auto")
         clearCleanEndState()
@@ -728,6 +743,7 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
             // Preserve an explicit user pause across app switching.
             pausePlayback()
         }
+        #endif
     }
 
     private func publishLifecycleSnapshot() {

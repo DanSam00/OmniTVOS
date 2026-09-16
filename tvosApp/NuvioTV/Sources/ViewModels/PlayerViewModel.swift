@@ -62,9 +62,6 @@ final class PlaybackClock: ObservableObject {
 class PlayerViewModel: ObservableObject {
     @Published var status: PlayerStatus = .idle
     #if os(macOS)
-    /// True only while the mini player was opened by losing focus, so a PiP the
-    /// viewer started by hand survives coming back to the app.
-    private var autoPictureInPictureActive = false
     /// The row the side panels highlight. They drove this from `@FocusState`,
     /// which nothing sets on macOS — there is no focus engine — so the caret is
     /// a plain value here, as it is on every other screen.
@@ -3862,33 +3859,31 @@ class PlayerViewModel: ObservableObject {
         #if os(macOS)
         // A PiP the viewer asked for is theirs to close, so returning to the
         // app must not cancel it.
-        autoPictureInPictureActive = false
+        PictureInPictureManager.shared.forgetAutomaticStart()
         #endif
     }
 
     #if os(macOS)
-    /// Sends playback to the mini player when the app loses focus, and brings
-    /// it back when focus returns.
+    /// Sends playback to the mini player when the app loses focus.
     ///
     /// A Mac has no "app went to background" the way tvOS does — the window
     /// just goes behind something else and keeps playing where the viewer can
-    /// no longer see it. PiP is the system's answer to that, so it is driven
+    /// no longer see it. PiP is the system's answer, so it is driven
     /// automatically rather than left as a button nobody presses.
+    ///
+    /// Only the leaving half lives here. Coming back belongs to
+    /// `PictureInPictureManager`: starting PiP unmounts the full-screen player
+    /// and takes this view model with it, so an observer here held a nil
+    /// `self` by the time focus returned and the film stayed in the mini
+    /// player. The log showed it exactly — `auto=start` on every resign, and
+    /// nothing at all on the way back.
     func observeWindowFocusForPictureInPicture() {
-        let center = NotificationCenter.default
-        center.addObserver(
+        NotificationCenter.default.addObserver(
             forName: NSApplication.didResignActiveNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.enterAutomaticPictureInPicture() }
-        }
-        center.addObserver(
-            forName: NSApplication.didBecomeActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.leaveAutomaticPictureInPicture() }
         }
     }
 
@@ -3902,17 +3897,8 @@ class PlayerViewModel: ObservableObject {
               sidePanel == nil,
               !postPlayState.isVisible
         else { return }
-        autoPictureInPictureActive = true
         MacDiagnostics.log("player.pip auto=start")
-        startPictureInPicture()
-    }
-
-    private func leaveAutomaticPictureInPicture() {
-        guard autoPictureInPictureActive else { return }
-        autoPictureInPictureActive = false
-        guard isPictureInPictureActive else { return }
-        MacDiagnostics.log("player.pip auto=stop")
-        stopPictureInPicture()
+        PictureInPictureManager.shared.startAutomatically()
     }
     #endif
 

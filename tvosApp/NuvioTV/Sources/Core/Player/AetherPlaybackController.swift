@@ -1533,7 +1533,22 @@ struct AetherExternalSubtitleRegistration {
 
 enum AetherPlaybackLifecyclePolicy {
     static func shouldReloadAfterBackground(state: PlaybackState) -> Bool {
-        state == .playing || state == .paused
+        #if os(macOS)
+        // Never on macOS. `didEnterBackgroundNotification` maps to
+        // `NSApplication.didResignActiveNotification` here (see
+        // `PlatformShims`), and those two events mean completely different
+        // things: on tvOS the system has suspended the app and the session is
+        // genuinely gone, while on macOS the viewer clicked another window and
+        // the app is still running, still decoding, still holding its session.
+        //
+        // Tearing down there cost a full rebuild on the way back — new local
+        // server, fresh open, re-seek — measured at thirty seconds from
+        // returning to the app to a picture, for a film that had never
+        // stopped playing.
+        return false
+        #else
+        return state == .playing || state == .paused
+        #endif
     }
 }
 
