@@ -2349,6 +2349,67 @@ extension CrossfadingBackdrop: Equatable {
     }
 }
 
+/// Plays the focused title's trailer in the Home backdrop, silently.
+///
+/// The hero art changes with every card focus passes over, so this waits
+/// before starting: `.task(id:)` cancels the wait the moment the hero moves
+/// on, and only a title the user has settled on for the full delay ever
+/// resolves a trailer or builds a player. Titles without one simply never
+/// become visible and the artwork stays, which is also what happens while the
+/// trailer is still resolving.
+private struct HomeHeroTrailer: View {
+    let meta: NuvioMeta?
+
+    @AppStorage(SettingsKey.trailersEnabled) private var trailersEnabled = true
+    /// The title the delay has elapsed for, rather than a bare flag: it is
+    /// what stops a stale timer from starting a trailer for the title the
+    /// backdrop has already moved past.
+    @State private var startedMetaID: String?
+
+    /// Longer than a card's own preview delay. The hero follows focus across a
+    /// whole row, so a shorter wait would start resolving a trailer for every
+    /// title merely passed through.
+    private static let startDelay = Duration.seconds(6)
+
+    /// Crops the black bars a scope trailer carries inside its own frame.
+    ///
+    /// The layer is already `resizeAspectFill`, so a 16:9 trailer fills the
+    /// 16:9 backdrop exactly — but most trailers are 2.39:1 letterboxed into a
+    /// 16:9 file, and those bars are pixels in the video, not layout. Aspect
+    /// rules cannot remove them; only a zoom can. 16:9 over 2.39:1 is 1.34, so
+    /// this is the factor that makes a scope trailer's *image* fill the
+    /// backdrop. It costs the same 25% crop on a trailer that was genuinely
+    /// 16:9, which is the trade: this is ambient art behind the hero text,
+    /// where a slightly tighter framing reads as intent and a black band
+    /// across the top does not.
+    /// 2.39 ÷ (16/9) = 1.34.
+    private static let letterboxCrop: CGFloat = 2.39 / (16.0 / 9.0)
+
+    var body: some View {
+        ZStack {
+            if let meta, startedMetaID == meta.id {
+                TrailerPreviewPlayer(meta: meta, isActive: true, forcesMute: true)
+                    .id(meta.id)
+                    .scaleEffect(Self.letterboxCrop)
+            }
+        }
+        .allowsHitTesting(false)
+        .task(id: trailerIdentity) {
+            startedMetaID = nil
+            guard trailersEnabled, let id = meta?.id else { return }
+            try? await Task.sleep(for: Self.startDelay)
+            guard !Task.isCancelled else { return }
+            startedMetaID = id
+        }
+    }
+
+    /// Restarts the wait when the hero changes title, and when trailers are
+    /// switched off mid-view so a playing one is torn down.
+    private var trailerIdentity: String {
+        "\(meta?.id ?? "none")\u{1f}\(trailersEnabled)"
+    }
+}
+
 /// Small in-memory cache + loader for backdrop images so revisiting a poster is
 /// instant (no decode flicker) and repeated focus changes don't refetch.
 actor BackdropImageCache {
@@ -3199,6 +3260,9 @@ struct TVHomeView: View {
                     )
                     .equatable()
                     .frame(width: proxy.size.width, height: proxy.size.height)
+                    .overlay {
+                        HomeHeroTrailer(meta: showsLoading ? nil : homeBackdropMeta)
+                    }
                     .clipped()
                 } else {
                     let backdropWidth = proxy.size.width * 0.65
@@ -3214,6 +3278,11 @@ struct TVHomeView: View {
                         )
                         .equatable()
                         .frame(width: backdropWidth, height: backdropHeight, alignment: .topTrailing)
+                        // Inside the masks, so the trailer dissolves into the
+                        // page on exactly the same edges the artwork does.
+                        .overlay {
+                            HomeHeroTrailer(meta: showsLoading ? nil : homeBackdropMeta)
+                        }
                         .mask(
                             LinearGradient(
                                 stops: [
@@ -4830,6 +4899,19 @@ struct TVHomeView: View {
                 ?? preferredBackdropURL(for: visibleHero)
         }
         return preferredBackdropURL(for: visibleFocusedMeta) ?? preferredBackdropURL(for: visibleHero)
+    }
+
+    /// The title whose art the backdrop is currently showing, so the hero
+    /// trailer plays for whatever is actually on screen. Mirrors
+    /// `homeBackdropURL`'s choice exactly — a focused collection folder shows
+    /// the folder's own hero art, which belongs to no single title, so that
+    /// case deliberately yields nothing to play.
+    private var homeBackdropMeta: NuvioMeta? {
+        if featureHeroActive, featureFocused, featureItems.indices.contains(featureIndex) {
+            return featureItems[featureIndex].meta
+        }
+        if focusedCollectionFolder != nil { return nil }
+        return visibleFocusedMeta ?? visibleHero
     }
 
     private func preferredBackdropURL(for meta: NuvioMeta?) -> String? {

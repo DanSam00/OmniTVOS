@@ -1091,16 +1091,21 @@ struct TrailerPlayerSurface: UIViewRepresentable {
     }
 }
 
-/// Video preview for a settled, landscape Home card. The player is
-/// created only after the configured trailer delay and is released as soon as
-/// focus leaves, so scrolling never leaves background trailer audio or decoders.
-private struct TrailerPreviewPlayer: View {
+/// Video preview for a settled, landscape Home card, and for the Home hero
+/// backdrop. The player is created only after the configured trailer delay and
+/// is released as soon as focus leaves, so scrolling never leaves background
+/// trailer audio or decoders.
+struct TrailerPreviewPlayer: View {
     let meta: NuvioMeta
     /// Resolution begins as soon as the card gains focus; playback waits for
     /// Home's configured delay to promote the card to landscape.
     let isActive: Bool
-    let onPlaybackReady: () -> Void
-    let onPlaybackFinished: () -> Void
+    /// Ignores the trailer-sound preference and stays silent. The hero plays
+    /// behind the whole screen rather than on a card the user has picked out,
+    /// so it is never allowed to make noise.
+    var forcesMute = false
+    var onPlaybackReady: () -> Void = {}
+    var onPlaybackFinished: () -> Void = {}
 
     @State private var player = AVPlayer()
     @State private var isRenderReady = false
@@ -1187,7 +1192,8 @@ private struct TrailerPreviewPlayer: View {
         }
     }
 
-    private func applySoundPreference(_ soundEnabled: Bool) {
+    private func applySoundPreference(_ preference: Bool) {
+        let soundEnabled = preference && !forcesMute
         player.isMuted = !soundEnabled
         player.volume = soundEnabled ? 1 : 0
         guard soundEnabled else { return }
