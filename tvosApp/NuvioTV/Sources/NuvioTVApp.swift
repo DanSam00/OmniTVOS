@@ -1538,6 +1538,19 @@ struct ContentView: View {
                 .zIndex(4)
             }
         }
+        #if os(macOS)
+        // Pinned to the canvas. The stack takes the height of its tallest
+        // child and the player fills it with `maxHeight: .infinity`, so a
+        // screen that momentarily measured 1920 tall stretched the video
+        // surface to 1920x1920 — and mpv, which had already opened its output
+        // at that size, stayed square after the layout recovered a moment
+        // later. Nothing outside this rectangle was ever visible anyway:
+        // `MacTVCanvas` draws and clips to exactly it.
+        .frame(
+            width: MacTVCanvas<EmptyView>.canvasSize.width,
+            height: MacTVCanvas<EmptyView>.canvasSize.height
+        )
+        #endif
     }
 
     private var mainTabView: some View {

@@ -152,19 +152,35 @@ struct PlayerLoadingOverlay: View {
             Color.black.ignoresSafeArea()
 
             // 2. Fullscreen Backdrop Image
+            //
+            // The artwork must not be allowed to size this stack. Aspect-fill
+            // reports the size that *covers* the proposal, so a square image —
+            // which is what a live TV channel's art usually is — measures
+            // 1920x1920 against a 1920x1080 canvas. The player surface sits in
+            // the same stack and inherits that height, and mpv, which opens its
+            // video output while this overlay is still up, then opened square
+            // and stayed square after the layout recovered: a 16:9 picture
+            // fitted into a 1920x1920 box, sitting half off the bottom.
+            //
+            // `Color.clear` takes the proposal and nothing else, the artwork
+            // fills it as an overlay, and the clip keeps the overflow out of
+            // the measurement.
             if let backdrop = backdropUrl, let url = URL(string: backdrop) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .ignoresSafeArea()
-                    default:
-                        Color.clear
+                Color.clear
+                    .overlay {
+                        AsyncImage(url: url) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fill)
+                            default:
+                                Color.clear
+                            }
+                        }
                     }
-                }
+                    .clipped()
+                    .ignoresSafeArea()
             }
 
             // 3. Cinematic Vignette Gradient Overlays (matching Android TV)
