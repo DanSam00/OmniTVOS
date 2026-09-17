@@ -172,6 +172,13 @@ struct MacHomeMenu: View {
             }
             .onChange(of: keyRouter.latest) { _, press in
                 guard let press, keyRouter.isFront(keyToken) else { return }
+                // Escape closes the menu without switching tab. It is not a
+                // direction, so it would otherwise reach the Return branch and
+                // select whatever the caret was on.
+                guard press.key != .back else {
+                    state.isFocused = false
+                    return
+                }
                 if let direction = MoveCommandDirection(press.key) {
                     _ = state.handleMove(direction)
                 } else {

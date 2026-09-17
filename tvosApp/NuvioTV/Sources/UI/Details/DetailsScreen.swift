@@ -159,6 +159,7 @@ struct DetailsScreen: View {
                     onCommentSelect: { comment in
                         expandedComment = comment
                     },
+                    onExit: handleExit,
                     onBack: handleBack,
                     isStreamsPresented: $isStreamPickerPresented,
                     onSelectStream: { stream, player in
@@ -262,24 +263,7 @@ struct DetailsScreen: View {
         // own onExitCommand and bubbles to the app shell, which backs out to
         // Home or suspends the app. Catching it here closes just the picker,
         // and otherwise behaves like the regular back action.
-        .onExitCommand {
-            if isEpisodeMenuPresented {
-                // The context menu consumed this press to close itself; it
-                // reaches here anyway. Swallow it so Details stays put.
-                isEpisodeMenuPresented = false
-            } else if expandedComment != nil {
-                expandedComment = nil
-            } else if isSmartPlaybackPending || isResolvingDebrid || isPreparingPlayback {
-                PlaybackStartupTiming.cancel()
-                isSmartPlaybackPending = false
-                isResolvingDebrid = false
-                isPreparingPlayback = false
-            } else if isStreamPickerPresented {
-                isStreamPickerPresented = false
-            } else {
-                handleBack()
-            }
-        }
+        .onExitCommand { handleExit() }
         #endif
         .onChange(of: viewModel.uiState.isLoadingStreams) { _, isLoading in
             if !isLoading {
@@ -312,6 +296,30 @@ struct DetailsScreen: View {
     /// Stop Details work before asking the parent to remove this screen.
     /// Waiting for onDisappear is too late: enrichment can still publish
     /// updates while the opacity transition is trying to tear Details down.
+    /// One step back: close whatever is on top, or leave the page.
+    ///
+    /// tvOS reaches this through `onExitCommand`; macOS routes Escape as a key
+    /// and calls it directly, since `onExitCommand` needs SwiftUI focus this
+    /// page never holds.
+    private func handleExit() {
+            if isEpisodeMenuPresented {
+                // The context menu consumed this press to close itself; it
+                // reaches here anyway. Swallow it so Details stays put.
+                isEpisodeMenuPresented = false
+            } else if expandedComment != nil {
+                expandedComment = nil
+            } else if isSmartPlaybackPending || isResolvingDebrid || isPreparingPlayback {
+                PlaybackStartupTiming.cancel()
+                isSmartPlaybackPending = false
+                isResolvingDebrid = false
+                isPreparingPlayback = false
+            } else if isStreamPickerPresented {
+                isStreamPickerPresented = false
+            } else {
+                handleBack()
+            }
+    }
+
     private func handleBack() {
         PlaybackStartupTiming.cancel()
         TVHomeDebugTrace.log("details.back.cancelTasks id=\(id)")
@@ -2389,6 +2397,10 @@ struct TvDetailsContent: View {
     var onOpenProduction: ((MetaCompany) -> Void)? = nil
     var onOpenPerson: ((TmdbPersonMetadata) -> Void)? = nil
     var onCommentSelect: ((TraktCommentReview) -> Void)? = nil
+    /// One step back, closing whatever is on top first. Distinct from
+    /// `onBack`, which always leaves the page: macOS routes Escape as a key
+    /// and needs the same layered dismissal `onExitCommand` gives tvOS.
+    var onExit: (() -> Void)? = nil
     let onBack: () -> Void
 
     @FocusState private var actionFocus: DetailsActionFocus?
@@ -3442,6 +3454,13 @@ struct TvDetailsContent: View {
     private func handleMacKey(_ key: MacKey) {
         if let list = macRailOptions {
             handleMacOptionKey(key, list: list)
+            return
+        }
+        // Escape means back, not select. It is not a direction, so without
+        // this it fell into the Return branch below and opened whatever the
+        // caret was sitting on.
+        if key == .back {
+            (onExit ?? onBack)()
             return
         }
         // The menu floats above this page, so it gets first refusal.

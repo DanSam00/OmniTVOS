@@ -3829,6 +3829,11 @@ struct TVHomeView: View {
                     // SwiftUI focus — and nothing reliably does.
                     .onChange(of: keyRouter.latest) { _, press in
                         guard let press, keyRouter.isFront(macKeyToken) else { return }
+                        // Escape is not a direction, and must not fall through
+                        // to the activate branch — that opened whatever the
+                        // caret was on. Home is the root, so there is nowhere
+                        // to go back to: swallow it.
+                        guard press.key != .back else { return }
                         if let direction = MoveCommandDirection(press.key) {
                             handleMacHomeMove(direction, scrollProxy: macScrollProxy)
                         } else {
