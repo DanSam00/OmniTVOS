@@ -221,10 +221,18 @@ struct TVCatalogRow: View {
         guard !items.isEmpty else { return [] }
         let focusIndex = effectiveScrollIndex
         #if os(macOS)
-        // A card outside this window does not exist, and focus cannot land on a
-        // view that is not there — so keep it generous enough that arrowing
-        // cannot outrun it between re-centres.
-        let backtrack = 40
+        // Wide enough that arrowing cannot outrun it between re-centres, and no
+        // wider. At 40 a row mounted up to eighty-one cards, so every row the
+        // viewport passed over cost that many card bodies — around seventy-five
+        // of them a tenth of a second after a key press, blocking the main
+        // thread in the middle of the scroll and felt as the glide stalling and
+        // then completing.
+        //
+        // The 40 was reasoned from the focus engine: an unmounted card cannot
+        // take focus. That does not hold here — the caret is a plain value the
+        // card compares against, and the window recentres on it every render —
+        // so it only has to cover what is on screen plus a margin.
+        let backtrack = 10
         #else
         let backtrack = 4
         #endif
@@ -248,6 +256,22 @@ struct TVCatalogRow: View {
         let imageHeight: CGFloat = homeLayout == "Compact" ? 255 : 315
         return imageHeight + (posterLabels ? 48 : 0) + TVHomeLayout.stripVerticalPadding * 2
     }
+
+    /// The row's own height, declared rather than measured.
+    ///
+    /// Home's rows live in a `LazyVStack`, which has to mount a row to learn
+    /// how tall it is. Moving down therefore scrolled against an estimate,
+    /// mounted the rows it passed — around seventy-five cards, a tenth of a
+    /// second after the key press — and then corrected the offset once their
+    /// real heights were known. That correction is the stutter: the viewport
+    /// stops, then continues to the right place. Moving up never did it,
+    /// because those rows were still mounted from a moment earlier.
+    ///
+    /// `stripHeight` was already exact; only the title above it was unknown,
+    /// so it gets a declared height too and the sum becomes the row's.
+    private var headerHeight: CGFloat { 44 }
+
+    private var rowHeight: CGFloat { headerHeight + 10 + stripHeight }
 
     private func isWatched(_ item: NuvioMeta) -> Bool? {
         let normalizedType = item.type.lowercased()
@@ -303,13 +327,25 @@ struct TVCatalogRow: View {
             }
             .padding(.leading, TVLayout.rowLeading)
             .offset(y: 8)
+            #if os(macOS)
+            .frame(height: headerHeight, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
+            #else
+            .frame(maxWidth: .infinity, alignment: .leading)
+            #endif
             .zIndex(1)
 
             cardStrip
                 .zIndex(0)
         }
+        #if os(macOS)
+        // See `rowHeight`: a declared height is what lets the lazy stack place
+        // this row without mounting it first.
+        .frame(height: rowHeight, alignment: .topLeading)
         .frame(maxWidth: .infinity, alignment: .leading)
+        #else
+        .frame(maxWidth: .infinity, alignment: .leading)
+        #endif
         #if !os(macOS)
         // On macOS a focus section swallows the arrow keys trying to move focus
         // within it, and Home never sees the command. Focus is driven here, so
@@ -993,10 +1029,18 @@ struct TVCollectionFolderRow: View {
 
         let focusIndex = effectiveScrollIndex
         #if os(macOS)
-        // A card outside this window does not exist, and focus cannot land on a
-        // view that is not there — so keep it generous enough that arrowing
-        // cannot outrun it between re-centres.
-        let backtrack = 40
+        // Wide enough that arrowing cannot outrun it between re-centres, and no
+        // wider. At 40 a row mounted up to eighty-one cards, so every row the
+        // viewport passed over cost that many card bodies — around seventy-five
+        // of them a tenth of a second after a key press, blocking the main
+        // thread in the middle of the scroll and felt as the glide stalling and
+        // then completing.
+        //
+        // The 40 was reasoned from the focus engine: an unmounted card cannot
+        // take focus. That does not hold here — the caret is a plain value the
+        // card compares against, and the window recentres on it every render —
+        // so it only has to cover what is on screen plus a margin.
+        let backtrack = 10
         #else
         let backtrack = 4
         #endif

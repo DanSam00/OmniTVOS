@@ -33,6 +33,16 @@ enum MacHomeFocus {
         return section.items.map { "\(section.id)\u{1}\($0.id)" }
     }
 
+    /// Whether a row has anything to focus, without building its card keys.
+    ///
+    /// `cardKeys(for:)` interpolates a string per item, so asking it merely
+    /// whether a row is empty costs the whole row.
+    static func isNavigable(_ section: TVHomeSection) -> Bool {
+        if section.id == featureSectionId { return true }
+        if !section.collectionFolders.isEmpty { return true }
+        return !section.items.isEmpty
+    }
+
     /// The first card on Home, used to give focus somewhere to start from.
     static func firstCardKey(sections: [TVHomeSection]) -> String? {
         for section in sections {
@@ -59,22 +69,26 @@ enum MacHomeFocus {
         sections: [TVHomeSection],
         lastCardBySection: [String: String] = [:]
     ) -> String? {
-        let rows = sections.map { cardKeys(for: $0) }.filter { !$0.isEmpty }
+        // Only the rows this press actually touches are expanded. Building
+        // every row's keys up front meant a string interpolation per item on
+        // Home — tens of thousands of them on a long catalog list, on every
+        // single arrow press, before any work towards the answer began.
+        let rows = sections.filter(isNavigable)
         guard !rows.isEmpty else { return nil }
 
         guard let current,
-              let rowIndex = rows.firstIndex(where: { $0.contains(current) }),
-              let columnIndex = rows[rowIndex].firstIndex(of: current) else {
+              let sectionID = sectionId(of: current),
+              let rowIndex = rows.firstIndex(where: { $0.id == sectionID }) else {
             // Nothing focused yet: start at the first card.
-            return rows.first?.first
+            return rows.first.flatMap { cardKeys(for: $0).first }
         }
 
         switch direction {
-        case .left:
-            return columnIndex > 0 ? rows[rowIndex][columnIndex - 1] : nil
-        case .right:
-            let next = columnIndex + 1
-            return next < rows[rowIndex].count ? rows[rowIndex][next] : nil
+        case .left, .right:
+            let keys = cardKeys(for: rows[rowIndex])
+            guard let columnIndex = keys.firstIndex(of: current) else { return nil }
+            let next = direction == .left ? columnIndex - 1 : columnIndex + 1
+            return keys.indices.contains(next) ? keys[next] : nil
         case .up:
             guard rowIndex > 0 else { return nil }
             return entry(into: rows[rowIndex - 1], remembering: lastCardBySection)
@@ -96,15 +110,17 @@ enum MacHomeFocus {
     /// independent lists rather than columns of a table, so a shared column
     /// index carries no meaning between them.
     private static func entry(
-        into row: [String],
+        into section: TVHomeSection,
         remembering lastCardBySection: [String: String]
     ) -> String? {
-        guard let first = row.first else { return nil }
-        guard let section = sectionId(of: first),
-              let remembered = lastCardBySection[section],
-              row.contains(remembered)
-        else { return first }
-        return remembered
+        // The remembered key is checked against the section id before the row
+        // is expanded, so the common case costs nothing.
+        if let remembered = lastCardBySection[section.id] {
+            let keys = cardKeys(for: section)
+            if keys.contains(remembered) { return remembered }
+            return keys.first
+        }
+        return cardKeys(for: section).first
     }
 }
 #endif

@@ -3571,6 +3571,10 @@ struct TVHomeView: View {
                                                         // Continue Watching. Rows below still get the pin, which
                                                         // is where the sliver actually appears.
                                                         let pinWouldHideHero = index == 0 && featureHeroActive
+                                                        // macOS places the viewport once, from the key
+                                                        // handler. This corrects for the focus engine
+                                                        // reporting mid-layout, which is a tvOS problem.
+                                                        #if !os(macOS)
                                                         if focusWork.correctivelyPinnedCardKey != cardKey, !pinWouldHideHero {
                                                             focusWork.correctivelyPinnedCardKey = cardKey
                                                             TVHomeDebugTrace.log(
@@ -3582,19 +3586,27 @@ struct TVHomeView: View {
                                                                 verticalScrollProxy.scrollTo(section.id, anchor: .top)
                                                             }
                                                         }
+                                                        #endif
                                                         return
                                                     }
                                                     if changedRow {
                                                         focusedRowIndex = index
+                                                        // tvOS only: on macOS the key handler has already placed the viewport,
+                                                        // and a second animated scroll to the same row fights it.
+                                                        #if !os(macOS)
                                                         withAnimation(TVHomeLayout.verticalScrollAnimation) {
                                                             verticalScrollProxy.scrollTo(section.id, anchor: .top)
                                                         }
+                                                        #endif
                                                     } else {
+                                                        // macOS keeps its viewport from the key handler.
+                                                        #if !os(macOS)
                                                         var transaction = Transaction()
                                                         transaction.animation = nil
                                                         withTransaction(transaction) {
                                                             verticalScrollProxy.scrollTo(section.id, anchor: .top)
                                                         }
+                                                        #endif
                                                     }
                                                     focusWork.lastProcessedFocusCardKey = cardKey
                                                     focusedCardID = cardKey
@@ -3674,6 +3686,10 @@ struct TVHomeView: View {
                                                         // Continue Watching. Rows below still get the pin, which
                                                         // is where the sliver actually appears.
                                                         let pinWouldHideHero = index == 0 && featureHeroActive
+                                                        // macOS places the viewport once, from the key
+                                                        // handler. This corrects for the focus engine
+                                                        // reporting mid-layout, which is a tvOS problem.
+                                                        #if !os(macOS)
                                                         if focusWork.correctivelyPinnedCardKey != cardKey, !pinWouldHideHero {
                                                             focusWork.correctivelyPinnedCardKey = cardKey
                                                             TVHomeDebugTrace.log(
@@ -3685,6 +3701,7 @@ struct TVHomeView: View {
                                                                 verticalScrollProxy.scrollTo(section.id, anchor: .top)
                                                             }
                                                         }
+                                                        #endif
                                                         return
                                                     }
                                                     if changedRow {
@@ -3698,16 +3715,27 @@ struct TVHomeView: View {
                                                         TVHomeDebugTrace.log(
                                                             "home.scrollTo section=\(section.id) anchor=top"
                                                         )
+                                                        // Only tvOS scrolls from here. On macOS the key handler has already
+                                                        // placed the viewport, and this second, animated scroll to the same
+                                                        // row ran against it — an instant jump followed by a 0.22s slide,
+                                                        // which is the judder felt when changing rows. Worst going down,
+                                                        // where the two disagree by most.
+                                                        #if !os(macOS)
                                                         withAnimation(TVHomeLayout.verticalScrollAnimation) {
                                                             verticalScrollProxy.scrollTo(section.id, anchor: .top)
                                                         }
+                                                        #endif
                                                     } else {
+                                                        // macOS keeps its viewport from the key handler; this re-pin on every
+                                                        // card along a row is the focus engine's need, not ours.
+                                                        #if !os(macOS)
                                                         // Keeps the row pinned while moving along it.
                                                         var transaction = Transaction()
                                                         transaction.animation = nil
                                                         withTransaction(transaction) {
                                                             verticalScrollProxy.scrollTo(section.id, anchor: .top)
                                                         }
+                                                        #endif
                                                     }
                                                     focusWork.lastProcessedFocusCardKey = cardKey
                                                     focusedCardID = cardKey
@@ -5376,7 +5404,11 @@ struct TVHomeView: View {
         if let toSection,
            toSection != MacHomeFocus.featureSectionId,
            toSection != MacHomeFocus.sectionId(of: current) {
-            scrollProxy?.scrollTo(toSection, anchor: .top)
+            // The one scroll a row change gets, so it reads as a single glide
+            // rather than a jump corrected by a slide.
+            withAnimation(TVHomeLayout.verticalScrollAnimation) {
+                scrollProxy?.scrollTo(toSection, anchor: .top)
+            }
         }
     }
 
