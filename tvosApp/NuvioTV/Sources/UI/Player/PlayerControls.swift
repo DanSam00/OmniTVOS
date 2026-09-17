@@ -989,6 +989,10 @@ struct PlayerSettingsPanel: View {
                 macFocus = .tab(tabs[index])
             case .up:
                 break
+            case .back:
+                // The player's own key catcher owns Escape — it closes the
+                // panel rather than moving the caret inside it.
+                break
             }
             return
         }
@@ -999,6 +1003,9 @@ struct PlayerSettingsPanel: View {
         }
 
         switch key {
+        case .back:
+            // Handled by the player's key catcher, which closes the panel.
+            break
         case .up:
             if position.row > 0 {
                 macFocus = columns[position.column][position.row - 1]

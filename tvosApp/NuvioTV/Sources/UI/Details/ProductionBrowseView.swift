@@ -1,6 +1,16 @@
 import SwiftUI
 
 /// Full catalog of titles from a production company or network.
+#if os(macOS)
+/// Band ids for the company and person browse screens. A company page is one
+/// band per rail; a person page is a single grid band.
+enum BrowseFocusBand {
+    static let grid = "browse.grid"
+
+    static func rail(_ id: String) -> String { "browse.rail.\(id)" }
+}
+#endif
+
 struct ProductionBrowseView: View {
     let company: MetaCompany
     let onSelect: (RelatedTitle) -> Void
@@ -25,7 +35,8 @@ struct ProductionBrowseView: View {
                 fallbackTitles: titles,
                 isLoading: isLoading,
                 errorMessage: errorMessage,
-                onSelect: onSelect
+                onSelect: onSelect,
+                onBack: onBack
             )
 
         }
@@ -82,9 +93,19 @@ private struct CompanyBrowseContent: View {
     let isLoading: Bool
     let errorMessage: String?
     let onSelect: (RelatedTitle) -> Void
+    /// Escape is routed to this screen rather than reaching `onExitCommand`,
+    /// which needs SwiftUI focus the caret-driven page never holds.
+    let onBack: () -> Void
 
     @FocusState private var placeholderFocused: Bool
     @State private var scrollOffset: CGFloat = 0
+    #if os(macOS)
+    /// macOS has no focus engine, so this page carries its own caret — without
+    /// one nothing on it was reachable from the keyboard.
+    @StateObject private var macFocus = MacScreenFocus("companyBrowse")
+    @ObservedObject private var macKeyRouter = MacKeyRouter.shared
+    @State private var macScrollProxy: ScrollViewProxy?
+    #endif
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
 
@@ -125,6 +146,7 @@ private struct CompanyBrowseContent: View {
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
 
+            ScrollViewReader { macScroll in
             ScrollView {
                 VStack(alignment: .leading, spacing: 34) {
                     GeometryReader { geometry in
@@ -153,7 +175,21 @@ private struct CompanyBrowseContent: View {
                             .frame(maxWidth: .infinity, minHeight: 260)
                     } else {
                         ForEach(rails) { rail in
-                            NetworkBrowseRail(rail: rail, onSelect: onSelect)
+                            // The anchor is a marker above the rail rather
+                            // than the rail itself: a rail wraps its own
+                            // horizontal ScrollView, and `scrollTo` aimed at
+                            // that container was accepted and then ignored —
+                            // the proxy was live and the call was made, the
+                            // viewport just never moved. The person grid,
+                            // whose ids sit on plain cards, always worked.
+                            Color.clear
+                                .frame(height: 0)
+                                .id("browse.rail.\(rail.id)")
+                            NetworkBrowseRail(
+                                rail: rail,
+                                macFocusedID: macCaretItemID,
+                                onSelect: onSelect
+                            )
                         }
                     }
                 }
@@ -162,6 +198,10 @@ private struct CompanyBrowseContent: View {
             .focusSection()
             .coordinateSpace(name: "company-browse-scroll")
             .modifier(CompanyBrowseScrollTracker(offset: $scrollOffset))
+            #if os(macOS)
+            .onAppear { macScrollProxy = macScroll }
+            #endif
+            }
 
             CompanyBrowseScrollTransitionShadow(progress: scrollShadowProgress)
 
@@ -170,7 +210,74 @@ private struct CompanyBrowseContent: View {
             }
         }
         .ignoresSafeArea(edges: .top)
+        #if os(macOS)
+        .onAppear {
+            macFocus.update(macBands)
+            macFocus.syncClaim(isCurrent: true)
+        }
+        .onDisappear { macFocus.release() }
+        .onChange(of: macBandSignature, initial: true) { _, _ in
+            macFocus.update(macBands)
+        }
+        .onChange(of: macKeyRouter.latest) { _, press in
+            guard let press else { return }
+            // `onExitCommand` needs SwiftUI focus, which a screen driving its
+            // own caret never has, so Escape arrives here instead.
+            guard press.key != .back else { onBack(); return }
+            let previousBand = macFocus.bandID
+            macFocus.handle(press.key, activate: macActivate)
+            macScrollCaretIntoView(previousBand: previousBand)
+        }
+        #endif
     }
+
+    /// The caret's card key, as a plain value so the cards redraw as it passes.
+    /// Nil on tvOS, where the focus engine owns the highlight.
+    private var macCaretItemID: String? {
+        #if os(macOS)
+        return macFocus.itemID
+        #else
+        return nil
+        #endif
+    }
+
+    #if os(macOS)
+    /// One band per rail, each as wide as its own row.
+    private var macBands: [MacFocusBand] {
+        rails.compactMap { rail in
+            guard !rail.items.isEmpty else { return nil }
+            return MacFocusBand(
+                id: BrowseFocusBand.rail(rail.id),
+                items: rail.items.map { "\(rail.id)\u{1}\($0.id)" }
+            )
+        }
+    }
+
+    private var macBandSignature: String {
+        rails.map { "\($0.id):\($0.items.count)" }.joined(separator: ",")
+    }
+
+    private func macActivate(band: String, item: String) {
+        guard let separator = item.firstIndex(of: "\u{1}") else { return }
+        let railId = String(item[item.startIndex..<separator])
+        let titleId = String(item[item.index(after: separator)...])
+        guard let rail = rails.first(where: { $0.id == railId }),
+              let match = rail.items.first(where: { $0.id == titleId })
+        else { return }
+        onSelect(match)
+    }
+
+    /// Brings the caret's rail into view. Within a rail the strip scrolls
+    /// itself, so only a change of rail moves the page.
+    private func macScrollCaretIntoView(previousBand: String?) {
+        guard let band = macFocus.bandID, band != previousBand,
+              band.hasPrefix("browse.rail."),
+              let proxy = macScrollProxy else { return }
+        withAnimation(.easeOut(duration: 0.2)) {
+            proxy.scrollTo(band, anchor: .top)
+        }
+    }
+    #endif
 
     private var backdrop: some View {
         let backdropColor = Color.nuvioBackground(amoled: amoled, body: bodyColor)
@@ -332,7 +439,15 @@ private struct CompanyBrowseScrollTransitionShadow: View {
 
 private struct NetworkBrowseRail: View {
     let rail: TmdbNetworkBrowseRail
+    /// The page's caret, as a plain value: a `.focused` binding is not a render
+    /// dependency, so the cards would never redraw as it moved.
+    var macFocusedID: String? = nil
     let onSelect: (RelatedTitle) -> Void
+
+    /// Unique per card: the same title can appear in more than one rail.
+    private func cardKey(_ title: RelatedTitle) -> String {
+        "\(rail.id)\u{1}\(title.id)"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -341,18 +456,36 @@ private struct NetworkBrowseRail: View {
                 .foregroundColor(.white.opacity(0.92))
                 .padding(.horizontal, 80)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .top, spacing: TmdbBrowseGridMetrics.posterGap) {
-                    ForEach(rail.items) { title in
-                        ProductionBrowseCard(title: title) {
-                            onSelect(title)
+            ScrollViewReader { strip in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .top, spacing: TmdbBrowseGridMetrics.posterGap) {
+                        ForEach(rail.items) { title in
+                            ProductionBrowseCard(
+                                title: title,
+                                macIsFocused: macFocusedID == cardKey(title)
+                            ) {
+                                onSelect(title)
+                            }
+                            .id(cardKey(title))
                         }
                     }
+                    .padding(.horizontal, 80)
+                    .padding(.vertical, 12)
                 }
-                .padding(.horizontal, 80)
-                .padding(.vertical, 12)
+                .scrollClipDisabledIfAvailable()
+                #if os(macOS)
+                // The caret walks the strip as a plain value, so the strip has
+                // to be told to follow it. tvOS gets this from the focus
+                // engine; here the highlight simply moved off-screen and the
+                // rest of the row stayed unreachable.
+                .onChange(of: macFocusedID) { _, id in
+                    guard let id, id.hasPrefix("\(rail.id)\u{1}") else { return }
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        strip.scrollTo(id, anchor: .center)
+                    }
+                }
+                #endif
             }
-            .scrollClipDisabledIfAvailable()
         }
     }
 }
@@ -367,6 +500,12 @@ struct PersonBrowseView: View {
     @State private var isLoading = true
     @FocusState private var focusedId: String?
     @FocusState private var placeholderFocused: Bool
+    #if os(macOS)
+    /// macOS has no focus engine, so the grid keeps its own caret.
+    @StateObject private var macFocus = MacScreenFocus("personBrowse")
+    @ObservedObject private var macKeyRouter = MacKeyRouter.shared
+    @State private var macScrollProxy: ScrollViewProxy?
+    #endif
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
 
@@ -428,14 +567,19 @@ struct PersonBrowseView: View {
                         .frame(maxWidth: .infinity)
                     Spacer()
                 } else {
+                    ScrollViewReader { macScroll in
                     ScrollView {
                         LazyVGrid(columns: columns, alignment: .leading, spacing: TmdbBrowseGridMetrics.posterGap) {
                             ForEach(titles) { title in
-                                ProductionBrowseCard(title: title) {
+                                ProductionBrowseCard(
+                                    title: title,
+                                    macIsFocused: macCaretIsOn(title.id)
+                                ) {
                                     onSelect(title)
                                 }
                                 .nuvioFocusable()
                                 .focused($focusedId, equals: title.id)
+                                .id(title.id)
                             }
                         }
                         .padding(.top, 16)
@@ -444,6 +588,10 @@ struct PersonBrowseView: View {
                     }
                     .focusSection()
                     .defaultFocusIfAvailable($focusedId, titles.first?.id)
+                    #if os(macOS)
+                    .onAppear { macScrollProxy = macScroll }
+                    #endif
+                    }
                 }
             }
             .padding(.top, 48)
@@ -459,7 +607,63 @@ struct PersonBrowseView: View {
             isLoading = false
             focusedId = titles.first?.id
         }
+        #if os(macOS)
+        .onAppear {
+            macFocus.update(macBands)
+            macFocus.syncClaim(isCurrent: true)
+        }
+        .onDisappear { macFocus.release() }
+        .onChange(of: titles.map(\.id), initial: true) { _, _ in
+            macFocus.update(macBands)
+        }
+        .onChange(of: macKeyRouter.latest) { _, press in
+            guard let press else { return }
+            guard press.key != .back else { onBack(); return }
+            let previous = macFocus.itemID
+            macFocus.handle(press.key, activate: macActivate)
+            guard let id = macFocus.itemID, id != previous else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                macScrollProxy?.scrollTo(id, anchor: .center)
+            }
+        }
+        #endif
     }
+
+    private func macCaretIsOn(_ id: String) -> Bool {
+        #if os(macOS)
+        return macFocus.isFocused(BrowseFocusBand.grid, id)
+        #else
+        return false
+        #endif
+    }
+
+    #if os(macOS)
+    /// One grid band, which knows its own column count so Up and Down move a
+    /// whole row rather than one card.
+    private var macBands: [MacFocusBand] {
+        guard !titles.isEmpty else { return [] }
+        return [MacFocusBand(
+            id: BrowseFocusBand.grid,
+            items: titles.map(\.id),
+            columns: macGridColumns
+        )]
+    }
+
+    /// The grid is `.adaptive`, so `columns` is one entry however many cards a
+    /// row actually holds — the count has to come from the canvas width.
+    private var macGridColumns: Int {
+        // `MacTVCanvas` is generic over its content, so the static needs a
+        // concrete parameter to name the canvas the app actually renders on.
+        let available = MacTVCanvas<EmptyView>.canvasSize.width - 120
+        let step = TmdbBrowseGridMetrics.posterWidth + TmdbBrowseGridMetrics.posterGap
+        return max(Int((available + TmdbBrowseGridMetrics.posterGap) / step), 1)
+    }
+
+    private func macActivate(band: String, item: String) {
+        guard let match = titles.first(where: { $0.id == item }) else { return }
+        onSelect(match)
+    }
+    #endif
 
     private var personFallback: some View {
         Text(person.name.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined())
@@ -499,9 +703,20 @@ private enum TmdbBrowseGridMetrics {
 private struct ProductionBrowseCard: View {
     let title: RelatedTitle
     let alwaysShowLabels: Bool
+    /// Driven by `MacScreenFocus`; macOS has no focus engine to set `focused`.
+    let macIsFocused: Bool
     let onSelect: () -> Void
 
-    @FocusState private var isFocused: Bool
+    @FocusState private var focused: Bool
+
+    /// tvOS reads the focus engine; macOS has none, so the caret decides.
+    private var isFocused: Bool {
+        #if os(macOS)
+        return macIsFocused
+        #else
+        return focused
+        #endif
+    }
     @AppStorage(SettingsKey.posterLabels) private var posterLabels = false
     @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
     @AppStorage(SettingsKey.focusHighlighter) private var focusHighlighter = false
@@ -519,10 +734,12 @@ private struct ProductionBrowseCard: View {
     init(
         title: RelatedTitle,
         alwaysShowLabels: Bool = false,
+        macIsFocused: Bool = false,
         onSelect: @escaping () -> Void
     ) {
         self.title = title
         self.alwaysShowLabels = alwaysShowLabels
+        self.macIsFocused = macIsFocused
         self.onSelect = onSelect
     }
 
@@ -585,7 +802,7 @@ private struct ProductionBrowseCard: View {
         }
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
-        .focused($isFocused)
+        .focused($focused)
         .focusEffectDisabledIfAvailable()
         .titleActionsContextMenu(
             meta: title.asMeta,

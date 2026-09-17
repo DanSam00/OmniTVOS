@@ -2629,6 +2629,7 @@ struct TvDetailsContent: View {
                                         title: L10n.string("details_network", fallback: "Network"),
                                         companies: networks,
                                         entryLocked: focusedDetailsSection != .network,
+                                        macRow: .network,
                                         onSelect: { company in
                                             onOpenProduction?(company)
                                         },
@@ -2653,6 +2654,7 @@ struct TvDetailsContent: View {
                                         title: L10n.string("details_production", fallback: "Production"),
                                         companies: productionCompanies,
                                         entryLocked: focusedDetailsSection != .production,
+                                        macRow: .production,
                                         onSelect: { company in
                                             onOpenProduction?(company)
                                         },
@@ -2820,6 +2822,24 @@ struct TvDetailsContent: View {
                     guard uiState.moreLikeThis.indices.contains(index) else { return }
                     let item = uiState.moreLikeThis[index]
                     onOpenTitle?(item.id, item.type)
+                }
+            }
+            // Cast and the company rows sit below More Like This and were
+            // absent from the keyboard model entirely, so Down stopped at the
+            // related row and the bottom of the page was unreachable.
+            .onChange(of: uiState.companies.count, initial: true) { _, _ in
+                macFocus.begin(page: uiState.meta?.id ?? "")
+                let networks = uiState.companies.filter { $0.kind == .network }
+                let production = uiState.companies.filter { $0.kind == .production }
+                macFocus.setCount(networks.count, for: .network)
+                macFocus.setCount(production.count, for: .production)
+                macFocus.register(.network) { index in
+                    guard networks.indices.contains(index) else { return }
+                    onOpenProduction?(networks[index])
+                }
+                macFocus.register(.production) { index in
+                    guard production.indices.contains(index) else { return }
+                    onOpenProduction?(production[index])
                 }
             }
             #endif
@@ -3445,7 +3465,8 @@ struct TvDetailsContent: View {
             macRailOptionIndex = max(macRailOptionIndex - 1, 0)
         case .down:
             macRailOptionIndex = min(macRailOptionIndex + 1, list.options.count - 1)
-        case .left:
+        case .left, .back:
+            // Escape and Left both back out of the picker without choosing.
             macRailOptions = nil
         case .right:
             break
@@ -3460,7 +3481,10 @@ struct TvDetailsContent: View {
     private func macScrollAnchor(for row: MacDetailsRow) -> String? {
         switch row {
         case .actions: return TvDetailsScrollID.topSection
+        case .cast: return TvDetailsScrollID.castSection
         case .related: return TvDetailsScrollID.moreLikeThisSection
+        case .network: return TvDetailsScrollID.networkSection
+        case .production: return TvDetailsScrollID.productionSection
         // The rail scrolls itself; the left column stays where it is.
         case .railHeader, .railList: return nil
         }
@@ -4173,6 +4197,17 @@ private struct TvDetailsCastAndTrailer: View {
     let onFocus: () -> Void
 
     @State private var focusedPersonIndex = 0
+    #if os(macOS)
+    @ObservedObject private var macFocus = MacDetailsFocus.shared
+    #endif
+
+    private func macIsFocused(_ index: Int) -> Bool {
+        #if os(macOS)
+        return macFocus.isFocused(.cast, index)
+        #else
+        return false
+        #endif
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 28) {
@@ -4205,6 +4240,7 @@ private struct TvDetailsCastAndTrailer: View {
                     ForEach(Array(displayPeople.enumerated()), id: \.element.id) { index, person in
                         TvDetailsPersonCard(
                             person: person,
+                            macIsFocused: macIsFocused(index),
                             onSelect: { onPersonClick(person) },
                             onFocus: {
                                 focusedPersonIndex = index
@@ -4218,7 +4254,25 @@ private struct TvDetailsCastAndTrailer: View {
             }
             .scrollClipDisabledIfAvailable()
         }
+        #if os(macOS)
+        .onChange(of: displayPeople.count, initial: true) { _, _ in
+            publishMacRow()
+        }
+        #endif
     }
+
+    /// The row caps the cast at eight and falls back to `meta.cast` when TMDB
+    /// gave nothing, so only it knows how many cards are actually drawn — the
+    /// page above would have published the wrong number either way.
+    #if os(macOS)
+    private func publishMacRow() {
+        macFocus.setCount(displayPeople.count, for: .cast)
+        macFocus.register(.cast) { index in
+            guard displayPeople.indices.contains(index) else { return }
+            onPersonClick(displayPeople[index])
+        }
+    }
+    #endif
 
     private var displayPeople: [TmdbPersonMetadata] {
         if !people.isEmpty {
@@ -4349,10 +4403,25 @@ private struct TvDetailsProductionRow: View {
     let title: String
     let companies: [MetaCompany]
     let entryLocked: Bool
+    /// Which row of the macOS keyboard model this strip is. Network and
+    /// Production are the same view twice, so it cannot infer its own place.
+    var macRow: MacDetailsRow? = nil
     let onSelect: (MetaCompany) -> Void
     let onFocus: () -> Void
 
     @State private var focusedCompanyIndex = 0
+    #if os(macOS)
+    @ObservedObject private var macFocus = MacDetailsFocus.shared
+    #endif
+
+    private func macIsFocused(_ index: Int) -> Bool {
+        #if os(macOS)
+        guard let macRow else { return false }
+        return macFocus.isFocused(macRow, index)
+        #else
+        return false
+        #endif
+    }
 
     private var entryCompanyIndex: Int {
         if companies.indices.contains(focusedCompanyIndex),
@@ -4373,6 +4442,7 @@ private struct TvDetailsProductionRow: View {
                     ForEach(Array(companies.enumerated()), id: \.element.id) { index, company in
                         TvDetailsCompanyCard(
                             company: company,
+                            macIsFocused: macIsFocused(index),
                             onSelect: { onSelect(company) },
                             onFocus: {
                                 focusedCompanyIndex = index
@@ -4392,10 +4462,21 @@ private struct TvDetailsProductionRow: View {
 
 private struct TvDetailsCompanyCard: View {
     let company: MetaCompany
+    /// Driven by `MacDetailsFocus`; macOS has no focus engine to set `focused`.
+    var macIsFocused = false
     let onSelect: () -> Void
     let onFocus: () -> Void
 
-    @FocusState private var isFocused: Bool
+    @FocusState private var focused: Bool
+
+    /// tvOS reads the focus engine; macOS has none, so the caret decides.
+    private var isFocused: Bool {
+        #if os(macOS)
+        return macIsFocused
+        #else
+        return focused
+        #endif
+    }
     @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
     @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
 
@@ -4464,11 +4545,11 @@ private struct TvDetailsCompanyCard: View {
         }
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
-        .focused($isFocused)
+        .focused($focused)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(isFocused ? 1.05 : 1)
         .animation(.easeOut(duration: 0.14), value: isFocused)
-        .onChange(of: isFocused) { _, focused in
+        .onChange(of: focused) { _, focused in
             if focused { onFocus() }
         }
         .disabled(company.tmdbId == nil)
@@ -4695,10 +4776,21 @@ actor PersonProfileImageCache {
 
 private struct TvDetailsPersonCard: View {
     let person: TmdbPersonMetadata
+    /// Driven by `MacDetailsFocus`; macOS has no focus engine to set `focused`.
+    var macIsFocused = false
     let onSelect: () -> Void
     let onFocus: () -> Void
 
-    @FocusState private var isFocused: Bool
+    @FocusState private var focused: Bool
+
+    /// tvOS reads the focus engine; macOS has none, so the caret decides.
+    private var isFocused: Bool {
+        #if os(macOS)
+        return macIsFocused
+        #else
+        return focused
+        #endif
+    }
     @State private var profileImage: UIImage?
 
     var body: some View {
@@ -4744,11 +4836,11 @@ private struct TvDetailsPersonCard: View {
         }
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
-        .focused($isFocused)
+        .focused($focused)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(isFocused ? 1.08 : 1)
         .animation(.easeOut(duration: 0.14), value: isFocused)
-        .onChange(of: isFocused) { _, focused in
+        .onChange(of: focused) { _, focused in
             if focused {
                 onFocus()
             }
@@ -6808,9 +6900,14 @@ struct ErrorView: View {
 /// The macOS page is two columns: the title's own content on the left, and a
 /// rail on the right holding either the episode list or the streams for what
 /// was just selected.
+/// The rows of a details page, in the order they appear down the screen —
+/// `allCases` order is what Up and Down walk, so it has to match the layout.
 enum MacDetailsRow: Int, Hashable, CaseIterable {
     case actions
+    case cast
     case related
+    case network
+    case production
     /// Season controls, or the stream filters.
     case railHeader
     /// Episodes, or streams.
@@ -6841,6 +6938,9 @@ final class MacDetailsFocus: ObservableObject {
     @Published private(set) var counts: [MacDetailsRow: Int] = [:]
 
     private var activations: [MacDetailsRow: (Int) -> Void] = [:]
+    /// Where each row was last left, so moving back into one resumes it rather
+    /// than restarting at its first card. Cleared with the page.
+    private var lastIndexByRow: [MacDetailsRow: Int] = [:]
     /// Id of the page these counts describe.
     private var page: String?
 
@@ -6859,6 +6959,7 @@ final class MacDetailsFocus: ObservableObject {
         index = 0
         counts = [:]
         activations = [:]
+        lastIndexByRow = [:]
     }
 
     func setCount(_ count: Int, for row: MacDetailsRow) {
@@ -6930,20 +7031,26 @@ final class MacDetailsFocus: ObservableObject {
             if row.isVertical, index > 0 {
                 index -= 1
             } else if rowIndex > 0 {
-                row = column[rowIndex - 1]
-                index = 0
+                enter(column[rowIndex - 1])
             }
         case .down:
             if row.isVertical, index + 1 < count {
                 index += 1
             } else if rowIndex + 1 < column.count {
-                row = column[rowIndex + 1]
-                index = 0
+                enter(column[rowIndex + 1])
             }
         @unknown default:
             break
         }
+        lastIndexByRow[row] = index
         return true
+    }
+
+    /// Enters a row where it was last left, or at its start.
+    private func enter(_ target: MacDetailsRow) {
+        row = target
+        let remembered = lastIndexByRow[target] ?? 0
+        index = min(remembered, max(count(for: target) - 1, 0))
     }
 
     private func focusMainColumn(in rows: [MacDetailsRow]) {

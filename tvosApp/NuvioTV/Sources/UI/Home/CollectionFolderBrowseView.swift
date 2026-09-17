@@ -37,22 +37,20 @@ enum CollectionFolderFocusBand {
 }
 #endif
 
-/// Drags the viewport along with the caret.
+/// Hands the screen its scroll proxy.
 ///
-/// The highlight is a plain value, so on macOS it lands on rows and cards
-/// below the fold that the scroll view never follows by itself. On tvOS the
-/// focus engine already does this and the target stays nil.
-private struct MacCaretScroll: ViewModifier {
-    let target: String?
+/// The caret is a plain value, so the viewport does not follow it by itself —
+/// and watching the caret from here with `onChange` did not move it either.
+/// Home solves the same problem by keeping the proxy and scrolling from inside
+/// its key handler, at the moment the press is handled; this captures the
+/// proxy so the browser can do the same. On tvOS the focus engine scrolls and
+/// none of this is built.
+private struct MacScrollProxyCapture: ViewModifier {
     let proxy: ScrollViewProxy
+    @Binding var stored: ScrollViewProxy?
 
     func body(content: Content) -> some View {
-        content.onChange(of: target) { _, id in
-            guard let id else { return }
-            withAnimation(.easeOut(duration: 0.2)) {
-                proxy.scrollTo(id, anchor: .center)
-            }
-        }
+        content.onAppear { stored = proxy }
     }
 }
 
@@ -84,6 +82,10 @@ struct CollectionFolderBrowseView: View {
     /// one nothing here was reachable from the keyboard at all.
     @StateObject private var macFocus = MacScreenFocus("collections")
     @ObservedObject private var macKeyRouter = MacKeyRouter.shared
+    /// Captured from whichever scroll view this folder is showing, so a move
+    /// can bring an off-screen row in rather than leaving the caret on a strip
+    /// the viewer cannot see.
+    @State private var macScrollProxy: ScrollViewProxy?
     #endif
     @Environment(\.isEnabled) private var isEnabled
     @AppStorage(SettingsKey.amoled) private var amoled = false
@@ -192,7 +194,13 @@ struct CollectionFolderBrowseView: View {
         }
         .onChange(of: macKeyRouter.latest) { _, press in
             guard let press else { return }
+            // `onExitCommand` needs SwiftUI focus, which a screen driving its
+            // own caret never has, so Escape arrives here instead.
+            guard press.key != .back else { onBack(); return }
+            let previousBand = macFocus.bandID
+            let previousItem = macFocus.itemID
             macFocus.handle(press.key, activate: macActivate)
+            macScrollCaretIntoView(previousBand: previousBand, previousItem: previousItem)
         }
         #endif
         .task {
@@ -298,6 +306,13 @@ struct CollectionFolderBrowseView: View {
                             .frame(maxWidth: .infinity, minHeight: 260)
                     } else {
                         ForEach(catalogRows) { row in
+                            // The anchor is a marker above the strip, not
+                            // the strip itself: a row is a container with its
+                            // own horizontal scrolling, and `scrollTo` aimed at
+                            // one was accepted and then ignored.
+                            Color.clear
+                                .frame(height: 0)
+                                .id("collection.row.\(row.id)")
                             CollectionFolderHomeStyleRow(
                                 id: row.id,
                                 title: row.title,
@@ -315,7 +330,6 @@ struct CollectionFolderBrowseView: View {
                                 onLongPress: onLongPress,
                                 onSelect: onSelect
                             )
-                            .id("collection.row.\(row.id)")
                         }
                     }
                 }
@@ -323,7 +337,9 @@ struct CollectionFolderBrowseView: View {
               }
               .focusSection()
               .defaultFocusIfAvailable($focusedItemID, firstFocusID)
-              .modifier(MacCaretScroll(target: macCaretRowAnchor, proxy: macHeroScroll))
+              #if os(macOS)
+              .modifier(MacScrollProxyCapture(proxy: macHeroScroll, stored: $macScrollProxy))
+              #endif
             }
         }
         .ignoresSafeArea(edges: .top)
@@ -513,6 +529,13 @@ struct CollectionFolderBrowseView: View {
                   ScrollView {
                     VStack(alignment: .leading, spacing: TVHomeLayout.sectionSpacing) {
                         ForEach(catalogRows) { row in
+                            // The anchor is a marker above the strip, not
+                            // the strip itself: a row is a container with its
+                            // own horizontal scrolling, and `scrollTo` aimed at
+                            // one was accepted and then ignored.
+                            Color.clear
+                                .frame(height: 0)
+                                .id("collection.row.\(row.id)")
                             CollectionFolderHomeStyleRow(
                                 id: row.id,
                                 title: row.title,
@@ -530,7 +553,6 @@ struct CollectionFolderBrowseView: View {
                                 onLongPress: onLongPress,
                                 onSelect: onSelect
                             )
-                            .id("collection.row.\(row.id)")
                         }
                     }
                     .padding(.top, 8)
@@ -538,7 +560,9 @@ struct CollectionFolderBrowseView: View {
                   }
                   .focusSection()
                   .defaultFocusIfAvailable($focusedItemID, firstFocusID)
-                  .modifier(MacCaretScroll(target: macCaretRowAnchor, proxy: macRowScroll))
+                  #if os(macOS)
+                  .modifier(MacScrollProxyCapture(proxy: macRowScroll, stored: $macScrollProxy))
+                  #endif
                 }
             }
         }
@@ -580,7 +604,9 @@ struct CollectionFolderBrowseView: View {
         .focusSection()
         .defaultFocusIfAvailable($focusedItemID, firstFocusID)
         .id(selectedTabIndex)
-        .modifier(MacCaretScroll(target: macCaretGridAnchor, proxy: macGridScroll))
+        #if os(macOS)
+        .modifier(MacScrollProxyCapture(proxy: macGridScroll, stored: $macScrollProxy))
+        #endif
       }
     }
 
@@ -599,26 +625,6 @@ struct CollectionFolderBrowseView: View {
     /// focus engine owns the highlight and this stays nil.
     private var macCaretItemID: String? {
         #if os(macOS)
-        return macFocus.itemID
-        #else
-        return nil
-        #endif
-    }
-
-    /// The strip the caret is in, as a scroll id, so a Down onto an off-screen
-    /// row brings it into view. Nil on tvOS, where the focus engine scrolls.
-    private var macCaretRowAnchor: String? {
-        #if os(macOS)
-        guard let band = macFocus.bandID, band.hasPrefix("collection.row.") else { return nil }
-        return band
-        #else
-        return nil
-        #endif
-    }
-
-    private var macCaretGridAnchor: String? {
-        #if os(macOS)
-        guard macFocus.bandID == CollectionFolderFocusBand.grid else { return nil }
         return macFocus.itemID
         #else
         return nil
@@ -687,6 +693,27 @@ struct CollectionFolderBrowseView: View {
         let available = MacTVCanvas<EmptyView>.canvasSize.width - 120
         let step = tileSize.width + CollectionFolderGridMetrics.posterGap
         return max(Int((available + CollectionFolderGridMetrics.posterGap) / step), 1)
+    }
+
+    /// Brings the caret's row (or grid cell) into view after a move.
+    ///
+    /// Rows mode scrolls when the caret changes strip — within a strip the row
+    /// scrolls itself horizontally. The grid is one band, so there it is the
+    /// cell that has to be followed.
+    private func macScrollCaretIntoView(previousBand: String?, previousItem: String?) {
+        guard let band = macFocus.bandID, let proxy = macScrollProxy else { return }
+        let target: String?
+        if band == CollectionFolderFocusBand.grid {
+            target = macFocus.itemID == previousItem ? nil : macFocus.itemID
+        } else if band.hasPrefix("collection.row."), band != previousBand {
+            target = band
+        } else {
+            target = nil
+        }
+        guard let target else { return }
+        withAnimation(.easeOut(duration: 0.2)) {
+            proxy.scrollTo(target, anchor: band == CollectionFolderFocusBand.grid ? .center : .top)
+        }
     }
 
     /// Cheap stand-in for the bands themselves, which are not `Equatable`.

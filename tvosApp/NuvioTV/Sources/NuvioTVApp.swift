@@ -3245,6 +3245,9 @@ struct TVHomeView: View {
     @State private var macFocusedCardID: String?
     #endif
     #if os(macOS)
+    /// Where each row was last left, so moving back into one resumes it rather
+    /// than restarting at its first card.
+    @State private var macLastCardBySection: [String: String] = [:]
     /// Captured from the rows' ScrollViewReader so the move handler can scroll
     /// an off-screen row in before focusing it.
     @State private var macScrollProxy: ScrollViewProxy?
@@ -5344,7 +5347,8 @@ struct TVHomeView: View {
         let next = MacHomeFocus.nextCardKey(
             from: current,
             direction: direction,
-            sections: macNavigableSections
+            sections: macNavigableSections,
+            lastCardBySection: macLastCardBySection
         )
         MacDiagnostics.log(
             "homeFocus.move dir=\(direction) from=\(current ?? "none") to=\(next ?? "none")"
@@ -5355,6 +5359,9 @@ struct TVHomeView: View {
         }
 
         macFocusedCardID = next
+        if let section = MacHomeFocus.sectionId(of: next) {
+            macLastCardBySection[section] = next
+        }
 
         // The rows are a LazyVStack, so a row outside the viewport is not
         // mounted. The highlight is a plain value now and lands either way, but

@@ -56,6 +56,10 @@ struct MacTabCommands: Commands {
 /// A directional key, once the modifier noise is stripped off.
 enum MacKey: Equatable {
     case left, right, up, down, activate
+    /// Escape. tvOS delivers this as the Menu button through
+    /// `onExitCommand`, which on macOS needs SwiftUI focus that a screen
+    /// driving its own caret never has — so it is routed like every other key.
+    case back
 }
 
 /// Delivers arrow keys and Return to whichever screen is in front.
@@ -122,7 +126,7 @@ final class MacKeyRouter: ObservableObject {
         // in the search field with no way down to the results.
         if let responder = event.window?.firstResponder, responder is NSText {
             switch key {
-            case .left, .right, .activate: return event
+            case .left, .right, .activate, .back: return event
             case .up, .down: break
             }
         }
@@ -139,6 +143,7 @@ final class MacKeyRouter: ObservableObject {
         case 125: return .down
         case 126: return .up
         case 36, 76: return .activate
+        case 53: return .back
         default: return nil
         }
     }
@@ -153,7 +158,7 @@ extension MoveCommandDirection {
         case .right: self = .right
         case .up: self = .up
         case .down: self = .down
-        case .activate: return nil
+        case .activate, .back: return nil
         }
     }
 }
@@ -204,6 +209,10 @@ final class MacScreenFocus: ObservableObject {
     @Published private(set) var itemID: String?
 
     private var bands: [MacFocusBand] = []
+    /// Where each band was last left, so returning to one resumes rather than
+    /// restarting. Kept for the life of the screen — "per session", not
+    /// persisted.
+    private var lastItemByBand: [String: String] = [:]
     private var token: UUID?
     private let name: String
 
@@ -239,6 +248,7 @@ final class MacScreenFocus: ObservableObject {
         guard bands.first(where: { $0.id == band })?.items.contains(item) == true else { return }
         bandID = band
         itemID = item
+        lastItemByBand[band] = item
     }
 
     func isFocused(_ band: String, _ item: String) -> Bool {
@@ -272,6 +282,10 @@ final class MacScreenFocus: ObservableObject {
     @discardableResult
     func handle(_ key: MacKey, activate: (String, String) -> Void) -> Bool {
         guard isFront else { return false }
+        // Escape is the screen's own business — it means "go back", and the
+        // screen handles it before calling here. Falling through would reach
+        // the Return branch below, since it is not a direction.
+        guard key != .back else { return false }
         // The menu floats above every screen, so it gets first refusal.
         if let direction = MoveCommandDirection(key) {
             if MacMenuState.shared.handleMove(direction) { return true }
@@ -297,6 +311,9 @@ final class MacScreenFocus: ObservableObject {
         let row = index / band.columns
 
         switch key {
+        case .back:
+            // Guarded out above; the screen owns "go back".
+            return false
         case .activate:
             activate(bandID, itemID)
         case .left:
@@ -314,14 +331,18 @@ final class MacScreenFocus: ObservableObject {
             if row > 0 {
                 self.itemID = band.items[index - band.columns]
             } else {
-                moveToBand(before: bandIndex, column: column)
+                moveToBand(before: bandIndex)
             }
         case .down:
             if row < band.rowCount - 1 {
                 self.itemID = band.items[min(index + band.columns, band.items.count - 1)]
             } else {
-                moveToBand(after: bandIndex, column: column)
+                moveToBand(after: bandIndex)
             }
+        }
+
+        if let bandID = self.bandID, let itemID = self.itemID {
+            lastItemByBand[bandID] = itemID
         }
 
         MacDiagnostics.log(
@@ -341,22 +362,33 @@ final class MacScreenFocus: ObservableObject {
         return currentBand?.items.firstIndex(of: itemID)
     }
 
-    /// Entering a neighbouring band keeps the column where it can, so moving up
-    /// and down a screen does not drift to the left edge.
-    private func moveToBand(before index: Int, column: Int) {
-        guard index > 0 else { return }
-        let target = bands[index - 1]
+    /// Entering a neighbouring band puts the caret back where that band was
+    /// left, or on its first item if it has not been visited yet.
+    ///
+    /// Carrying the column across instead — the obvious reading of "don't drift
+    /// to the left edge" — meant that stepping down from the twelfth card of one
+    /// row landed on the twelfth card of the next, with the first eleven behind
+    /// the caret and the row already scrolled along. Rows are independent lists,
+    /// not columns of a table, so a shared column index means nothing between
+    /// them.
+    private func enter(band target: MacFocusBand) {
         bandID = target.id
-        // Land on the *last* row of the band above, under the same column.
-        let lastRowStart = (target.rowCount - 1) * target.columns
-        itemID = target.items[min(lastRowStart + column, target.items.count - 1)]
+        if let remembered = lastItemByBand[target.id],
+           target.items.contains(remembered) {
+            itemID = remembered
+        } else {
+            itemID = target.items.first
+        }
     }
 
-    private func moveToBand(after index: Int, column: Int) {
+    private func moveToBand(before index: Int) {
+        guard index > 0 else { return }
+        enter(band: bands[index - 1])
+    }
+
+    private func moveToBand(after index: Int) {
         guard index + 1 < bands.count else { return }
-        let target = bands[index + 1]
-        bandID = target.id
-        itemID = target.items[min(column, target.items.count - 1)]
+        enter(band: bands[index + 1])
     }
 }
 
@@ -506,6 +538,9 @@ final class MacOptionPanel: ObservableObject {
             // the router token has to be back before it re-claims.
             dismiss()
             choice.apply()
+        case .back:
+            // Escape on a dropdown closes it without choosing.
+            dismiss()
         case .left, .right:
             // A dropdown is one column. Sideways means "leave it alone".
             dismiss()

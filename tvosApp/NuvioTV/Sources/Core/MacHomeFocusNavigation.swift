@@ -51,10 +51,13 @@ enum MacHomeFocus {
     ///
     /// `sections` must already be in display order — the caller passes the same
     /// ordering Home renders.
+    /// - Parameter lastCardBySection: where each row was last left, so
+    ///   changing rows resumes that row rather than restarting it.
     static func nextCardKey(
         from current: String?,
         direction: MoveCommandDirection,
-        sections: [TVHomeSection]
+        sections: [TVHomeSection],
+        lastCardBySection: [String: String] = [:]
     ) -> String? {
         let rows = sections.map { cardKeys(for: $0) }.filter { !$0.isEmpty }
         guard !rows.isEmpty else { return nil }
@@ -74,21 +77,34 @@ enum MacHomeFocus {
             return next < rows[rowIndex].count ? rows[rowIndex][next] : nil
         case .up:
             guard rowIndex > 0 else { return nil }
-            return neighbour(in: rows[rowIndex - 1], preferredColumn: columnIndex)
+            return entry(into: rows[rowIndex - 1], remembering: lastCardBySection)
         case .down:
             let next = rowIndex + 1
             guard next < rows.count else { return nil }
-            return neighbour(in: rows[next], preferredColumn: columnIndex)
+            return entry(into: rows[next], remembering: lastCardBySection)
         @unknown default:
             return nil
         }
     }
 
-    /// Keeps the horizontal position when changing rows, as a TV remote does,
-    /// clamping to the end of a shorter row.
-    private static func neighbour(in row: [String], preferredColumn: Int) -> String? {
-        guard !row.isEmpty else { return nil }
-        return row[min(preferredColumn, row.count - 1)]
+    /// Where the caret lands when it enters a row: back where that row was
+    /// left, or its first card if it has not been visited.
+    ///
+    /// Carrying the column across instead meant stepping down from the twelfth
+    /// card of one row landed on the twelfth card of the next, with the first
+    /// eleven behind the caret and the row already scrolled along. Rows are
+    /// independent lists rather than columns of a table, so a shared column
+    /// index carries no meaning between them.
+    private static func entry(
+        into row: [String],
+        remembering lastCardBySection: [String: String]
+    ) -> String? {
+        guard let first = row.first else { return nil }
+        guard let section = sectionId(of: first),
+              let remembered = lastCardBySection[section],
+              row.contains(remembered)
+        else { return first }
+        return remembered
     }
 }
 #endif
