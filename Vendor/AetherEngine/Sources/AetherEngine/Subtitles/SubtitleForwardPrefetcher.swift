@@ -240,6 +240,10 @@ enum SubtitleForwardPrefetcher {
         /// #240: the valve's grant window. Set when a yield hit the cap, checked before the next
         /// arbitration so the reader keeps the link for a while rather than for one packet.
         var valveGrantedUntil: DispatchTime? = nil
+        /// The last read position, and the playhead the reader last skipped ahead to, so a skip that
+        /// lands short of the playhead (a long GOP, a byte-estimate seek) is not retried per packet.
+        var lastReadPosition: Double? = nil
+        var lastSkipTarget = -Double.infinity
         /// #240: the head start after anchoring, re-armed by every in-place re-anchor. Bounded by
         /// wall time on purpose, see `SideReaderLinkPolicy.anchorGraceSeconds`.
         var anchorGraceUntil = DispatchTime.now()
@@ -254,6 +258,12 @@ enum SubtitleForwardPrefetcher {
             // bytes too. The lead is measured from the last read position, which is what the reader
             // has actually banked; a session that has read nothing yet counts as lead 0 and is let
             // through by the floor rule, so positioning is never blocked behind a busy pump forever.
+            if let link, valveGrantedUntil != nil, link.shouldRevokeGrant() {
+                valveGrantedUntil = nil
+                EngineLog.emit(
+                    "[AetherEngine] #151 forward prefetch valve grant revoked (the consumer is starving)",
+                    category: .engine)
+            }
             if let link, valveGrantedUntil.map({ DispatchTime.now() > $0 }) ?? true {
                 var yielded: Double = 0
                 while !Task.isCancelled,
@@ -305,6 +315,30 @@ enum SubtitleForwardPrefetcher {
                 anchorGraceUntil = DispatchTime.now()
                     + (link?.anchorGraceSeconds ?? SideReaderLinkPolicy.anchorGraceSeconds)
                 if let fresh = await playhead() { playheadSnapshot = fresh }
+                lastReadPosition = nil
+            }
+
+            // A reader that spent a yield behind a busy pump comes back behind the playhead, and
+            // reading on from there spends the link on footage that has already played. Move the
+            // cursor up instead. Not a seek re-anchor: no grace is re-armed, because the link is
+            // exactly as busy as it was, and no seek generation is stamped.
+            if link != nil, let reanchor, let last = lastReadPosition,
+               SideReaderLinkPolicy.shouldSkipAhead(readPosition: last, playhead: playheadSnapshot),
+               playheadSnapshot - lastSkipTarget >= SideReaderLinkPolicy.behindPlayheadSkipSeconds {
+                let target = playheadSnapshot
+                let landed = reposition(demuxer: demuxer, to: target,
+                                        anchorStreamIndex: reanchor.anchorStreamIndex,
+                                        fallbackDuration: reanchor.fallbackDuration,
+                                        timeout: reanchor.seekTimeout)
+                EngineLog.emit(
+                    "[AetherEngine] #151 forward prefetch skipped ahead from "
+                    + "\(String(format: "%.1f", last))s to the playhead at "
+                    + "\(String(format: "%.1f", target))s (\(landed))",
+                    category: .engine)
+                store.noteHarvestAnchor(.prefetch, at: target)
+                lastCoverageNoted = -Double.infinity
+                lastSkipTarget = target
+                lastReadPosition = nil
             }
 
             let next: UnsafeMutablePointer<AVPacket>?
@@ -369,6 +403,7 @@ enum SubtitleForwardPrefetcher {
             // `prefetchLead` tracks the reader rather than the last cue, so on a sparse track it
             // now moves between cues instead of standing still.
             SubtitlePrefetchTelemetry.recordPacket(seconds: position, harvested: harvested)
+            lastReadPosition = position
             // #416: this reader has now read to here. The pacing packets are what make the claim
             // continuous over an authored silence, which is the stretch the ledger exists for.
             if position >= lastCoverageNoted + coverageNoteStepSeconds {

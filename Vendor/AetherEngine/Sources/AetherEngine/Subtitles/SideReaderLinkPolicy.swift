@@ -49,10 +49,29 @@ enum SideReaderLinkPolicy {
     /// never trips it and only a stuck signal does.
     static let maxYieldSeconds: Double = 60
 
+    /// How far behind the playhead a side reader may fall before it stops reading what has already
+    /// played and moves its cursor up to the playhead instead.
+    ///
+    /// A reader that yielded for a minute comes back a minute behind, and the valve then spends its
+    /// grant re-reading footage nobody will see again: measured on an 8.6 Mbit/s origin, grants
+    /// taken at leads of -77 s to -182 s, 90 MB in one of them, and the rebuffers landing inside
+    /// those windows. Past this distance one seek is cheaper than the bytes it skips.
+    static let behindPlayheadSkipSeconds: Double = 15
+
+    /// Whether a reader positioned at `readPosition` is far enough behind `playhead` to skip ahead.
+    static func shouldSkipAhead(readPosition: Double, playhead: Double) -> Bool {
+        readPosition < playhead - behindPlayheadSkipSeconds
+    }
+
+    /// A buffer reading older than this is treated as no reading at all, so a sampler that stops
+    /// reporting cannot leave a stale "low" behind that holds the readers off the link for good.
+    static let forwardBufferStaleSeconds: Double = 5
+
     /// Whether the side reader must leave the link to the video path right now.
     ///
     /// Ordered so each rule is decidable on its own:
-    /// 1. the cap fires first, because its whole purpose is to override a signal that is not clearing
+    /// 1. the cap fires first, because its whole purpose is to override a signal that is not clearing,
+    ///    but not while the consumer's buffer is below recovery (see below)
     /// 2. a seek in flight yields unconditionally: the landing budget is what this exists to protect
     /// 3. a starving consumer yields unconditionally, ahead of the grace window — see below
     /// 4. inside its anchor grace the reader fetches, so a fresh selection is not left with an empty
@@ -68,17 +87,24 @@ enum SideReaderLinkPolicy {
     /// window while the muxer produced nothing at all and the forward buffer sat at zero.
     ///
     /// Subtitles for video that has stopped playing are worth nothing, so the consumer's buffer
-    /// outranks the grace. The cap still sits above this, so a stuck or absent buffer signal cannot
-    /// mute lookahead for the rest of the session.
+    /// outranks the grace.
+    ///
+    /// The cap exists for a signal that is *wrong* — a wedged pump that never parks, a host that
+    /// never reports. A pump that never parks while the buffer sits under `recoveredAtSeconds` is
+    /// not wrong: the link has no headroom, and the valve handing ten seconds of it to a second
+    /// full copy of the stream is what caused the rebuffers. So `bufferLow` holds the valve shut.
+    /// It is only ever true on a fresh reading (see `SideReaderLinkGate`), so a sampler that stops
+    /// reporting reopens it rather than muting lookahead for the session.
     static func shouldYield(
         seeking: Bool,
         videoProducing: Bool,
         starving: Bool,
+        bufferLow: Bool = false,
         inAnchorGrace: Bool,
         yieldedSeconds: Double,
         maxYieldSeconds: Double = SideReaderLinkPolicy.maxYieldSeconds
     ) -> Bool {
-        if yieldedSeconds >= maxYieldSeconds { return false }
+        if yieldedSeconds >= maxYieldSeconds, !bufferLow { return false }
         if seeking { return true }
         if starving { return true }
         if inAnchorGrace { return false }
@@ -96,8 +122,13 @@ final class SideReaderLinkGate: @unchecked Sendable {
     private var seeking = false
     private var producingCount = 0
     private var starving = false
+    private var forwardBuffer: Double?
+    private var readingAt: DispatchTime?
+    private let staleAfterSeconds: Double
 
-    init() {}
+    init(staleAfterSeconds: Double = SideReaderLinkPolicy.forwardBufferStaleSeconds) {
+        self.staleAfterSeconds = staleAfterSeconds
+    }
 
     /// The consumer's forward buffer, sampled at 1 Hz by `LiveTelemetrySampler`.
     ///
@@ -107,6 +138,8 @@ final class SideReaderLinkGate: @unchecked Sendable {
     func setForwardBuffer(_ seconds: Double?) {
         guard let seconds else { return }
         lock.lock()
+        forwardBuffer = seconds
+        readingAt = DispatchTime.now()
         if starving {
             if seconds >= SideReaderLinkPolicy.recoveredAtSeconds { starving = false }
         } else if seconds < SideReaderLinkPolicy.starvingBelowSeconds {
@@ -136,10 +169,17 @@ final class SideReaderLinkGate: @unchecked Sendable {
         lock.unlock()
     }
 
-    var state: (seeking: Bool, videoProducing: Bool, starving: Bool) {
+    /// `starving` and `bufferLow` are reported only on a fresh reading: a sampler that has stopped
+    /// is no evidence of anything, and must not keep the readers off the link.
+    var state: (seeking: Bool, videoProducing: Bool, starving: Bool, bufferLow: Bool) {
         lock.lock()
         defer { lock.unlock() }
-        return (seeking, producingCount > 0, starving)
+        let fresh = readingAt.map {
+            Double(DispatchTime.now().uptimeNanoseconds &- $0.uptimeNanoseconds) / 1_000_000_000
+                <= staleAfterSeconds
+        } ?? false
+        let low = fresh && (forwardBuffer ?? .infinity) < SideReaderLinkPolicy.recoveredAtSeconds
+        return (seeking, producingCount > 0, fresh && starving, low)
     }
 }
 
@@ -148,7 +188,7 @@ final class SideReaderLinkGate: @unchecked Sendable {
 /// Holds the state source plus the tuning, so a reader loop asks one question and the tests can
 /// drive every rule without an engine, a producer or a network.
 struct SideReaderLinkArbiter: Sendable {
-    let state: @Sendable () -> (seeking: Bool, videoProducing: Bool, starving: Bool)
+    let state: @Sendable () -> (seeking: Bool, videoProducing: Bool, starving: Bool, bufferLow: Bool)
     var anchorGraceSeconds: Double = SideReaderLinkPolicy.anchorGraceSeconds
     var maxYieldSeconds: Double = SideReaderLinkPolicy.maxYieldSeconds
     /// How long the reader keeps the link once the cap has fired, before it starts asking again.
@@ -163,7 +203,7 @@ struct SideReaderLinkArbiter: Sendable {
         self.state = { gate.state }
     }
 
-    init(state: @escaping @Sendable () -> (seeking: Bool, videoProducing: Bool, starving: Bool)) {
+    init(state: @escaping @Sendable () -> (seeking: Bool, videoProducing: Bool, starving: Bool, bufferLow: Bool)) {
         self.state = state
     }
 
@@ -179,9 +219,17 @@ struct SideReaderLinkArbiter: Sendable {
             seeking: now.seeking,
             videoProducing: now.videoProducing,
             starving: now.starving,
+            bufferLow: now.bufferLow,
             inAnchorGrace: inAnchorGrace,
             yieldedSeconds: yieldedSeconds,
             maxYieldSeconds: maxYieldSeconds)
+    }
+
+    /// Whether a grant the valve already handed out must end early. A grant skips arbitration for
+    /// its whole window, so without this a consumer that starts starving two seconds into it keeps
+    /// competing with a second copy of the stream for the other eight.
+    func shouldRevokeGrant() -> Bool {
+        state().starving
     }
 
     var pollSeconds: Double { Double(pollNanoseconds) / 1_000_000_000 }

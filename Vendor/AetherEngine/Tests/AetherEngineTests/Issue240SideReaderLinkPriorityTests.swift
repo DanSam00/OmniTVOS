@@ -88,13 +88,37 @@ struct Issue240SideReaderLinkPriorityTests {
             yieldedSeconds: 0))
     }
 
-    /// But it stays under the valve, so a buffer reading that never recovers — or a path that
-    /// reports one and then stops — cannot mute lookahead for the rest of the session.
-    @Test("the yield cap still outranks starvation")
-    func valveOutranksStarvation() {
+    /// The valve is for a signal that is wrong. A pump that never parks while the consumer's buffer
+    /// sits below recovery is telling the truth: the link has no headroom. Measured at 8.6 Mbit/s,
+    /// the valve fired every 70 s into a 3-8 s buffer and the rebuffers landed inside its grants.
+    @Test("the yield cap stays shut while the consumer's buffer is low")
+    func valveHeldShutByALowBuffer() {
+        #expect(SideReaderLinkPolicy.shouldYield(
+            seeking: false, videoProducing: true, starving: false, bufferLow: true,
+            inAnchorGrace: false, yieldedSeconds: SideReaderLinkPolicy.maxYieldSeconds))
+        #expect(SideReaderLinkPolicy.shouldYield(
+            seeking: false, videoProducing: true, starving: true, bufferLow: true,
+            inAnchorGrace: false, yieldedSeconds: SideReaderLinkPolicy.maxYieldSeconds))
         #expect(!SideReaderLinkPolicy.shouldYield(
-            seeking: false, videoProducing: true, starving: true, inAnchorGrace: false,
-            yieldedSeconds: SideReaderLinkPolicy.maxYieldSeconds))
+            seeking: false, videoProducing: true, starving: false, bufferLow: false,
+            inAnchorGrace: false, yieldedSeconds: SideReaderLinkPolicy.maxYieldSeconds))
+    }
+
+    /// Held shut, but not by a blocking rule of its own: with nothing else asking for the link the
+    /// reader still fetches, so a low buffer on an idle pump does not mute lookahead.
+    @Test("a low buffer alone does not yield")
+    func lowBufferAloneDoesNotYield() {
+        #expect(!SideReaderLinkPolicy.shouldYield(
+            seeking: false, videoProducing: false, starving: false, bufferLow: true,
+            inAnchorGrace: false, yieldedSeconds: SideReaderLinkPolicy.maxYieldSeconds))
+    }
+
+    @Test("a reader well behind the playhead skips ahead, one near it does not")
+    func skipAheadThreshold() {
+        #expect(SideReaderLinkPolicy.shouldSkipAhead(readPosition: 100, playhead: 260))
+        #expect(!SideReaderLinkPolicy.shouldSkipAhead(
+            readPosition: 100, playhead: 100 + SideReaderLinkPolicy.behindPlayheadSkipSeconds))
+        #expect(!SideReaderLinkPolicy.shouldSkipAhead(readPosition: 300, playhead: 260))
     }
 
     // MARK: - The gate
@@ -142,6 +166,25 @@ struct Issue240SideReaderLinkPriorityTests {
 
         gate.setForwardBuffer(nil)
         #expect(gate.state.starving == false, "and an absent reading does not re-arm it")
+    }
+
+    /// A low buffer is reported only below recovery and only while the reading is fresh, so a
+    /// sampler that stops cannot keep the valve shut, or the starvation latch set, for good.
+    @Test("low-buffer and starvation reports expire with the reading")
+    func gateReadingsGoStale() async throws {
+        let gate = SideReaderLinkGate(staleAfterSeconds: 0.05)
+        #expect(gate.state.bufferLow == false, "no reading is not a low buffer")
+
+        gate.setForwardBuffer(SideReaderLinkPolicy.starvingBelowSeconds - 0.01)
+        #expect(gate.state.bufferLow)
+        #expect(gate.state.starving)
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(gate.state.bufferLow == false, "a stale reading is no reading")
+        #expect(gate.state.starving == false)
+
+        gate.setForwardBuffer(SideReaderLinkPolicy.recoveredAtSeconds)
+        #expect(gate.state.bufferLow == false)
     }
 
     @Test("the seek flag mirrors what it is set to")
@@ -197,11 +240,12 @@ struct Issue240SideReaderLinkPriorityTests {
 
     private static func arbiter(
         seeking: Bool = false, videoProducing: Bool = false, starving: Bool = false,
+        bufferLow: Bool = false,
         maxYieldSeconds: Double = SideReaderLinkPolicy.maxYieldSeconds,
         valveGrantSeconds: Double = SideReaderLinkPolicy.maxYieldSeconds,
         anchorGraceSeconds: Double = 0
     ) -> SideReaderLinkArbiter {
-        var a = SideReaderLinkArbiter(state: { (seeking, videoProducing, starving) })
+        var a = SideReaderLinkArbiter(state: { (seeking, videoProducing, starving, bufferLow) })
         a.maxYieldSeconds = maxYieldSeconds
         a.valveGrantSeconds = valveGrantSeconds
         a.anchorGraceSeconds = anchorGraceSeconds
@@ -259,6 +303,30 @@ struct Issue240SideReaderLinkPriorityTests {
             playheadCalls: 6)
         #expect(withGrant.count > noGrant.count,
                 "the same yield budget must buy more than one packet at a time")
+    }
+
+    /// The valve held shut, at the loop: a busy pump and a low buffer keep the reader off the link
+    /// however long it has waited.
+    @Test("a low buffer keeps the valve shut at the loop")
+    func lowBufferHoldsTheReader() async throws {
+        let gated = try await Self.harvestedPTS(
+            link: Self.arbiter(videoProducing: true, bufferLow: true, maxYieldSeconds: 0.002))
+        #expect(!gated.contains { $0 >= 13 }, "a link with no headroom is not handed to lookahead")
+    }
+
+    /// A grant skips arbitration for its whole window. A consumer that starts starving inside it
+    /// takes the link back at once rather than when the window runs out.
+    @Test("starvation revokes a grant the valve already handed out")
+    func starvationRevokesAGrant() async throws {
+        let granted = try await Self.harvestedPTS(
+            link: Self.arbiter(seeking: true, videoProducing: true,
+                               maxYieldSeconds: 0.002, valveGrantSeconds: 30),
+            playheadCalls: 6)
+        let revoked = try await Self.harvestedPTS(
+            link: Self.arbiter(seeking: true, videoProducing: true, starving: true,
+                               maxYieldSeconds: 0.002, valveGrantSeconds: 30),
+            playheadCalls: 6)
+        #expect(revoked.count < granted.count, "a revoked grant buys one packet, not a window")
     }
 
     // MARK: - In-place re-anchor

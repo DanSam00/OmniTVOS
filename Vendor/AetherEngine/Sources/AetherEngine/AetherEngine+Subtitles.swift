@@ -1781,6 +1781,9 @@ extension AetherEngine {
             // prefetcher, same reason (on Matroska this reader pulls every video and audio byte to
             // reach the sparse subtitle packets). A whole-program pass has no lead to spend and is
             // not gated: `readToEOF` serves a .vtt request that is already waiting on it.
+            if let link, valveGrantedUntil != nil, link.shouldRevokeGrant() {
+                valveGrantedUntil = nil
+            }
             if let link, !readToEOF, valveGrantedUntil.map({ DispatchTime.now() > $0 }) ?? true {
                 var yielded: Double = 0
                 while !Task.isCancelled,
