@@ -3891,11 +3891,27 @@ struct TVHomeView: View {
                     }
                     .onAppear {
                         keyRouter.release(macKeyToken)
-                        macKeyToken = keyRouter.claim()
+                        macKeyToken = isFullScreenOverlayPresented ? nil : keyRouter.claim()
                     }
                     .onDisappear {
                         keyRouter.release(macKeyToken)
                         macKeyToken = nil
+                    }
+                    // Home is the root and never disappears, so opening the
+                    // player over it used to leave Home holding the front of
+                    // the key router. It then swallowed every arrow and Escape
+                    // — its own handlers ignore them while an overlay is up —
+                    // and the player, whose keys arrive through its own monitor
+                    // behind the router, never saw them. Entering from Details
+                    // hid the fault: that screen leaves the tree, so its claim
+                    // was released on the way in.
+                    .onChange(of: isFullScreenOverlayPresented) { _, presented in
+                        if presented {
+                            keyRouter.release(macKeyToken)
+                            macKeyToken = nil
+                        } else if macKeyToken == nil {
+                            macKeyToken = keyRouter.claim()
+                        }
                     }
                     // Nothing on macOS focuses a card by itself — a click
                     // activates one instead — and `onMoveCommand` is only
