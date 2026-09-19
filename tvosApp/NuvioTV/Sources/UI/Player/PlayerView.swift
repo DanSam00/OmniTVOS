@@ -525,6 +525,19 @@ struct PlayerView: View {
                 )
             }
         }
+        // The guide can arrive after playback starts — a series resumed from a
+        // Continue Watching row has none to begin with — and `onAppear` has
+        // already run by then.
+        .onChange(of: episodes) { _, updated in
+            guard let resolveNextStream, !updated.isEmpty else { return }
+            viewModel.configureNextEpisode(
+                episodes: updated,
+                current: currentEpisode,
+                autoPlayEnabled: autoPlayNextEnabled,
+                autoPlayCountdownSeconds: autoPlayNextCountdownSeconds,
+                resolver: resolveNextStream
+            )
+        }
         .onDisappear {
             PlaybackStartupTiming.cancel()
             if !PictureInPictureManager.shared.isPictureInPictureActive {
@@ -1479,6 +1492,16 @@ struct AetherPlayerSurface: UIViewControllerRepresentable {
     }
 
     private func updateSurface(_ controller: AetherPlaybackController) {
+        // While Picture in Picture is showing, AVKit owns the video layer: on
+        // the software path it moves that layer into its own window. Rebinding
+        // steals it back into this one, and SwiftUI calls this on every update
+        // of the player — so the PiP window went black with a torn slice of the
+        // last frame in it. The restore path still rebinds deliberately, which
+        // is how the layer comes home when PiP closes.
+        if PictureInPictureManager.shared.isPictureInPictureActive,
+           !PictureInPictureManager.shared.isRestoringUIInProgress {
+            return
+        }
         controller.rebindSurface()
         PictureInPictureManager.shared.fullscreenSurfaceDidRebind()
     }

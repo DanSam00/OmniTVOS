@@ -186,6 +186,9 @@ struct ContentView: View {
     /// Series context for the current playback, captured at play time so the
     /// player can offer/auto-play the next episode. Empty for movies/trailers.
     @State private var playbackEpisodes: [NuvioVideo] = []
+    /// Fills `playbackEpisodes` for a series resumed from a row that carries no
+    /// episode guide. Cancelled when another title starts.
+    @State private var loadEpisodeGuideTask: Task<Void, Never>?
     @State private var playbackCurrentEpisode: NuvioVideo?
     @State private var playbackOrigin: PlaybackOrigin = .main
     @State private var playbackDidStart = false
@@ -1043,6 +1046,31 @@ struct ContentView: View {
         let context = Self.episodeContext(for: item)
         playbackEpisodes = context.episodes
         playbackCurrentEpisode = context.current
+        // A Continue Watching row stores the title, not its episode guide, so
+        // resuming a series from Home gave the player an empty episode list:
+        // the Episodes panel had nothing to show and E did nothing at all.
+        // Fetch the guide alongside playback rather than delaying the video for
+        // it — the panel fills in when it lands.
+        if context.episodes.isEmpty, item.meta.isSeries {
+            loadEpisodeGuideTask?.cancel()
+            loadEpisodeGuideTask = Task { @MainActor in
+                guard let meta = try? await CinemetaCatalogRepository().getMetadata(
+                    id: item.meta.id,
+                    type: item.meta.type
+                ) else { return }
+                guard !Task.isCancelled else { return }
+                let guide = (meta.videos ?? []).sorted {
+                    (Self.seasonSortKey($0.season), $0.episode)
+                        < (Self.seasonSortKey($1.season), $1.episode)
+                }
+                guard !guide.isEmpty else { return }
+                let numbers = item.episodeNumbers
+                playbackEpisodes = guide
+                playbackCurrentEpisode = guide.first {
+                    $0.season == numbers?.season && $0.episode == numbers?.episode
+                }
+            }
+        }
 
         let profileId = profileViewModel.activeProfile?.id
         let storedStream = item.isUpNextEntry
