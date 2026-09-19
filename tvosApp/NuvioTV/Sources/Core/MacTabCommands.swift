@@ -182,11 +182,21 @@ struct MacFocusBand {
     /// Items per row. A row of pills is one row `items.count` wide; a grid is
     /// its column count; a single control is 1.
     var columns: Int
+    /// Whether leaving this band keeps the caret in the same column.
+    ///
+    /// Off by default, because a screen's bands are usually independent lists —
+    /// row 2 of Home has nothing to do with row 1, so the caret returns to
+    /// where that row was left. A band that is one row of a matrix is the
+    /// exception: the calendar's weeks share a meaning per column (the
+    /// weekday), and stepping from Wednesday to "wherever I was last in that
+    /// week" is not how a calendar reads.
+    var carriesColumn: Bool
 
-    init(id: String, items: [String], columns: Int? = nil) {
+    init(id: String, items: [String], columns: Int? = nil, carriesColumn: Bool = false) {
         self.id = id
         self.items = items
         self.columns = max(columns ?? items.count, 1)
+        self.carriesColumn = carriesColumn
     }
 
     var rowCount: Int { items.isEmpty ? 0 : (items.count + columns - 1) / columns }
@@ -331,13 +341,13 @@ final class MacScreenFocus: ObservableObject {
             if row > 0 {
                 self.itemID = band.items[index - band.columns]
             } else {
-                moveToBand(before: bandIndex)
+                moveToBand(before: bandIndex, from: band, column: column)
             }
         case .down:
             if row < band.rowCount - 1 {
                 self.itemID = band.items[min(index + band.columns, band.items.count - 1)]
             } else {
-                moveToBand(after: bandIndex)
+                moveToBand(after: bandIndex, from: band, column: column)
             }
         }
 
@@ -371,8 +381,15 @@ final class MacScreenFocus: ObservableObject {
     /// the caret and the row already scrolled along. Rows are independent lists,
     /// not columns of a table, so a shared column index means nothing between
     /// them.
-    private func enter(band target: MacFocusBand) {
+    /// Two bands that both carry the column are rows of one matrix, so the
+    /// caret keeps its column between them (see `MacFocusBand.carriesColumn`).
+    private func enter(band target: MacFocusBand, from origin: MacFocusBand?, column: Int?) {
         bandID = target.id
+        if target.carriesColumn, origin?.carriesColumn == true,
+           let column, target.items.indices.contains(column) {
+            itemID = target.items[column]
+            return
+        }
         if let remembered = lastItemByBand[target.id],
            target.items.contains(remembered) {
             itemID = remembered
@@ -381,14 +398,14 @@ final class MacScreenFocus: ObservableObject {
         }
     }
 
-    private func moveToBand(before index: Int) {
+    private func moveToBand(before index: Int, from origin: MacFocusBand? = nil, column: Int? = nil) {
         guard index > 0 else { return }
-        enter(band: bands[index - 1])
+        enter(band: bands[index - 1], from: origin, column: column)
     }
 
-    private func moveToBand(after index: Int) {
+    private func moveToBand(after index: Int, from origin: MacFocusBand? = nil, column: Int? = nil) {
         guard index + 1 < bands.count else { return }
-        enter(band: bands[index + 1])
+        enter(band: bands[index + 1], from: origin, column: column)
     }
 }
 

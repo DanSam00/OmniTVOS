@@ -447,7 +447,11 @@ struct CalendarView: View {
             bands.append(MacFocusBand(
                 id: "\(CalendarFocusBand.weekPrefix)\(week)",
                 items: items,
-                columns: 7
+                columns: 7,
+                // The weeks are rows of one grid: moving between them holds the
+                // weekday, rather than returning to whichever day that week was
+                // last left on.
+                carriesColumn: true
             ))
         }
         return bands
