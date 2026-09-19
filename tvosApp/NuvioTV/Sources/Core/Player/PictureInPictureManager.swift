@@ -108,6 +108,9 @@ final class PictureInPictureManager: NSObject, ObservableObject {
     /// second surface rebind does not ask again.
     private var didRequestAutomaticStop = false
 
+    /// True between AVKit accepting a stop and completing it.
+    private var isStopping = false
+
     /// Open the mini player because the app lost focus, and arm the return.
     ///
     /// Owned here rather than by `PlayerViewModel` because starting PiP
@@ -182,22 +185,58 @@ final class PictureInPictureManager: NSObject, ObservableObject {
         onRestoreUI(context) { [weak self] success in
             guard let self, self.isReturningFromAutomaticPiP, !success else { return }
             pipLog("return refused by the app")
-            self.clearAutomaticReturn()
-            self.isRestoringUI = false
-            self.startedAutomatically = false
+            self.giveUpAutomaticReturn()
         }
 
-        // The player is remounted asynchronously, and AVKit can still refuse
-        // the stop. Neither is worth holding the restore flags open for — they
-        // suppress the surface rebinding that the full-screen player needs.
+        // The player is remounted asynchronously and may never arrive. Holding
+        // the restore flags open costs the full-screen player its surface
+        // rebinding, so let go rather than waiting forever.
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 3_000_000_000)
-            guard let self, self.isReturningFromAutomaticPiP else { return }
-            pipLog("return did not complete; letting go")
-            self.clearAutomaticReturn()
-            self.isRestoringUI = false
-            self.startedAutomatically = false
+            guard let self, self.isReturningFromAutomaticPiP, !self.didRequestAutomaticStop else { return }
+            pipLog("player never remounted; letting go")
+            self.giveUpAutomaticReturn()
         }
+    }
+
+    /// Ask AVKit to close the mini player, and keep asking for a moment.
+    ///
+    /// AVKit ignores `stopPictureInPicture()` outright when the source layer
+    /// has nowhere to put the picture, and says nothing about it — no delegate
+    /// call, no error. The rebind that gets us here happens while SwiftUI is
+    /// still assembling the view, so on the first pass the video is not in the
+    /// window yet and the request falls into exactly that gap.
+    private func requestAutomaticStop(attempt: Int = 0) {
+        guard isReturningFromAutomaticPiP, isPictureInPictureActive, !isStopping else { return }
+        guard let pip = pipController else {
+            pipLog("stop attempt \(attempt) abandoned: no controller")
+            giveUpAutomaticReturn()
+            return
+        }
+
+        let isHosted = activeAetherController?.playerView.window != nil
+        pipLog("stop attempt \(attempt) hosted=\(isHosted) possible=\(pip.isPictureInPicturePossible) suspended=\(pip.isPictureInPictureSuspended)")
+        if isHosted {
+            pip.stopPictureInPicture()
+        }
+
+        guard attempt < 12 else {
+            pipLog("mini player would not close; letting go")
+            giveUpAutomaticReturn()
+            return
+        }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            self?.requestAutomaticStop(attempt: attempt + 1)
+        }
+    }
+
+    /// Stop driving the return. The restore flags suppress the surface
+    /// rebinding the full-screen player needs, so they cannot be left set.
+    private func giveUpAutomaticReturn() {
+        clearAutomaticReturn()
+        isRestoringUI = false
+        startedAutomatically = false
     }
 
     private func clearAutomaticReturn() {
@@ -364,6 +403,7 @@ final class PictureInPictureManager: NSObject, ObservableObject {
         configuredSoftwareDisplayLayer = nil
         #if os(macOS)
         startedAutomatically = false
+        isStopping = false
         clearAutomaticReturn()
         #endif
         restoreCompletion?(false)
@@ -417,6 +457,7 @@ extension PictureInPictureManager: @preconcurrency AVPictureInPictureControllerD
         pipLog("failedToStartPictureInPictureWithError: \(error.localizedDescription)")
         #if os(macOS)
         startedAutomatically = false
+        isStopping = false
         #endif
         isPictureInPictureActive = false
         activeAetherController?.engine.pictureInPictureActive = false
@@ -425,6 +466,9 @@ extension PictureInPictureManager: @preconcurrency AVPictureInPictureControllerD
     func pictureInPictureControllerWillStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         guard pipController === pictureInPictureController else { return }
         pipLog("willStopPictureInPicture (isRestoringUI=\(isRestoringUI))")
+        #if os(macOS)
+        isStopping = true
+        #endif
     }
 
     func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
@@ -432,6 +476,7 @@ extension PictureInPictureManager: @preconcurrency AVPictureInPictureControllerD
         pipLog("didStopPictureInPicture (isRestoringUI=\(isRestoringUI))")
         #if os(macOS)
         startedAutomatically = false
+        isStopping = false
         clearAutomaticReturn()
         #endif
         isPictureInPictureActive = false
@@ -460,7 +505,7 @@ extension PictureInPictureManager: @preconcurrency AVPictureInPictureControllerD
             guard !didRequestAutomaticStop else { return }
             didRequestAutomaticStop = true
             pipLog("surface rebound; closing the mini player")
-            pipController?.stopPictureInPicture()
+            requestAutomaticStop()
             return
         }
         #endif
@@ -489,6 +534,18 @@ extension PictureInPictureManager: @preconcurrency AVPictureInPictureControllerD
         pendingRestoreCompletion = completionHandler
         pendingRestoreResult = nil
         restoreSurfaceReady = false
+        #if os(macOS)
+        // Our own return got here: it remounted the player and only asked for
+        // the stop once the surface was back in the window. So the rebind this
+        // completion waits on has already happened and will not happen again —
+        // SwiftUI has no reason to rebuild a view that is already mounted, and
+        // holding out for it left AVKit waiting on an answer that never came.
+        // From here on the two paths are the same one.
+        if isReturningFromAutomaticPiP {
+            clearAutomaticReturn()
+            restoreSurfaceReady = true
+        }
+        #endif
 
         guard let context = activeContext else {
             pendingRestoreResult = false
