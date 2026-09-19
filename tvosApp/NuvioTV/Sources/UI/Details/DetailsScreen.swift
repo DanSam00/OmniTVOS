@@ -1867,7 +1867,12 @@ enum SmartPlaybackSelector {
     }
 
     static func isLowQualityOrTicketStream(_ stream: NuvioStream) -> Bool {
-        let res = StreamPickerListBuilder.resolution(for: stream)
+        isLowQualityOrTicketStream(stream, resolution: StreamPickerListBuilder.resolution(for: stream))
+    }
+
+    /// The same test, for a caller that has already parsed the resolution —
+    /// parsing it again is most of the cost of asking.
+    static func isLowQualityOrTicketStream(_ stream: NuvioStream, resolution res: Int) -> Bool {
         // Verified HD/UHD streams (>= 720p) are NEVER low quality or ticket streams,
         // even if add-ons like AIOStreams annotate them with the 🎫 (ticket/debrid) emoji.
         if res >= 720 {
@@ -2162,7 +2167,13 @@ enum StreamPickerListBuilder {
             includeDebrid: includeDebrid,
             cachedOnly: cachedOnly
         )
-        return sorted(filtered(playable, resolution: resolutionFilter), by: sortOption)
+        // Decorated once and carried through both steps: the filter asks the
+        // same questions the sort does.
+        let facts = decorated(playable)
+        let kept = resolutionFilter == .any
+            ? facts
+            : facts.filter { resolutionFilter.matches(resolution: $0.resolution) }
+        return sorted(kept, by: sortOption).map(\.stream)
     }
 
     /// Constant-size cache key. Repository revision captures every publication,
@@ -2194,83 +2205,89 @@ enum StreamPickerListBuilder {
     ///   4. Apple TV hardware acceleration (AV1 check for 4K)
     ///   5. Stable original offset
     static func sorted(_ streams: [NuvioStream], by option: StreamSortOption) -> [NuvioStream] {
+        sorted(decorated(streams), by: option).map(\.stream)
+    }
+
+    /// What the sorts compare, worked out once per stream.
+    ///
+    /// Each of these came from parsing the stream's own free text, and the
+    /// comparators asked for them per comparison — so the resolution of one
+    /// stream was parsed once per comparison it took part in, and
+    /// `isLowQualityOrTicketStream` parsed it again inside that. Over 204
+    /// streams from a debrid library that is some fifteen thousand parses, and
+    /// it froze the player for ten seconds when the Sources panel opened:
+    ///
+    ///     sources.fetch collect=2900ms build=9881ms streams=204
+    ///     hitch blocked=9792ms
+    ///
+    /// One pass up front makes it 204.
+    struct StreamFacts {
+        let stream: NuvioStream
+        let offset: Int
+        let resolution: Int
+        let isBad: Bool
+        let quality: DebridStreamQuality
+        let sizeBytes: Int64
+        let isHardwareAccelerated: Bool
+    }
+
+    static func decorated(_ streams: [NuvioStream]) -> [StreamFacts] {
+        streams.enumerated().map { offset, stream in
+            let tags = StreamQualityTags.parse(stream: stream)
+            let resolution = tags.resolution > 0
+                ? tags.resolution
+                : SmartPlaybackSelector.inferredResolution(for: stream)
+            return StreamFacts(
+                stream: stream,
+                offset: offset,
+                resolution: resolution,
+                isBad: resolution == 0
+                    || SmartPlaybackSelector.isLowQualityOrTicketStream(stream, resolution: resolution),
+                quality: streamQuality(for: stream),
+                sizeBytes: sizeBytes(for: stream),
+                isHardwareAccelerated: tags.isHardwareAccelerated()
+            )
+        }
+    }
+
+    static func sorted(_ facts: [StreamFacts], by option: StreamSortOption) -> [StreamFacts] {
         switch option {
         case .default:
-            return streams.enumerated().sorted {
-                let bad0 = SmartPlaybackSelector.isLowQualityOrTicketStream($0.element) || resolution(for: $0.element) == 0
-                let bad1 = SmartPlaybackSelector.isLowQualityOrTicketStream($1.element) || resolution(for: $1.element) == 0
-                if bad0 != bad1 {
-                    return !bad0 && bad1
-                }
+            return facts.sorted {
+                if $0.isBad != $1.isBad { return !$0.isBad && $1.isBad }
                 return $0.offset < $1.offset
-            }.map(\.element)
+            }
         case .quality:
-            return streams.enumerated().sorted {
-                let res0 = resolution(for: $0.element)
-                let res1 = resolution(for: $1.element)
-                let bad0 = SmartPlaybackSelector.isLowQualityOrTicketStream($0.element) || res0 == 0
-                let bad1 = SmartPlaybackSelector.isLowQualityOrTicketStream($1.element) || res1 == 0
-                if bad0 != bad1 {
-                    return !bad0 && bad1
-                }
+            return facts.sorted {
+                if $0.isBad != $1.isBad { return !$0.isBad && $1.isBad }
                 // Tier 1: Resolution DESC (Android DebridStreamSortKey.RESOLUTION)
-                if res0 != res1 {
-                    return res0 > res1
-                }
+                if $0.resolution != $1.resolution { return $0.resolution > $1.resolution }
                 // Tier 2: Release Quality DESC (Android DebridStreamSortKey.QUALITY)
-                let q0 = streamQuality(for: $0.element)
-                let q1 = streamQuality(for: $1.element)
-                if q0 != q1 {
-                    return q0 > q1
-                }
+                if $0.quality != $1.quality { return $0.quality > $1.quality }
                 // Tier 3: Size bytes DESC (Android DebridStreamSortKey.SIZE)
-                let s0 = sizeBytes(for: $0.element)
-                let s1 = sizeBytes(for: $1.element)
-                if s0 != s1 {
-                    return s0 > s1
-                }
+                if $0.sizeBytes != $1.sizeBytes { return $0.sizeBytes > $1.sizeBytes }
                 // Tier 4: Hardware decode capability check (Apple TV AV1 decode at 4K)
-                if res0 >= 2160, !AppleTVCapability.current.supportsAV1HardwareDecode {
-                    let hw0 = StreamQualityTags.parse(stream: $0.element).isHardwareAccelerated()
-                    let hw1 = StreamQualityTags.parse(stream: $1.element).isHardwareAccelerated()
-                    if hw0 != hw1 {
-                        return hw0 && !hw1
-                    }
+                if $0.resolution >= 2160, !AppleTVCapability.current.supportsAV1HardwareDecode,
+                   $0.isHardwareAccelerated != $1.isHardwareAccelerated {
+                    return $0.isHardwareAccelerated && !$1.isHardwareAccelerated
                 }
                 // Tier 5: Preserved original offset
                 return $0.offset < $1.offset
-            }.map(\.element)
+            }
         case .size:
-            return streams.enumerated().sorted {
-                let res0 = resolution(for: $0.element)
-                let res1 = resolution(for: $1.element)
-                let bad0 = SmartPlaybackSelector.isLowQualityOrTicketStream($0.element) || res0 == 0
-                let bad1 = SmartPlaybackSelector.isLowQualityOrTicketStream($1.element) || res1 == 0
-                if bad0 != bad1 {
-                    return !bad0 && bad1
-                }
-                let s0 = sizeBytes(for: $0.element)
-                let s1 = sizeBytes(for: $1.element)
-                if s0 != s1 {
-                    return s0 > s1
-                }
+            return facts.sorted {
+                if $0.isBad != $1.isBad { return !$0.isBad && $1.isBad }
+                if $0.sizeBytes != $1.sizeBytes { return $0.sizeBytes > $1.sizeBytes }
                 return $0.offset < $1.offset
-            }.map(\.element)
+            }
         case .name:
-            return streams.enumerated().sorted {
-                let res0 = resolution(for: $0.element)
-                let res1 = resolution(for: $1.element)
-                let bad0 = SmartPlaybackSelector.isLowQualityOrTicketStream($0.element) || res0 == 0
-                let bad1 = SmartPlaybackSelector.isLowQualityOrTicketStream($1.element) || res1 == 0
-                if bad0 != bad1 {
-                    return !bad0 && bad1
-                }
-                let c = ($0.element.name ?? "").localizedCaseInsensitiveCompare($1.element.name ?? "")
-                if c != .orderedSame {
-                    return c == .orderedAscending
-                }
+            return facts.sorted {
+                if $0.isBad != $1.isBad { return !$0.isBad && $1.isBad }
+                let comparison = ($0.stream.name ?? "")
+                    .localizedCaseInsensitiveCompare($1.stream.name ?? "")
+                if comparison != .orderedSame { return comparison == .orderedAscending }
                 return $0.offset < $1.offset
-            }.map(\.element)
+            }
         }
     }
 
