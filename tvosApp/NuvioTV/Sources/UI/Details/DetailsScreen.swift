@@ -3086,6 +3086,20 @@ struct TvDetailsContent: View {
                 action: macCloseRail
             )]
             guard macSeasons.count > 1 else { return entries }
+            // A chip per season only fits while there are a few. Eighteen of
+            // them overran the rail's fixed width and drew across the page, so
+            // past a handful they collapse into one chip that opens a list —
+            // the same control the stream filters beside it already use.
+            guard macSeasons.count <= Self.macInlineSeasonChipLimit else {
+                entries.append(MacRailHeaderEntry(
+                    item: MacRailHeaderItem(
+                        label: macSeasonTitle(macActiveSeason),
+                        isActive: true
+                    ),
+                    action: { macOpenRailOptions(macSeasonOptionList()) }
+                ))
+                return entries
+            }
             entries += macSeasons.map { season in
                 MacRailHeaderEntry(
                     item: MacRailHeaderItem(
@@ -3411,6 +3425,25 @@ struct TvDetailsContent: View {
     private func macOpenRailOptions(_ list: MacPickerOptionList) {
         macRailOptions = list
         macRailOptionIndex = max(list.options.firstIndex(where: \.isSelected) ?? 0, 0)
+    }
+
+    /// How many seasons still fit as chips across the rail's header.
+    private static let macInlineSeasonChipLimit = 4
+
+    private func macSeasonOptionList() -> MacPickerOptionList {
+        MacPickerOptionList(
+            title: L10n.string("details_seasons", fallback: "Seasons"),
+            options: macSeasons.map { season in
+                MacPickerOption(
+                    label: macSeasonTitle(season),
+                    isSelected: season == macActiveSeason,
+                    apply: {
+                        macRailSeason = season
+                        macPublishRailCounts()
+                    }
+                )
+            }
+        )
     }
 
     private func macProviderOptionList() -> MacPickerOptionList {
@@ -7262,10 +7295,26 @@ struct MacDetailsRail: View {
             }
 
             if !headerItems.isEmpty {
-                HStack(spacing: 10) {
-                    ForEach(Array(headerItems.enumerated()), id: \.offset) { index, item in
-                        headerChip(item, isFocused: focusedHeaderIndex == index)
-                            .onTapGesture { onHeaderTap(index) }
+                // Scrolls rather than overflows: the rail is a fixed width, and
+                // a header row wider than it used to draw straight across the
+                // page behind. The caret is kept in view, so a row that does not
+                // fit is still walkable by keyboard.
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            ForEach(Array(headerItems.enumerated()), id: \.offset) { index, item in
+                                headerChip(item, isFocused: focusedHeaderIndex == index)
+                                    .id(index)
+                                    .onTapGesture { onHeaderTap(index) }
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    .onChange(of: focusedHeaderIndex) { _, index in
+                        guard let index else { return }
+                        withAnimation(.easeOut(duration: 0.16)) {
+                            proxy.scrollTo(index, anchor: .center)
+                        }
                     }
                 }
             }
