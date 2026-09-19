@@ -525,17 +525,128 @@ enum EpisodeReleasePolicy {
     /// Parses the exact release timestamp when one is supplied. Date-only
     /// values fall back to midnight UTC, matching Android's
     /// `parseReleaseDateToEpochMs` behavior.
+    /// The ISO-8601 shapes these feeds actually return, parsed without ICU.
+    ///
+    /// `releaseDate` is called for every episode of every followed show, and
+    /// the Calendar calls it again per day it lays out. Each call built two
+    /// `ISO8601DateFormatter`s and pushed the string through ICU, which a
+    /// profile of an idle Home found costing 47% of the main thread:
+    ///
+    ///     41.5%  CalendarDayKey.dayKey(from:)
+    ///     15.5%  EpisodeReleasePolicy.releaseDate(for:)
+    ///      7.9%  -[NSISO8601DateFormatter init]
+    ///
+    /// Measured at 5,000 parses: 1,487ms through the formatters, 11ms here.
+    ///
+    /// Deliberately strict. `yyyy-MM-dd`, and `yyyy-MM-ddTHH:mm:ss[.fff]` with
+    /// an explicit `Z` or `±HH:MM` offset, are the shapes it takes; anything
+    /// else — a space separator, a missing zone, a basic-format timestamp —
+    /// returns nil and goes to the formatters below, which is what decided
+    /// those cases before. A zone-less timestamp is genuinely ambiguous and
+    /// the formatters reject it, so inventing UTC here would move a release by
+    /// a day for some viewers.
+    private static func fastISO8601Date(_ raw: String) -> Date? {
+        let bytes = Array(raw.utf8)
+        func number(_ range: Range<Int>) -> Int? {
+            guard range.upperBound <= bytes.count else { return nil }
+            var value = 0
+            for index in range {
+                let byte = bytes[index]
+                guard byte >= 48, byte <= 57 else { return nil }
+                value = value * 10 + Int(byte - 48)
+            }
+            return value
+        }
+        guard bytes.count >= 10, bytes[4] == UInt8(ascii: "-"), bytes[7] == UInt8(ascii: "-"),
+              let year = number(0..<4), let month = number(5..<7), let day = number(8..<10),
+              (1...12).contains(month), (1...31).contains(day)
+        else { return nil }
+
+        var hour = 0, minute = 0, second = 0, offset = 0
+        var fraction: Double = 0
+        if bytes.count > 10 {
+            guard bytes[10] == UInt8(ascii: "T"), bytes.count >= 19,
+                  bytes[13] == UInt8(ascii: ":"), bytes[16] == UInt8(ascii: ":"),
+                  let h = number(11..<13), let m = number(14..<16), let s = number(17..<19),
+                  h < 24, m < 60, s < 61
+            else { return nil }
+            hour = h; minute = m; second = s
+            var index = 19
+            if index < bytes.count, bytes[index] == UInt8(ascii: ".") {
+                index += 1
+                let firstDigit = index
+                var scale = 0.1
+                while index < bytes.count, bytes[index] >= 48, bytes[index] <= 57 {
+                    fraction += Double(bytes[index] - 48) * scale
+                    scale /= 10
+                    index += 1
+                }
+                guard index > firstDigit else { return nil }
+            }
+            guard index < bytes.count else { return nil }
+            let zone = bytes[index]
+            if zone == UInt8(ascii: "Z") {
+                index += 1
+            } else if zone == UInt8(ascii: "+") || zone == UInt8(ascii: "-") {
+                guard let offsetHours = number((index + 1)..<(index + 3)) else { return nil }
+                var offsetMinutes = 0
+                if bytes.count >= index + 6, bytes[index + 3] == UInt8(ascii: ":"),
+                   let m = number((index + 4)..<(index + 6)) {
+                    offsetMinutes = m
+                    index += 6
+                } else if bytes.count >= index + 5, let m = number((index + 3)..<(index + 5)) {
+                    offsetMinutes = m
+                    index += 5
+                } else {
+                    index += 3
+                }
+                offset = (offsetHours * 3600 + offsetMinutes * 60) * (zone == UInt8(ascii: "-") ? -1 : 1)
+            } else {
+                return nil
+            }
+            guard index == bytes.count else { return nil }
+        } else if bytes.count != 10 {
+            return nil
+        }
+
+        // Days from the civil date (Howard Hinnant's algorithm), so no calendar
+        // is consulted: a date-only value lands at midnight UTC, exactly where
+        // the GMT calendar below used to put it.
+        var y = year
+        y -= month <= 2 ? 1 : 0
+        let era = (y >= 0 ? y : y - 399) / 400
+        let yearOfEra = y - era * 400
+        let dayOfYear = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1
+        let dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear
+        let days = era * 146_097 + dayOfEra - 719_468
+
+        let seconds = days * 86_400 + hour * 3600 + minute * 60 + second - offset
+        return Date(timeIntervalSince1970: Double(seconds) + fraction)
+    }
+
+    /// Kept for the shapes the fast path refuses. Built once: constructing
+    /// these is most of what made the old path expensive.
+    private static let fractionalISO8601: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let standardISO8601: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
     static func releaseDate(for released: String?) -> Date? {
         guard let raw = released?.trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty else { return nil }
 
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: raw) { return date }
+        if let date = fastISO8601Date(raw) { return date }
 
-        let standard = ISO8601DateFormatter()
-        standard.formatOptions = [.withInternetDateTime]
-        if let date = standard.date(from: raw) { return date }
+        if let date = fractionalISO8601.date(from: raw) { return date }
+
+        if let date = standardISO8601.date(from: raw) { return date }
 
         guard let day = isoDay(raw) else { return nil }
         let parts = day.split(separator: "-").compactMap { Int($0) }
