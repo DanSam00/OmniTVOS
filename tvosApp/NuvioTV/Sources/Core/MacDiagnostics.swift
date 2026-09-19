@@ -91,6 +91,10 @@ enum MacDiagnostics {
             let lateMs = (now - expected) * 1000
             expected = now + 0.1
             guard lateMs >= 200 else { return }
+            // Only while the app is in front. Backgrounded, macOS throttles
+            // timers, so this measured App Nap rather than the app: one idle
+            // session logged 2,121 stalls, all of them 200-250ms, none real.
+            guard NSApplication.shared.isActive else { return }
             log(String(format: "hitch blocked=%.0fms", lateMs))
         }
         RunLoop.main.add(timer, forMode: .common)

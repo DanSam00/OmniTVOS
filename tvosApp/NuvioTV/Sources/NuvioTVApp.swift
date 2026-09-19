@@ -845,6 +845,27 @@ struct ContentView: View {
         }
     }
 
+    /// Whether a remembered "stream" is something the player can open.
+    ///
+    /// A Continue Watching row carries whatever URL was recorded against it,
+    /// and that is not always media: a row imported from Stremio can hold
+    /// `stremio:///detail/series/tt…`, its own deep link for the title. Handed
+    /// to the player that opens a session, fails, and retries across both
+    /// engines — six attempts in two seconds, from one press of Play:
+    ///
+    ///     mpv.error [stream] No protocol handler found to open URL stremio:///detail/series/tt1043813
+    ///     phase=error("… Demuxer: open failed (Protocol not found)")
+    ///
+    /// An app deep link is never a stream, and treating it as "nothing stored"
+    /// sends the press down the path that resolves a real one.
+    static func isPlayableStreamURL(_ raw: String) -> Bool {
+        guard let scheme = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines))?
+            .scheme?.lowercased() else { return false }
+        // Named, rather than an allowlist of media schemes: the engines open a
+        // long tail of protocols and a list would quietly break one of them.
+        return !["stremio", "nuvio", "omni"].contains(scheme)
+    }
+
     /// `stremio://…/manifest.json` installs the add-on (same as pasting the URL).
     private func handleStremioInstallDeepLink(_ url: URL) {
         switch activeScreen {
@@ -1035,7 +1056,7 @@ struct ContentView: View {
         let itemStreamURL = item.streamUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         let streamURL = [itemStreamURL, storedStream?.url]
             .compactMap { $0 }
-            .first { !$0.isEmpty } ?? ""
+            .first { !$0.isEmpty && Self.isPlayableStreamURL($0) } ?? ""
         let httpHeaders = streamURL == storedStream?.url ? (storedStream?.httpHeaders ?? [:]) : [:]
         if !streamURL.isEmpty, let url = URL(string: streamURL) {
             presentPlayback(
