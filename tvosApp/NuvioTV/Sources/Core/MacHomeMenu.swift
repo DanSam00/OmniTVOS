@@ -18,6 +18,9 @@ final class MacMenuState: ObservableObject {
     /// tab bar draws it. Published from `TVMainTabView`, which owns the
     /// profile; nil falls back to the person symbol.
     @Published var profileAvatarId: String?
+    /// The signed-in profile's name, shown in place of the row's generic
+    /// title — the tvOS tab carries the name too.
+    @Published var profileName: String?
 
     private init() {}
 
@@ -143,10 +146,6 @@ struct MacHomeMenu: View {
     /// while it has focus it is the front key handler regardless of which
     /// screen is underneath.
     @State private var keyToken: UUID?
-    /// Widest row, so every highlight is the same width even though the titles
-    /// are not. Measured from the row content, before the width is applied
-    /// back, so this settles in one pass instead of feeding back on itself.
-    @State private var rowWidth: CGFloat = 0
 
     private var panelShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: 26, style: .continuous)
@@ -163,9 +162,6 @@ struct MacHomeMenu: View {
             .padding(.top, 28)
             .animation(.easeOut(duration: 0.18), value: state.isFocused)
             .onChange(of: state.isFocused) { _, focused in
-                // Labels appear and disappear with the open state, so the
-                // measured width has to be taken again.
-                rowWidth = 0
                 if focused {
                     keyRouter.release(keyToken)
                     keyToken = keyRouter.claim()
@@ -199,8 +195,14 @@ struct MacHomeMenu: View {
     private var column: some View {
         let stack = VStack(alignment: .leading, spacing: 8) {
             if state.isFocused {
-                ForEach(state.tabs) { tab in
-                    row(for: tab)
+                // A Grid, so every row is the width of the widest one and the
+                // highlights match. Measuring each row and applying the maximum
+                // back to it fed itself: the pill ended up the width of its own
+                // label, so Home's was shorter than Calendar's.
+                Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 8) {
+                    ForEach(state.tabs) { tab in
+                        GridRow { row(for: tab) }
+                    }
                 }
             } else {
                 // Closed, the menu says only where you are — the current tab's
@@ -210,9 +212,6 @@ struct MacHomeMenu: View {
         }
         .padding(.vertical, 12)
         .padding(.horizontal, 12)
-        .onPreferenceChange(MacMenuRowWidthKey.self) { width in
-            if width > rowWidth { rowWidth = width }
-        }
 
         // A container lets the caret's glass blend with its neighbours as it
         // travels the column, instead of each row refracting in isolation.
@@ -266,7 +265,7 @@ struct MacHomeMenu: View {
                     .frame(width: 30)
             }
             if state.isFocused {
-                Text(tab.title)
+                Text(tab == .profile ? (state.profileName ?? tab.title) : tab.title)
                     .font(.system(size: 20, weight: isCurrent ? .semibold : .regular))
                     .lineLimit(1)
                     .fixedSize()
@@ -275,23 +274,10 @@ struct MacHomeMenu: View {
         .foregroundColor(isCaret || isCurrent ? .white : .white.opacity(0.55))
         .padding(.vertical, 12)
         .padding(.horizontal, 14)
-        .background {
-            GeometryReader { proxy in
-                Color.clear.preference(key: MacMenuRowWidthKey.self, value: proxy.size.width)
-            }
-        }
-        .frame(width: rowWidth > 0 ? rowWidth : nil, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .modifier(MacMenuRowGlass(isCaret: isCaret, namespace: glassNamespace))
         .contentShape(Rectangle())
         .onTapGesture { selectedTab = tab }
-    }
-}
-
-private struct MacMenuRowWidthKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
     }
 }
 
