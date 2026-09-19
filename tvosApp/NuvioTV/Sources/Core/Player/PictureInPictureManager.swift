@@ -320,6 +320,28 @@ extension PictureInPictureManager: @preconcurrency AVPictureInPictureControllerD
         isPictureInPictureActive = true
         activeAetherController?.engine.pictureInPictureActive = true
         onDidStartPiP?()
+        #if os(macOS)
+        // Temporary: the PiP window shows one magnified corner of the picture
+        // over black, and reading the code has not settled who sizes the layer
+        // once AVKit has it. This states the geometry outright, a second in.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard let layer = self?.activeAetherController?.engine.softwarePiPSource?.layer else {
+                MacDiagnostics.log("pip.geom no software layer (native path)")
+                return
+            }
+            let superlayer = layer.superlayer
+            MacDiagnostics.log(String(
+                format: "pip.geom layer.frame=%.0fx%.0f@%.0f,%.0f bounds=%.0fx%.0f gravity=%@ "
+                    + "mask=%lu super=%@ super.bounds=%.0fx%.0f",
+                layer.frame.width, layer.frame.height, layer.frame.origin.x, layer.frame.origin.y,
+                layer.bounds.width, layer.bounds.height,
+                layer.videoGravity.rawValue,
+                UInt(layer.autoresizingMask.rawValue),
+                superlayer.map { String(describing: type(of: $0)) } ?? "none",
+                superlayer?.bounds.width ?? 0, superlayer?.bounds.height ?? 0))
+        }
+        #endif
     }
 
     func pictureInPictureController(

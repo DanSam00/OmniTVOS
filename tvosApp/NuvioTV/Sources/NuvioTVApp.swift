@@ -1969,7 +1969,20 @@ struct ContentView: View {
         type: String,
         profileId: String?
     ) async -> [NuvioStream] {
+        // Temporary: opening the player's Sources panel blocks the main thread
+        // for ~10s. This says which half — the collect (network plus whatever
+        // parsing rides on the main actor with it) or the list build.
+        let collectStart = CFAbsoluteTimeGetCurrent()
         let streams = await StreamsRepository.shared.collectStreams(type: type, videoId: contentId)
+        let collectMs = (CFAbsoluteTimeGetCurrent() - collectStart) * 1000
+        let buildStart = CFAbsoluteTimeGetCurrent()
+        defer {
+            #if os(macOS)
+            MacDiagnostics.log(String(
+                format: "sources.fetch collect=%.0fms build=%.0fms streams=%d",
+                collectMs, (CFAbsoluteTimeGetCurrent() - buildStart) * 1000, streams.count))
+            #endif
+        }
         let store = ProfileSettings.store(for: profileId)
         let debrid = DebridResolver(store: store)
         let cachedOnly = (store.object(forKey: SettingsKey.cachedOnlyStreams) as? Bool) ?? false
