@@ -3067,6 +3067,13 @@ class PlayerViewModel: ObservableObject {
         updateSkipIntervalState()
     }
 
+    /// The post-play screen's full-synopsis panel.
+    ///
+    /// Held here rather than in the overlay's own `@State` so the player's
+    /// Escape ladder can close it: on macOS the overlay's `onExitCommand`
+    /// never fires, because nothing there holds focus.
+    @Published var showPostPlaySynopsis = false
+
     func revealControls() {
         hidePeek()
         if isScrubbing { return }

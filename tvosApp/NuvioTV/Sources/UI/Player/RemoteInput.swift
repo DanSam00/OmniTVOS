@@ -169,6 +169,14 @@ struct MacPlayerKeyCatcher: NSViewRepresentable {
     /// The settings panel drives its own caret through `MacKeyRouter`, so this
     /// monitor must let its keys past rather than seeking the film behind it.
     let isSettingsOpen: () -> Bool
+    /// Offered the arrows before they seek. True when the player's caret took
+    /// the key.
+    let onCaretMove: (MoveCommandDirection) -> Bool
+    /// Offered Return. True when something under the caret was pressed.
+    let onCaretActivate: () -> Bool
+    /// True while a full-screen layer (the post-play screen) is up: play/pause
+    /// and the seek keys must not reach the film behind it.
+    let swallowsTransportKeys: () -> Bool
 
     func makeNSView(context: Context) -> PlayerKeyHostView {
         let view = PlayerKeyHostView()
@@ -199,6 +207,9 @@ struct MacPlayerKeyCatcher: NSViewRepresentable {
         view.onDismissTopmost = onDismissTopmost
         view.isHelpVisible = isHelpVisible
         view.isSettingsOpen = isSettingsOpen
+        view.onCaretMove = onCaretMove
+        view.onCaretActivate = onCaretActivate
+        view.swallowsTransportKeys = swallowsTransportKeys
     }
 }
 
@@ -217,6 +228,9 @@ final class PlayerKeyHostView: NSView {
     var onDismissTopmost: () -> Bool = { false }
     var isHelpVisible: () -> Bool = { false }
     var isSettingsOpen: () -> Bool = { false }
+    var onCaretMove: (MoveCommandDirection) -> Bool = { _ in false }
+    var onCaretActivate: () -> Bool = { false }
+    var swallowsTransportKeys: () -> Bool = { false }
 
     private enum Key {
         static let space: UInt16 = 49
@@ -311,6 +325,23 @@ final class PlayerKeyHostView: NSView {
                 }
                 return nil
             }
+
+            let caretDirection: MoveCommandDirection? = switch event.keyCode {
+            case Key.leftArrow: .left
+            case Key.rightArrow: .right
+            case Key.upArrow: .up
+            case Key.downArrow: .down
+            default: nil
+            }
+            if let caretDirection, self.onCaretMove(caretDirection) {
+                return nil
+            }
+            if event.keyCode == Key.returnKey || event.keyCode == Key.keypadEnter {
+                guard !event.isARepeat else { return nil }
+                return self.onCaretActivate() ? nil : event
+            }
+
+            if self.swallowsTransportKeys() { return nil }
 
             switch event.keyCode {
             case Key.space, Key.k:
@@ -424,6 +455,38 @@ struct MacPlayerShortcutsOverlay: View {
 /// balanced pair, and any path that hid without unhiding — a window change, the
 /// view going away mid-timer — would leave the pointer invisible for the whole
 /// app. The system restores it on the next movement on its own.
+/// A click target that wins against an AppKit view underneath it.
+///
+/// SwiftUI draws its own content into the hosting view, but a representable is
+/// a genuine NSView subview, so it hit-tests above any SwiftUI button drawn
+/// beneath it however the z-order reads in SwiftUI. This is an NSView too, and
+/// a later sibling, so the click comes back.
+struct MacClickCatcher: NSViewRepresentable {
+    let onClick: () -> Void
+
+    func makeNSView(context: Context) -> ClickCatcherView {
+        let view = ClickCatcherView()
+        view.onClick = onClick
+        return view
+    }
+
+    func updateNSView(_ nsView: ClickCatcherView, context: Context) {
+        nsView.onClick = onClick
+    }
+}
+
+final class ClickCatcherView: NSView {
+    var onClick: () -> Void = {}
+
+    override func mouseDown(with event: NSEvent) {
+        onClick()
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+}
+
 struct MacCursorAutoHide: NSViewRepresentable {
     let isActive: Bool
 

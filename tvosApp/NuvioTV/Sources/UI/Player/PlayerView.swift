@@ -98,7 +98,66 @@ struct PlayerView: View {
     #if os(macOS)
     /// The keyboard reference, opened with ? and closed with ? or Escape.
     @State private var showKeyboardHelp = false
+    /// The keyboard caret over the player's own buttons. `@FocusState` never
+    /// moves on macOS, so the skip, next-episode and transport buttons were
+    /// unreachable from the keyboard.
+    @State private var macCaret: MacPlayerCaret?
+    /// The same, for the post-play recommendations screen.
+    @State private var macPostPlayCaretState: PostPlayFocusItem?
+    @AppStorage(SettingsKey.playerShowPiP) private var playerShowPiP = true
+    @AppStorage(SettingsKey.playerShowEpisodes) private var playerShowEpisodes = true
+    @AppStorage(SettingsKey.playerShowSources) private var playerShowSources = true
     #endif
+
+    private var skipCardShownFocused: Bool {
+        #if os(macOS)
+        macCaret == .skipSegment
+        #else
+        skipSegmentFocused
+        #endif
+    }
+
+    private var nextCardShownFocused: Bool {
+        #if os(macOS)
+        macCaret == .nextEpisode
+        #else
+        nextEpisodeFocused
+        #endif
+    }
+
+    /// The transport control the macOS caret is on, for `PlayerControls`.
+    private var macControlCaret: PlayerControlFocus? {
+        #if os(macOS)
+        if case .control(let key) = macCaret { return key }
+        #endif
+        return nil
+    }
+
+    /// The post-play item the macOS caret is on, for the overlay and the mini
+    /// player frame.
+    private var macPostPlayCaret: PostPlayFocusItem? {
+        #if os(macOS)
+        return macPostPlayEffectiveCaret
+        #else
+        return nil
+        #endif
+    }
+
+    private var isMiniPlayerShownFocused: Bool {
+        #if os(macOS)
+        macPostPlayCaret == .miniPlayer
+        #else
+        postPlayFocus == .miniPlayer
+        #endif
+    }
+
+    private var cancelAutoPlayShownFocused: Bool {
+        #if os(macOS)
+        macCaret == .cancelAutoPlay
+        #else
+        cancelAutoPlayFocused
+        #endif
+    }
 
     #if os(macOS)
     /// Pulled out of `body`: inline, these closures pushed the player's
@@ -134,10 +193,17 @@ struct PlayerView: View {
             onPanelActivate: { viewModel.macPanelActivate() },
             onDismissTopmost: {
                 if showKeyboardHelp { showKeyboardHelp = false; return true }
-                return viewModel.macDismissTopmost()
+                if viewModel.macDismissTopmost() { return true }
+                // `onExitCommand` needs a focused view to fire, and on macOS
+                // nothing here ever holds focus — so Escape did nothing at all
+                // on the post-play screen. Walk the same ladder by hand.
+                return macHandleEscape()
             },
             isHelpVisible: { showKeyboardHelp },
-            isSettingsOpen: { viewModel.showSettingsPanel }
+            isSettingsOpen: { viewModel.showSettingsPanel },
+            onCaretMove: { macCaretMove($0) },
+            onCaretActivate: { macCaretActivate() },
+            swallowsTransportKeys: { viewModel.postPlayState.isVisible }
         )
     }
     #endif
@@ -146,120 +212,9 @@ struct PlayerView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            // Main video surface (or top-right mini window during post-play recommendations)
-            if !viewModel.postPlayState.isTrailerPlaying &&
-                (!viewModel.postPlayState.isVisible || viewModel.postPlayState.canReturnToPlayer) {
-                ZStack {
-                    Group {
-                        switch viewModel.activeEngineKind {
-                        case .aether:
-                            AetherPlayerSurface(controller: viewModel.aetherController)
-                        case .mpv:
-                            MPVVideoSurface(controller: viewModel.playerController)
-                        }
-                    }
+            videoLayer
 
-                    if viewModel.activeEngineKind == .aether {
-                        PlayerSubtitleOverlay(
-                            playback: viewModel.aetherController.subtitleOverlayState,
-                            translation: viewModel.aetherController.subtitleTranslationState,
-                            subtitleDelaySeconds: Double(viewModel.subtitleDelayMs) / 1000.0,
-                            videoNaturalSize: viewModel.videoNaturalSize,
-                            aspectMode: viewModel.aspectMode,
-                            style: viewModel.subtitleStyle
-                        )
-                        .ignoresSafeArea(edges: viewModel.postPlayState.isVisible ? [] : .all)
-                    } else {
-                        MPVSubtitleOverlay(
-                            translation: viewModel.playerController.subtitleTranslationState,
-                            videoNaturalSize: viewModel.videoNaturalSize,
-                            aspectMode: viewModel.aspectMode,
-                            style: viewModel.subtitleStyle
-                        )
-                        .ignoresSafeArea(edges: viewModel.postPlayState.isVisible ? [] : .all)
-                    }
-
-                    if viewModel.postPlayState.isVisible && viewModel.postPlayState.canReturnToPlayer {
-                        miniPlayerReturnButton
-                    }
-                }
-                .frame(
-                    width: viewModel.postPlayState.isVisible ? 580 : nil,
-                    height: viewModel.postPlayState.isVisible ? 326 : nil
-                )
-                // Only clip for the rounded mini window. A zero-radius
-                // `clipShape` still antialiases its own edge, and that blend
-                // against the black behind it is the hairline border that ran
-                // around the whole video full-screen.
-                .clipShape(
-                    RoundedRectangle(cornerRadius: viewModel.postPlayState.isVisible ? 16 : 0),
-                    style: FillStyle(eoFill: false, antialiased: viewModel.postPlayState.isVisible)
-                )
-                .scaleEffect(viewModel.postPlayState.isVisible && postPlayFocus == .miniPlayer ? 1.05 : 1.0)
-                .animation(.easeOut(duration: 0.16), value: postPlayFocus)
-                .overlay {
-                    if viewModel.postPlayState.isVisible {
-                        RoundedRectangle(cornerRadius: 16)
-                            .stroke(
-                                postPlayFocus == .miniPlayer ? Color.white : Color.white.opacity(0.35),
-                                lineWidth: postPlayFocus == .miniPlayer ? 4 : 2
-                            )
-                            .shadow(
-                                color: postPlayFocus == .miniPlayer ? Color.white.opacity(0.6) : Color.clear,
-                                radius: 12
-                            )
-                    }
-                }
-                .shadow(color: Color.black.opacity(viewModel.postPlayState.isVisible ? 0.6 : 0), radius: 16)
-                .frame(
-                    maxWidth: .infinity,
-                    maxHeight: .infinity,
-                    alignment: viewModel.postPlayState.isVisible ? .topTrailing : .center
-                )
-                .padding(.top, viewModel.postPlayState.isVisible ? 50 : 0)
-                .padding(.trailing, viewModel.postPlayState.isVisible ? 60 : 0)
-                .zIndex(viewModel.postPlayState.isVisible ? 5 : 0)
-                .ignoresSafeArea(edges: viewModel.postPlayState.isVisible ? [] : .all)
-            }
-
-            // Post-Play Recommendation Overlay
-            if viewModel.postPlayState.isVisible {
-                PostPlayRecommendationOverlay(
-                    state: viewModel.postPlayState,
-                    currentTitle: meta.name,
-                    showManualPlayOption: autoPlayNextEnabled,
-                    focus: $postPlayFocus,
-                    onPlay: { rec, manual in
-                        onPlayRecommendation?(rec.asMeta, manual)
-                    },
-                    onOpenDetails: { rec in
-                        onOpenRecommendationDetails?(rec.asMeta)
-                    },
-                    onPlayTrailer: {
-                        viewModel.playPostPlayTrailer()
-                    },
-                    onStopTrailer: {
-                        viewModel.stopPostPlayTrailer()
-                    },
-                    onPreviousRecommendation: {
-                        viewModel.showPreviousRecommendation()
-                    },
-                    onNextRecommendation: {
-                        viewModel.showNextRecommendation()
-                    },
-                    onBack: {
-                        if viewModel.postPlayState.isTrailerPlaying {
-                            viewModel.stopPostPlayTrailer()
-                        } else if viewModel.postPlayState.canReturnToPlayer && viewModel.time.current < max(0, viewModel.time.duration - 3) && viewModel.status != .ended {
-                            viewModel.returnToPlayerFromPostPlay()
-                        } else {
-                            onBack()
-                        }
-                    }
-                )
-                .zIndex(2)
-                .transition(.opacity)
-            }
+            postPlayOverlay
 
             // Window-level trackpad capture for Infuse-style scrubbing / peek.
             RemoteTouchCatcher(
@@ -413,7 +368,7 @@ struct PlayerView: View {
                     SkipSegmentOverlay(
                         interval: interval,
                         countdown: viewModel.skipSegmentCountdown,
-                        isFocused: skipSegmentFocused
+                        isFocused: skipCardShownFocused
                     )
                 }
                 .buttonStyle(PosterCardButtonStyle())
@@ -432,7 +387,7 @@ struct PlayerView: View {
             if viewModel.showNextEpisodeCard, let next = viewModel.nextEpisode {
                 VStack(spacing: 8) {
                     Button(action: { viewModel.playNextEpisode() }) {
-                        NextEpisodeOverlay(episode: next, isAdvancing: viewModel.isAdvancingEpisode, isFocused: nextEpisodeFocused, isAutoPlayCancelled: viewModel.isAutoPlayCancelled)
+                        NextEpisodeOverlay(episode: next, isAdvancing: viewModel.isAdvancingEpisode, isFocused: nextCardShownFocused, isAutoPlayCancelled: viewModel.isAutoPlayCancelled)
                     }
                     .buttonStyle(PosterCardButtonStyle())
                     .focusEffectDisabledIfAvailable()
@@ -442,9 +397,9 @@ struct PlayerView: View {
                         Button(action: { viewModel.cancelAutoPlay() }) {
                             Text(L10n.string("player_cancel_autoplay", fallback: "Cancel Auto-Play"))
                                 .font(.system(size: 17, weight: .semibold))
-                                .foregroundColor(cancelAutoPlayFocused ? .black : .white.opacity(0.85))
+                                .foregroundColor(cancelAutoPlayShownFocused ? .black : .white.opacity(0.85))
                                 .padding(.horizontal, 18).padding(.vertical, 8)
-                                .background(cancelAutoPlayFocused ? Color.white : Color.white.opacity(0.14), in: Capsule())
+                                .background(cancelAutoPlayShownFocused ? Color.white : Color.white.opacity(0.14), in: Capsule())
                         }
                         .buttonStyle(.plain)
                         .nuvioFocusable()
@@ -469,7 +424,8 @@ struct PlayerView: View {
                 isSkipSegmentFocused: skipSegmentFocused,
                 isNextEpisodeFocused: nextEpisodeFocused || cancelAutoPlayFocused,
                 onFocusSkipSegment: { focusSkipSegment() },
-                onFocusNextEpisode: { focusNextEpisode() }
+                onFocusNextEpisode: { focusNextEpisode() },
+                macCaret: macControlCaret
             )
                 .opacity(
                     viewModel.showControls
@@ -714,6 +670,23 @@ struct PlayerView: View {
             }
         }
         #if os(macOS)
+        .onChange(of: macCaret) { _, caret in
+            MacDiagnostics.log("player.caret " + (caret.map { "\($0)" } ?? "none"))
+            // Same rule as tvOS: chrome stays up while the caret is on a button
+            // that opens something, and may auto-hide on Play or the timeline.
+            switch caret {
+            case .control(let key) where key != .timeline && key != .play:
+                viewModel.setControlsAutoHideSuspended(true)
+            case .control:
+                viewModel.setControlsAutoHideSuspended(false)
+            default:
+                break
+            }
+        }
+        .onChange(of: viewModel.showControls) { _, visible in
+            // A caret on a hidden button would come back somewhere stale.
+            if !visible, case .control = macCaret { macCaret = nil }
+        }
         .background(macKeyCatcher)
         // The pointer has no business sitting over a playing film.
         .background(MacCursorAutoHide(isActive: viewModel.status == .playing))
@@ -765,49 +738,70 @@ struct PlayerView: View {
                 viewModel.revealControls()
             }
         }
-        .onExitCommand {
-            // The panel handles its own exit; this fallback covers the frame
-            // where focus hasn't landed inside it yet.
-            if viewModel.showSettingsPanel {
-                viewModel.showSettingsPanel = false
-                return
-            }
-            if viewModel.sidePanel != nil {
-                viewModel.closeSidePanel()
-                return
-            }
-            if viewModel.isScrubbing {
-                viewModel.cancelScrub()
-                return
-            }
-            if viewModel.showPauseOverlay {
-                viewModel.dismissPauseOverlay()
-                viewModel.revealControls()
-                return
-            }
-            if viewModel.peekVisible {
-                viewModel.hidePeek()
-                return
-            }
-            if viewModel.postPlayState.isTrailerPlaying {
-                viewModel.stopPostPlayTrailer()
-                return
-            }
-            if viewModel.postPlayState.isVisible {
-                if viewModel.postPlayState.canReturnToPlayer && viewModel.time.current < max(0, viewModel.time.duration - 3) && viewModel.status != .ended {
-                    viewModel.returnToPlayerFromPostPlay()
-                } else {
-                    onBack()
-                }
-                return
-            }
-            if viewModel.showControls {
-                viewModel.hideControls()
-                return
-            }
-            onBack()
-        }
+        .onExitCommand { exitOneLayer() }
     }
+
+    /// Backs out of whatever is on top, one layer per press, leaving the player
+    /// only once there is nothing left to close.
+    ///
+    /// Extracted from `onExitCommand` so macOS can call it from its key
+    /// monitor: that modifier only fires for a focused view, and on macOS
+    /// nothing in the player ever holds focus.
+    private func exitOneLayer() {
+        // The panel handles its own exit; this fallback covers the frame
+        // where focus hasn't landed inside it yet.
+        if viewModel.showSettingsPanel {
+            viewModel.showSettingsPanel = false
+            return
+        }
+        if viewModel.sidePanel != nil {
+            viewModel.closeSidePanel()
+            return
+        }
+        if viewModel.isScrubbing {
+            viewModel.cancelScrub()
+            return
+        }
+        if viewModel.showPauseOverlay {
+            viewModel.dismissPauseOverlay()
+            viewModel.revealControls()
+            return
+        }
+        if viewModel.peekVisible {
+            viewModel.hidePeek()
+            return
+        }
+        if viewModel.showPostPlaySynopsis {
+            viewModel.showPostPlaySynopsis = false
+            return
+        }
+        if viewModel.postPlayState.isTrailerPlaying {
+            viewModel.stopPostPlayTrailer()
+            return
+        }
+        if viewModel.postPlayState.isVisible {
+            if viewModel.postPlayState.canReturnToPlayer && viewModel.time.current < max(0, viewModel.time.duration - 3) && viewModel.status != .ended {
+                viewModel.returnToPlayerFromPostPlay()
+            } else {
+                onBack()
+            }
+            return
+        }
+        if viewModel.showControls {
+            viewModel.hideControls()
+            return
+        }
+        onBack()
+    }
+
+    #if os(macOS)
+    /// Escape, from the key monitor. Always true: every press backs out a
+    /// layer, and the last one leaves the player.
+    func macHandleEscape() -> Bool {
+        exitOneLayer()
+        return true
+    }
+    #endif
 
     private var subtitleContentId: String {
         if let currentEpisode { return currentEpisode.id }
@@ -834,6 +828,163 @@ struct PlayerView: View {
         DispatchQueue.main.async {
             skipSegmentFocused = true
         }
+    }
+
+    /// The post-play recommendations screen.
+    ///
+    /// Extracted from `body` for the type checker, like the video layer above.
+    @ViewBuilder
+    private var postPlayOverlay: some View {
+            // Post-Play Recommendation Overlay
+    if viewModel.postPlayState.isVisible {
+        PostPlayRecommendationOverlay(
+            state: viewModel.postPlayState,
+            currentTitle: meta.name,
+            showManualPlayOption: autoPlayNextEnabled,
+            focus: $postPlayFocus,
+            macCaret: macPostPlayCaret,
+            showSynopsisModal: $viewModel.showPostPlaySynopsis,
+            onPlay: { rec, manual in
+                onPlayRecommendation?(rec.asMeta, manual)
+            },
+            onOpenDetails: { rec in
+                onOpenRecommendationDetails?(rec.asMeta)
+            },
+            onPlayTrailer: {
+                viewModel.playPostPlayTrailer()
+            },
+            onStopTrailer: {
+                viewModel.stopPostPlayTrailer()
+            },
+            onPreviousRecommendation: {
+                viewModel.showPreviousRecommendation()
+            },
+            onNextRecommendation: {
+                viewModel.showNextRecommendation()
+            },
+            onBack: {
+                if viewModel.postPlayState.isTrailerPlaying {
+                    viewModel.stopPostPlayTrailer()
+                } else if viewModel.postPlayState.canReturnToPlayer && viewModel.time.current < max(0, viewModel.time.duration - 3) && viewModel.status != .ended {
+                    viewModel.returnToPlayerFromPostPlay()
+                } else {
+                    onBack()
+                }
+            }
+        )
+        .zIndex(2)
+        .transition(.opacity)
+    }
+    }
+
+    /// The video, full screen or as the post-play mini window.
+    ///
+    /// Extracted from `body`, and the mini-window flag hoisted into a local:
+    /// inline, this chain was past what the type checker will solve in
+    /// reasonable time.
+    @ViewBuilder
+    private var videoLayer: some View {
+        let isMini = viewModel.postPlayState.isVisible
+            // Main video surface (or top-right mini window during post-play recommendations)
+    if !viewModel.postPlayState.isTrailerPlaying &&
+        (!viewModel.postPlayState.isVisible || viewModel.postPlayState.canReturnToPlayer) {
+        videoSurfaceStack
+        .frame(
+            width: isMini ? 580 : nil,
+            height: isMini ? 326 : nil
+        )
+        // Only clip for the rounded mini window. A zero-radius
+        // `clipShape` still antialiases its own edge, and that blend
+        // against the black behind it is the hairline border that ran
+        // around the whole video full-screen.
+        .clipShape(
+            RoundedRectangle(cornerRadius: isMini ? 16 : 0),
+            style: FillStyle(eoFill: false, antialiased: viewModel.postPlayState.isVisible)
+        )
+        .scaleEffect(viewModel.postPlayState.isVisible && isMiniPlayerShownFocused ? 1.05 : 1.0)
+        .animation(.easeOut(duration: 0.16), value: isMiniPlayerShownFocused)
+        .overlay {
+            if viewModel.postPlayState.isVisible {
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(
+                        isMiniPlayerShownFocused ? Color.white : Color.white.opacity(0.35),
+                        lineWidth: isMiniPlayerShownFocused ? 4 : 2
+                    )
+                    .shadow(
+                        color: isMiniPlayerShownFocused ? Color.white.opacity(0.6) : Color.clear,
+                        radius: 12
+                    )
+            }
+        }
+        .shadow(color: Color.black.opacity(isMini ? 0.6 : 0), radius: 16)
+        .frame(
+            maxWidth: .infinity,
+            maxHeight: .infinity,
+            alignment: isMini ? .topTrailing : .center
+        )
+        .padding(.top, isMini ? 50 : 0)
+        .padding(.trailing, isMini ? 60 : 0)
+        .zIndex(isMini ? 5 : 0)
+        .ignoresSafeArea(edges: isMini ? [] : .all)
+    }
+    }
+
+    /// The video surface, its subtitle overlay and, during post-play, the mini
+    /// player's click target.
+    ///
+    /// Extracted from `body`: inline, the stack plus the mini-window geometry
+    /// around it was past what the type checker will solve in reasonable time.
+    @ViewBuilder
+    private var videoSurfaceStack: some View {
+        ZStack {
+            Group {
+                switch viewModel.activeEngineKind {
+                case .aether:
+                    AetherPlayerSurface(controller: viewModel.aetherController)
+                case .mpv:
+                    MPVVideoSurface(controller: viewModel.playerController)
+                }
+            }
+
+            if viewModel.activeEngineKind == .aether {
+                PlayerSubtitleOverlay(
+                    playback: viewModel.aetherController.subtitleOverlayState,
+                    translation: viewModel.aetherController.subtitleTranslationState,
+                    subtitleDelaySeconds: Double(viewModel.subtitleDelayMs) / 1000.0,
+                    videoNaturalSize: viewModel.videoNaturalSize,
+                    aspectMode: viewModel.aspectMode,
+                    style: viewModel.subtitleStyle
+                )
+                .ignoresSafeArea(edges: viewModel.postPlayState.isVisible ? [] : .all)
+            } else {
+                MPVSubtitleOverlay(
+                    translation: viewModel.playerController.subtitleTranslationState,
+                    videoNaturalSize: viewModel.videoNaturalSize,
+                    aspectMode: viewModel.aspectMode,
+                    style: viewModel.subtitleStyle
+                )
+                .ignoresSafeArea(edges: viewModel.postPlayState.isVisible ? [] : .all)
+            }
+
+            if viewModel.postPlayState.isVisible && viewModel.postPlayState.canReturnToPlayer {
+                miniPlayerReturnControls
+            }
+        }
+    }
+
+    /// The mini player's own click target.
+    ///
+    /// Split out of the video stack because that stack was already at the type
+    /// checker's limit.
+    @ViewBuilder
+    private var miniPlayerReturnControls: some View {
+        miniPlayerReturnButton
+        #if os(macOS)
+        // The engine's video view is a real NSView, so it hit-tests above the
+        // SwiftUI button behind it and ate every click on the mini player. An
+        // AppKit catcher of our own, added after it, takes the click back.
+        MacClickCatcher { viewModel.returnToPlayerFromPostPlay() }
+        #endif
     }
 
     @ViewBuilder
@@ -1637,6 +1788,252 @@ private final class RemoteSeekPressViewController: UIViewController {
         default:
             break
         }
+    }
+}
+#endif
+
+#if os(macOS)
+/// Where the keyboard caret sits in the player: one of the cards shown near a
+/// segment or the end of an episode, or one of the transport controls.
+enum MacPlayerCaret: Hashable {
+    case skipSegment
+    case nextEpisode
+    case cancelAutoPlay
+    case control(PlayerControlFocus)
+}
+
+extension PlayerView {
+    /// The cards on screen, left to right.
+    private var macCards: [MacPlayerCaret] {
+        var cards: [MacPlayerCaret] = []
+        if viewModel.showSkipSegmentCard, viewModel.activeSkipInterval != nil {
+            cards.append(.skipSegment)
+        }
+        if viewModel.showNextEpisodeCard, viewModel.nextEpisode != nil {
+            cards.append(.nextEpisode)
+            if autoPlayNextEnabled, !viewModel.isAutoPlayCancelled, !viewModel.isAdvancingEpisode {
+                cards.append(.cancelAutoPlay)
+            }
+        }
+        return cards
+    }
+
+    /// Mirrors `PlayerControls.transportFocusOrder`.
+    private var macTransportOrder: [PlayerControlFocus] {
+        var order: [PlayerControlFocus] = [.play]
+        if viewModel.isPictureInPictureSupported && playerShowPiP { order.append(.pip) }
+        if viewModel.canShowEpisodesPanel && playerShowEpisodes { order.append(.episodes) }
+        if viewModel.canShowSourcesPanel && playerShowSources { order.append(.sources) }
+        order.append(.settings)
+        return order
+    }
+
+    /// Anything drawn over the controls owns the keys instead, and keeps the
+    /// handling it already had.
+    private var macCaretApplies: Bool {
+        !viewModel.isScrubbing
+            && !viewModel.showPauseOverlay
+            && !viewModel.showSettingsPanel
+            && viewModel.sidePanel == nil
+            && !viewModel.postPlayState.isVisible
+    }
+
+    private func macIsValid(_ caret: MacPlayerCaret) -> Bool {
+        switch caret {
+        case .skipSegment, .nextEpisode, .cancelAutoPlay:
+            return macCards.contains(caret)
+        case .control(let key):
+            guard viewModel.showControls else { return false }
+            return key == .timeline ? !viewModel.isLiveStream : macTransportOrder.contains(key)
+        }
+    }
+
+    /// The caret, or where it lands when it has nowhere valid to be: a card
+    /// when one is up, otherwise the timeline (Play on a live stream).
+    private var macEffectiveCaret: MacPlayerCaret? {
+        if let macCaret, macIsValid(macCaret) { return macCaret }
+        if let card = macCards.first { return card }
+        guard viewModel.showControls else { return nil }
+        return .control(viewModel.isLiveStream ? .play : .timeline)
+    }
+
+    /// - Returns: false to leave the key to the player's default handling
+    ///   (seeking, revealing the controls).
+    func macCaretMove(_ direction: MoveCommandDirection) -> Bool {
+        if macPostPlayMove(direction) { return true }
+        guard macCaretApplies else { return false }
+        let cards = macCards
+
+        // Chrome down: arrows keep seeking and revealing. A card on screen
+        // takes the caret so Return reaches it.
+        guard viewModel.showControls else {
+            if direction == .up || direction == .down {
+                viewModel.revealControls()
+                macCaret = macEffectiveCaret
+                return true
+            }
+            return false
+        }
+
+        guard let caret = macEffectiveCaret else { return false }
+        viewModel.revealControls()
+
+        switch caret {
+        case .skipSegment, .nextEpisode, .cancelAutoPlay:
+            let index = cards.firstIndex(of: caret) ?? 0
+            switch direction {
+            case .left where index > 0:
+                macCaret = cards[index - 1]
+            case .right where index < cards.count - 1:
+                macCaret = cards[index + 1]
+            case .down:
+                macCaret = .control(.play)
+            default:
+                macCaret = caret
+            }
+        case .control(.timeline):
+            switch direction {
+            case .left:
+                viewModel.nudgeSeek(-Double(viewModel.seekStepSeconds))
+            case .right:
+                viewModel.nudgeSeek(Double(viewModel.seekStepSeconds))
+            case .up:
+                macCaret = .control(.play)
+                return true
+            default:
+                break
+            }
+            macCaret = caret
+        case .control(let key):
+            let order = macTransportOrder
+            let index = order.firstIndex(of: key) ?? 0
+            switch direction {
+            case .left where index > 0:
+                macCaret = .control(order[index - 1])
+            case .right where index < order.count - 1:
+                macCaret = .control(order[index + 1])
+            case .up:
+                macCaret = cards.first ?? caret
+            case .down:
+                macCaret = viewModel.isLiveStream ? caret : .control(.timeline)
+            default:
+                macCaret = caret
+            }
+        }
+        return true
+    }
+
+    /// - Returns: false when there is nothing under the caret to press.
+    func macCaretActivate() -> Bool {
+        if macPostPlayActivate() { return true }
+        guard macCaretApplies, let caret = macEffectiveCaret else { return false }
+        MacDiagnostics.log("player.caret.activate \(caret)")
+        switch caret {
+        case .skipSegment:
+            viewModel.skipActiveInterval()
+            macCaret = nil
+        case .nextEpisode:
+            viewModel.playNextEpisode()
+        case .cancelAutoPlay:
+            viewModel.cancelAutoPlay()
+            macCaret = .nextEpisode
+        case .control(.play), .control(.timeline):
+            viewModel.togglePlayPause()
+        case .control(.pip):
+            viewModel.togglePictureInPicture()
+        case .control(.episodes):
+            viewModel.openSidePanel(.episodes)
+        case .control(.sources):
+            viewModel.openSidePanel(.sources)
+        case .control(.settings):
+            viewModel.showSettingsPanel = true
+        }
+        return true
+    }
+}
+#endif
+
+#if os(macOS)
+extension PlayerView {
+    /// The post-play screen's buttons, left to right, with the mini player
+    /// above them. Only what is actually on screen and usable.
+    private var macPostPlayItems: [PostPlayFocusItem] {
+        let state = viewModel.postPlayState
+        guard let recommendation = state.recommendation else { return [] }
+        var items: [PostPlayFocusItem] = [.primaryAction]
+        if recommendation.hasTrailer { items.append(.trailerAction) }
+        if state.recommendationCount > 1 {
+            if state.canNavigatePrevious { items.append(.prevAction) }
+            if state.canNavigateNext { items.append(.nextAction) }
+        }
+        return items
+    }
+
+    var macPostPlayEffectiveCaret: PostPlayFocusItem? {
+        let items = macPostPlayItems
+        if let caret = macPostPlayCaretState {
+            if caret == .miniPlayer {
+                return viewModel.postPlayState.canReturnToPlayer ? caret : items.first
+            }
+            if items.contains(caret) { return caret }
+        }
+        return items.first
+    }
+
+    /// - Returns: true when the post-play screen took the key. It takes every
+    ///   arrow while it is up, so the film behind it cannot seek unseen.
+    func macPostPlayMove(_ direction: MoveCommandDirection) -> Bool {
+        guard viewModel.postPlayState.isVisible else { return false }
+        if viewModel.showPostPlaySynopsis { return true }
+        let items = macPostPlayItems
+        guard let caret = macPostPlayEffectiveCaret else { return true }
+
+        switch direction {
+        case .up where viewModel.postPlayState.canReturnToPlayer:
+            macPostPlayCaretState = .miniPlayer
+        case .down where caret == .miniPlayer:
+            macPostPlayCaretState = items.first
+        case .left, .right:
+            guard caret != .miniPlayer, let index = items.firstIndex(of: caret) else { break }
+            let next = direction == .left ? index - 1 : index + 1
+            if items.indices.contains(next) { macPostPlayCaretState = items[next] }
+        default:
+            break
+        }
+        return true
+    }
+
+    /// - Returns: true when the post-play screen took Return.
+    func macPostPlayActivate() -> Bool {
+        if viewModel.postPlayState.isVisible, viewModel.showPostPlaySynopsis {
+            viewModel.showPostPlaySynopsis = false
+            return true
+        }
+        guard viewModel.postPlayState.isVisible,
+              let caret = macPostPlayEffectiveCaret,
+              let recommendation = viewModel.postPlayState.recommendation else { return false }
+        MacDiagnostics.log("postplay.caret.activate \(caret)")
+        switch caret {
+        case .miniPlayer:
+            viewModel.returnToPlayerFromPostPlay()
+        case .primaryAction:
+            if recommendation.isSeries {
+                onOpenRecommendationDetails?(recommendation.asMeta)
+            } else {
+                onPlayRecommendation?(recommendation.asMeta, false)
+            }
+        case .trailerAction:
+            if viewModel.postPlayState.isTrailerPlaying {
+                viewModel.stopPostPlayTrailer()
+            } else {
+                viewModel.playPostPlayTrailer()
+            }
+        case .prevAction:
+            viewModel.showPreviousRecommendation()
+        case .nextAction:
+            viewModel.showNextRecommendation()
+        }
+        return true
     }
 }
 #endif

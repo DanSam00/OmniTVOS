@@ -1,7 +1,7 @@
 import SwiftUI
 import AVKit
 
-private enum PlayerControlFocus: Hashable {
+enum PlayerControlFocus: Hashable {
     case play
     case pip
     case episodes
@@ -16,8 +16,21 @@ struct PlayerControls: View {
     var isNextEpisodeFocused: Bool = false
     var onFocusSkipSegment: () -> Void = {}
     var onFocusNextEpisode: () -> Void = {}
+    /// macOS has no focus engine, so `focusedControl` never moves there. The
+    /// player keeps its own caret and hands the control it is on down here.
+    /// Always nil on tvOS.
+    var macCaret: PlayerControlFocus? = nil
 
     @FocusState private var focusedControl: PlayerControlFocus?
+
+    /// Whether `key` draws as focused.
+    private func isShownFocused(_ key: PlayerControlFocus) -> Bool {
+        #if os(macOS)
+        macCaret == key
+        #else
+        focusedControl == key
+        #endif
+    }
 
     @AppStorage(SettingsKey.playerShowPiP) private var playerShowPiP = true
     @AppStorage(SettingsKey.playerShowEpisodes) private var playerShowEpisodes = true
@@ -254,7 +267,7 @@ struct PlayerControls: View {
                 size: 70,
                 iconSize: 30,
                 focusKey: .play,
-                isFocused: focusedControl == .play
+                isFocused: isShownFocused(.play)
             ) {
                 viewModel.togglePlayPause()
             } icon: {
@@ -274,7 +287,7 @@ struct PlayerControls: View {
                     size: 70,
                     iconSize: 28,
                     focusKey: .pip,
-                    isFocused: focusedControl == .pip
+                    isFocused: isShownFocused(.pip)
                 ) {
                     viewModel.togglePictureInPicture()
                 } icon: {
@@ -288,7 +301,7 @@ struct PlayerControls: View {
                     size: 70,
                     iconSize: 28,
                     focusKey: .episodes,
-                    isFocused: focusedControl == .episodes
+                    isFocused: isShownFocused(.episodes)
                 ) {
                     viewModel.openSidePanel(.episodes)
                 } icon: {
@@ -302,7 +315,7 @@ struct PlayerControls: View {
                     size: 70,
                     iconSize: 28,
                     focusKey: .sources,
-                    isFocused: focusedControl == .sources
+                    isFocused: isShownFocused(.sources)
                 ) {
                     viewModel.openSidePanel(.sources)
                 } icon: {
@@ -315,7 +328,7 @@ struct PlayerControls: View {
                 size: 70,
                 iconSize: 30,
                 focusKey: .settings,
-                isFocused: focusedControl == .settings
+                isFocused: isShownFocused(.settings)
             ) {
                 viewModel.showSettingsPanel = true
             } icon: {
@@ -343,6 +356,10 @@ struct PlayerControls: View {
         // spatial focus graph without changing appearance (PosterCardButtonStyle
         // ignores isEnabled). That prevents the Episodes flash on up-from-timeline.
         Button {
+            #if os(macOS)
+            // Which control was pressed, for attributing a stall to it.
+            MacDiagnostics.log("player.control \(focusKey)")
+            #endif
             focusedControl = focusKey
             action()
         } label: {
@@ -371,7 +388,14 @@ struct PlayerControls: View {
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
         .focused($focusedControl, equals: focusKey)
+        #if os(macOS)
+        // The tvOS gate below keeps all but Play out of the focus graph until
+        // focus reaches the row, which on macOS is never — every other button
+        // was left disabled, drawn dimmed and deaf to the mouse.
+        .disabled(!controlsInteractable)
+        #else
         .disabled(!isTransportButtonFocusable(focusKey))
+        #endif
         .focusEffectDisabledIfAvailable()
         .onMoveCommand { direction in
             // Route from this button's key so a native spatial jump across the
@@ -386,7 +410,7 @@ struct PlayerControls: View {
     // MARK: - Timeline
 
     private var isTimelineFocused: Bool {
-        focusedControl == .timeline
+        isShownFocused(.timeline)
     }
 
     @ViewBuilder

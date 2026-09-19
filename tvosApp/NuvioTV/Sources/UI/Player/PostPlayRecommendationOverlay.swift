@@ -13,6 +13,11 @@ struct PostPlayRecommendationOverlay: View {
     let currentTitle: String
     let showManualPlayOption: Bool
     var focus: FocusState<PostPlayFocusItem?>.Binding
+    /// macOS has no focus engine, so `focus` never moves there and the player
+    /// drives its own caret instead. Always nil on tvOS.
+    var macCaret: PostPlayFocusItem? = nil
+    /// Owned by the view model, see `PlayerViewModel.showPostPlaySynopsis`.
+    @Binding var showSynopsisModal: Bool
     let onPlay: (PostPlayRecommendation, _ playManually: Bool) -> Void
     let onOpenDetails: (PostPlayRecommendation) -> Void
     let onPlayTrailer: () -> Void
@@ -23,8 +28,16 @@ struct PostPlayRecommendationOverlay: View {
 
     @State private var trailerPlayer = AVPlayer()
     @State private var isTrailerReady = false
-    @State private var showSynopsisModal = false
     @AppStorage(SettingsKey.trailerPreviewSound) private var trailerPreviewSound = false
+
+    /// Whether `item` draws as focused.
+    private func isItemFocused(_ item: PostPlayFocusItem) -> Bool {
+        #if os(macOS)
+        macCaret == item
+        #else
+        focus.wrappedValue == item
+        #endif
+    }
 
     var body: some View {
         guard let recommendation = state.recommendation else {
@@ -55,9 +68,18 @@ struct PostPlayRecommendationOverlay: View {
             .onExitCommand {
                 onBack()
             }
-            .sheet(isPresented: $showSynopsisModal) {
+            // Not `.sheet`: on macOS a sheet attaches to the NSWindow, which
+            // puts it outside `MacTVCanvas` — it came up unreadably small and,
+            // being window-modal, swallowed every click on the screen behind it
+            // while the key monitors kept working, so the whole post-play screen
+            // went dead to the mouse. `modalCover` stays inside the canvas.
+            .modalCover(isPresented: $showSynopsisModal) {
                 if let desc = recommendation.description, !desc.isEmpty {
-                    SynopsisSheet(title: recommendation.title, description: desc)
+                    SynopsisSheet(
+                        title: recommendation.title,
+                        description: desc,
+                        onClose: { showSynopsisModal = false }
+                    )
                 }
             }
             .onAppear {
@@ -266,7 +288,7 @@ struct PostPlayRecommendationOverlay: View {
     private func actionButtonsRow(for recommendation: PostPlayRecommendation) -> some View {
         HStack(spacing: 20) {
             // 1. Primary Action Button (Play / Details) - Solid White Liquid Glass
-            let isPrimaryFocused = focus.wrappedValue == .primaryAction
+            let isPrimaryFocused = isItemFocused(.primaryAction)
             Button {
                 if recommendation.isSeries {
                     onOpenDetails(recommendation)
@@ -315,7 +337,7 @@ struct PostPlayRecommendationOverlay: View {
 
             // 2. Trailer Button (if available) - Liquid Glass (Translucent -> Solid White on Focus)
             if recommendation.hasTrailer {
-                let isTrailerFocused = focus.wrappedValue == .trailerAction
+                let isTrailerFocused = isItemFocused(.trailerAction)
                 Button {
                     if state.isTrailerPlaying {
                         onStopTrailer()
@@ -351,7 +373,7 @@ struct PostPlayRecommendationOverlay: View {
 
             // 3. Navigation Paging Buttons (Previous / Next) - Liquid Glass Circular Buttons
             if state.recommendationCount > 1 {
-                let isPrevFocused = focus.wrappedValue == .prevAction
+                let isPrevFocused = isItemFocused(.prevAction)
                 Button {
                     onPreviousRecommendation()
                 } label: {
@@ -376,7 +398,7 @@ struct PostPlayRecommendationOverlay: View {
                     }
                 }
 
-                let isNextFocused = focus.wrappedValue == .nextAction
+                let isNextFocused = isItemFocused(.nextAction)
                 Button {
                     onNextRecommendation()
                 } label: {
@@ -445,6 +467,9 @@ struct PostPlayRecommendationOverlay: View {
 private struct SynopsisSheet: View {
     let title: String
     let description: String
+    /// `@Environment(\.dismiss)` does nothing inside an in-canvas overlay, so
+    /// the presenter closes it.
+    var onClose: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -463,8 +488,9 @@ private struct SynopsisSheet: View {
             Spacer()
 
             Button(L10n.string("action_close", fallback: "Close")) {
-                dismiss()
+                if let onClose { onClose() } else { dismiss() }
             }
+            .nuvioFocusable()
             .buttonStyle(.borderedProminent)
         }
         .padding(50)
