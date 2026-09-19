@@ -3018,8 +3018,15 @@ struct TvDetailsContent: View {
 
     private var macSeasonEpisodes: [NuvioVideo] {
         guard let meta = uiState.meta else { return [] }
+        // Read the season ONCE. Inside the closure it was read per episode, and
+        // `macActiveSeason` is not a stored value: each read re-sorted every
+        // episode in the series, rebuilt the season list and asked the progress
+        // store where the viewer had got to. Over 180 episodes that came to
+        // ~1.1 s per rebuild of the rail, twice per keypress — the second-long
+        // pause between pressing a key and the caret moving.
+        let season = macActiveSeason
         return sortedEpisodes(meta)
-            .filter { $0.season == macActiveSeason }
+            .filter { $0.season == season }
             .sorted { $0.episode < $1.episode }
     }
 
