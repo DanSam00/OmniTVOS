@@ -2677,7 +2677,14 @@ private struct TVMainTabView: View {
         // app's own tab bar, scaled with everything else. The menu column that
         // keyboard focus reaches is mounted above the whole container instead,
         // so it survives Details and the other overlays.
-        tabs
+        //
+        // And no `TabView` either. Its bar is not a window toolbar — the window
+        // has none, and its title bar is transparent and zero-height — but a
+        // strip inside the content, so hiding the bar's items and background
+        // still left a grey band across the top of the canvas. The tabs are
+        // stacked by hand instead, all mounted as `TabView` kept them, with the
+        // selected one in front.
+        macTabs
         #else
         if #available(tvOS 18.0, macOS 15.0, *) {
             tabs
@@ -2716,6 +2723,122 @@ private struct TVMainTabView: View {
         }
     }
 
+    /// The Home tab's content, shared by the tvOS `TabView` and the
+    /// macOS stack below.
+    @ViewBuilder
+    private var homeTabContent: some View {
+        TVHomeView(
+            store: homeStore,
+            repository: CinemetaCatalogRepository(),
+            isActive: selectedTab == .home,
+            isFullScreenOverlayPresented: isFullScreenOverlayPresented,
+            detailsDidDisappearGeneration: detailsDidDisappearGeneration,
+            isProfileSwitching: isProfileSwitching,
+            contentIdentity: TVHomeContentIdentity(
+                profileId: activeProfile?.id ?? "none",
+                catalogRevision: homeCatalogRevision
+            ),
+            collectionsRevision: homeCollectionsRevision,
+            sessionNeedsReauthentication: sessionNeedsReauthentication,
+            onNavigateToDetails: onNavigateToDetails,
+            onOpenCollectionFolder: onOpenCollectionFolder,
+            onResumePlayback: onResumePlayback,
+            onPlayContinueWatchingManually: onPlayContinueWatchingManually,
+            onStartContinueWatchingFromBeginning: onStartContinueWatchingFromBeginning,
+            onRemoveFromContinueWatching: onRemoveFromContinueWatching,
+            onLongPressCard: onLongPressCard,
+            onLongPressContinueWatching: onLongPressContinueWatching,
+            onRequestAccountRefresh: onRequestAccountRefresh,
+            onRequestReauth: { showingReauthSheet = true }
+        )
+            .id(activeProfile?.id ?? "none")
+    }
+
+    /// The Search tab's content, shared by the tvOS `TabView` and the
+    /// macOS stack below.
+    @ViewBuilder
+    private var searchTabContent: some View {
+        searchTab
+    }
+
+    /// The Library tab's content, shared by the tvOS `TabView` and the
+    /// macOS stack below.
+    @ViewBuilder
+    private var libraryTabContent: some View {
+        LibraryView(
+            viewModel: libraryViewModel,
+            store: ProfileSettings.store(for: activeProfile?.id),
+            onContentClick: onNavigateToDetails,
+            onLongPress: onLongPressCard,
+            onOpenCloudLibrary: onOpenCloudLibrary,
+            onPlayCloudFile: onPlayCloudFile
+        )
+            .id(activeProfile?.id ?? "none")
+    }
+
+    /// The Calendar tab's content, shared by the tvOS `TabView` and the
+    /// macOS stack below.
+    @ViewBuilder
+    private var calendarTabContent: some View {
+        CalendarView(onContentClick: onNavigateToDetails)
+            .id(activeProfile?.id ?? "none")
+    }
+
+    /// The Settings tab's content, shared by the tvOS `TabView` and the
+    /// macOS stack below.
+    @ViewBuilder
+    private var settingsTabContent: some View {
+        SettingsView(
+            activeProfile: displayedProfile,
+            accountEmail: accountEmail,
+            isAuthenticated: isAuthenticated,
+            sessionNeedsReauthentication: sessionNeedsReauthentication,
+            onChangeProfileName: onChangeProfileName,
+            onChangeProfileAvatar: onChangeProfileAvatar,
+            onChangeProfilePin: onChangeProfilePin,
+            onVerifyProfilePin: onVerifyProfilePin,
+            onSignIn: {
+                if sessionNeedsReauthentication {
+                    showingReauthSheet = true
+                } else {
+                    onSignIn()
+                }
+            },
+            onSignOut: onSignOut
+        )
+    }
+    #if os(macOS)
+    /// The tabs without a `TabView`: this app draws its own menu, and SwiftUI's
+    /// bar only took a strip off the top of the canvas.
+    ///
+    /// Every tab stays mounted, as it did inside the `TabView`, so switching
+    /// back to one does not rebuild it — Home's shelves, the Library grid and
+    /// the Calendar's month all survive the round trip.
+    @ViewBuilder
+    private var macTabs: some View {
+        ZStack {
+            macTab(.home) { homeTabContent }
+            macTab(.search) { searchTabContent }
+            macTab(.library) { libraryTabContent }
+            macTab(.calendar) { calendarTabContent }
+            macTab(.settings) { settingsTabContent }
+        }
+    }
+
+    @ViewBuilder
+    private func macTab<Content: View>(
+        _ tab: TVTab,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        let isCurrent = selectedTab == tab
+        content()
+            .opacity(isCurrent ? 1 : 0)
+            .allowsHitTesting(isCurrent)
+            .accessibilityHidden(!isCurrent)
+            .zIndex(isCurrent ? 1 : 0)
+    }
+    #endif
+
     private var tabs: some View {
         TabView(selection: $selectedTab) {
             // Keep profile switching as a regular tab on every supported tvOS
@@ -2749,81 +2872,31 @@ private struct TVMainTabView: View {
                 .tag(TVTab.profile)
             #endif
 
-            TVHomeView(
-                store: homeStore,
-                repository: CinemetaCatalogRepository(),
-                isActive: selectedTab == .home,
-                isFullScreenOverlayPresented: isFullScreenOverlayPresented,
-                detailsDidDisappearGeneration: detailsDidDisappearGeneration,
-                isProfileSwitching: isProfileSwitching,
-                contentIdentity: TVHomeContentIdentity(
-                    profileId: activeProfile?.id ?? "none",
-                    catalogRevision: homeCatalogRevision
-                ),
-                collectionsRevision: homeCollectionsRevision,
-                sessionNeedsReauthentication: sessionNeedsReauthentication,
-                onNavigateToDetails: onNavigateToDetails,
-                onOpenCollectionFolder: onOpenCollectionFolder,
-                onResumePlayback: onResumePlayback,
-                onPlayContinueWatchingManually: onPlayContinueWatchingManually,
-                onStartContinueWatchingFromBeginning: onStartContinueWatchingFromBeginning,
-                onRemoveFromContinueWatching: onRemoveFromContinueWatching,
-                onLongPressCard: onLongPressCard,
-                onLongPressContinueWatching: onLongPressContinueWatching,
-                onRequestAccountRefresh: onRequestAccountRefresh,
-                onRequestReauth: { showingReauthSheet = true }
-            )
-                .id(activeProfile?.id ?? "none")
+            homeTabContent
                 .tabItem {
                     Label(TVTab.home.title, systemImage: TVTab.home.symbol)
                 }
                 .tag(TVTab.home)
 
-            searchTab
+            searchTabContent
                 .tabItem {
                     Label(TVTab.search.title, systemImage: TVTab.search.symbol)
                 }
                 .tag(TVTab.search)
 
-            LibraryView(
-                viewModel: libraryViewModel,
-                store: ProfileSettings.store(for: activeProfile?.id),
-                onContentClick: onNavigateToDetails,
-                onLongPress: onLongPressCard,
-                onOpenCloudLibrary: onOpenCloudLibrary,
-                onPlayCloudFile: onPlayCloudFile
-            )
-                .id(activeProfile?.id ?? "none")
+            libraryTabContent
                 .tabItem {
                     Label(TVTab.library.title, systemImage: TVTab.library.symbol)
                 }
                 .tag(TVTab.library)
 
-            CalendarView(onContentClick: onNavigateToDetails)
-                .id(activeProfile?.id ?? "none")
+            calendarTabContent
                 .tabItem {
                     Label(TVTab.calendar.title, systemImage: TVTab.calendar.symbol)
                 }
                 .tag(TVTab.calendar)
 
-            SettingsView(
-                activeProfile: displayedProfile,
-                accountEmail: accountEmail,
-                isAuthenticated: isAuthenticated,
-                sessionNeedsReauthentication: sessionNeedsReauthentication,
-                onChangeProfileName: onChangeProfileName,
-                onChangeProfileAvatar: onChangeProfileAvatar,
-                onChangeProfilePin: onChangeProfilePin,
-                onVerifyProfilePin: onVerifyProfilePin,
-                onSignIn: {
-                    if sessionNeedsReauthentication {
-                        showingReauthSheet = true
-                    } else {
-                        onSignIn()
-                    }
-                },
-                onSignOut: onSignOut
-            )
+            settingsTabContent
                 .tabItem {
                     Label(
                         TVTab.settings.title,

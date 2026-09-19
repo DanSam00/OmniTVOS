@@ -59,6 +59,13 @@ struct MacWindowConfigurator: NSViewRepresentable {
         // Nothing in this UI belongs in a toolbar, and leaving one attached is
         // what triggers the AppKit re-entrancy above.
         window.toolbar = nil
+        window.titlebarSeparatorStyle = .none
+        MacDiagnostics.log(
+            "window.chrome toolbar=\(window.toolbar == nil ? "none" : "present")"
+                + " transparentTitlebar=\(window.titlebarAppearsTransparent)"
+                + " fullSizeContent=\(window.styleMask.contains(.fullSizeContentView))"
+                + " fullScreen=\(window.styleMask.contains(.fullScreen))"
+                + " titlebarHeight=\(Int((window.frame.height - window.contentLayoutRect.height)))")
         // The app draws its own backdrop; without this the window flashes the
         // system background during resize and fullscreen transitions.
         window.backgroundColor = .black
