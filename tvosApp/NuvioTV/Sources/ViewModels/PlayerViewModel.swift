@@ -116,7 +116,17 @@ class PlayerViewModel: ObservableObject {
     /// Per-session, not persisted.
     @Published var audioAmplificationDb: Int = 0
     /// Full-screen settings panel (subtitles / audio / speed) visibility.
-    @Published var showSettingsPanel: Bool = false
+    @Published var showSettingsPanel: Bool = false {
+        didSet {
+            #if os(macOS)
+            // Attribution for a freeze that otherwise shows only as a stalled
+            // main thread; see `openSidePanel`.
+            if showSettingsPanel != oldValue {
+                MacDiagnostics.log("player.settings \(showSettingsPanel ? "open" : "close")")
+            }
+            #endif
+        }
+    }
     /// Active audio route name (e.g. HomePod, TV Speakers, AirPods).
     @Published var currentAudioRouteDescription: String = PlaybackSystemMonitor.currentAudioOutputTitle()
     /// In-player side sheet (episodes / sources).
@@ -3121,6 +3131,11 @@ class PlayerViewModel: ObservableObject {
     }
 
     func openSidePanel(_ panel: PlayerSidePanel) {
+        #if os(macOS)
+        // Pins a freeze to the thing that opened, rather than leaving it as an
+        // unattributed stall in the log.
+        MacDiagnostics.log("player.panel open=\(panel)")
+        #endif
         cancelPauseOverlaySchedule()
         showPauseOverlay = false
         showSettingsPanel = false
@@ -3207,6 +3222,9 @@ class PlayerViewModel: ObservableObject {
     #endif
 
     func closeSidePanel() {
+        #if os(macOS)
+        MacDiagnostics.log("player.panel close")
+        #endif
         sidePanel = nil
         #if os(macOS)
         macPanelFocusedID = nil

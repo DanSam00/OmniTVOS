@@ -44,6 +44,8 @@ enum MacDiagnostics {
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
         log("launch — Omni \(version) (\(build)) on macOS \(ProcessInfo.processInfo.operatingSystemVersionString)")
 
+        startHitchWatchdog()
+
         observe(NSApplication.didFinishLaunchingNotification, as: "app.didFinishLaunching")
         observe(NSApplication.didBecomeActiveNotification, as: "app.didBecomeActive")
         observe(NSApplication.didResignActiveNotification, as: "app.didResignActive")
@@ -74,6 +76,24 @@ enum MacDiagnostics {
         let line = message()
         logger.log("\(line, privacy: .public)")
         queue.async { writeSynchronously(line) }
+    }
+
+    /// Reports whenever the main thread is busy long enough to be felt,
+    /// wherever it happens.
+    ///
+    /// A timer that should fire every 100ms is late by exactly as long as the
+    /// main thread was blocked, so its lateness measures the stall without
+    /// needing to know which screen caused it.
+    private static func startHitchWatchdog() {
+        var expected = CFAbsoluteTimeGetCurrent() + 0.1
+        let timer = Timer(timeInterval: 0.1, repeats: true) { _ in
+            let now = CFAbsoluteTimeGetCurrent()
+            let lateMs = (now - expected) * 1000
+            expected = now + 0.1
+            guard lateMs >= 200 else { return }
+            log(String(format: "hitch blocked=%.0fms", lateMs))
+        }
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     private static func observe(_ name: Notification.Name, as label: String) {
