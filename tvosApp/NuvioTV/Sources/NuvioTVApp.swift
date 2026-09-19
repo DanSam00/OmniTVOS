@@ -2710,15 +2710,76 @@ private struct TVMainTabView: View {
         // still left a grey band across the top of the canvas. The tabs are
         // stacked by hand instead, all mounted as `TabView` kept them, with the
         // selected one in front.
-        macTabs
+        withTabChrome(macTabs)
         #else
         if #available(tvOS 18.0, macOS 15.0, *) {
-            tabs
-                .tabViewStyle(.sidebarAdaptable)
+            withTabChrome(tabs.tabViewStyle(.sidebarAdaptable))
         } else {
-            tabs
+            withTabChrome(tabs)
         }
         #endif
+    }
+
+    /// Everything that hung off the `TabView` and belongs to the tab container
+    /// rather than to the tabs: the backdrop, the re-auth sheet, and the
+    /// profile bookkeeping.
+    ///
+    /// It has to sit outside, because macOS no longer has a `TabView` to hang
+    /// it on — and when this moved, the modifiers went with it and stopped
+    /// running there at all.
+    @ViewBuilder
+    private func withTabChrome<Content: View>(_ content: Content) -> some View {
+        content
+        .background(Color.nuvioBackground(amoled: amoled, body: bodyColor).ignoresSafeArea())
+        .sheet(isPresented: $showingReauthSheet) {
+            ReauthSheet(auth: authManager) {
+                syncManager.beginPostLoginSync()
+            }
+        }
+        .onAppear {
+            AvatarCatalogStore.shared.loadIfNeeded()
+            profileTabAvatar.refresh(avatarId: displayedProfile?.avatarId)
+            #if os(macOS)
+            MacMenuState.shared.profileAvatarId = displayedProfile?.avatarId
+            MacMenuState.shared.profileName = profileTabTitle
+            #endif
+            if sessionNeedsReauthentication {
+                showingReauthSheet = true
+            }
+        }
+        .onChange(of: sessionNeedsReauthentication) { _, needsReauth in
+            if needsReauth {
+                showingReauthSheet = true
+            }
+        }
+        .onChange(of: displayedProfile?.avatarId) { _, newValue in
+            profileTabAvatar.refresh(avatarId: newValue)
+            #if os(macOS)
+            MacMenuState.shared.profileAvatarId = newValue
+            #endif
+        }
+        #if os(macOS)
+        // The name and avatar arrive after the profile does, and again on a
+        // switch, so the menu row follows both rather than the first value it
+        // happened to see.
+        .onChange(of: displayedProfile?.id) { _, _ in
+            MacMenuState.shared.profileAvatarId = displayedProfile?.avatarId
+            MacMenuState.shared.profileName = profileTabTitle
+        }
+        .onChange(of: profileTabTitle) { _, name in
+            MacMenuState.shared.profileName = name
+        }
+        #endif
+        .onChange(of: selectedTab) { _, tab in
+            if tab == .profile {
+                onSwitchProfile()
+            }
+        }
+        // Re-attempt once the catalog finishes loading, since the first refresh
+        // can't resolve the avatar image before then.
+        .onReceive(AvatarCatalogStore.shared.$items) { _ in
+            profileTabAvatar.refresh(avatarId: displayedProfile?.avatarId)
+        }
     }
 
     /// Search screen chosen in Settings → Layout & Discovery → Search Style.
@@ -2930,43 +2991,6 @@ private struct TVMainTabView: View {
                     )
                 }
                 .tag(TVTab.settings)
-        }
-        .background(Color.nuvioBackground(amoled: amoled, body: bodyColor).ignoresSafeArea())
-        .sheet(isPresented: $showingReauthSheet) {
-            ReauthSheet(auth: authManager) {
-                syncManager.beginPostLoginSync()
-            }
-        }
-        .onAppear {
-            AvatarCatalogStore.shared.loadIfNeeded()
-            profileTabAvatar.refresh(avatarId: displayedProfile?.avatarId)
-            #if os(macOS)
-            MacMenuState.shared.profileAvatarId = displayedProfile?.avatarId
-            #endif
-            if sessionNeedsReauthentication {
-                showingReauthSheet = true
-            }
-        }
-        .onChange(of: sessionNeedsReauthentication) { _, needsReauth in
-            if needsReauth {
-                showingReauthSheet = true
-            }
-        }
-        .onChange(of: displayedProfile?.avatarId) { _, newValue in
-            profileTabAvatar.refresh(avatarId: newValue)
-            #if os(macOS)
-            MacMenuState.shared.profileAvatarId = newValue
-            #endif
-        }
-        .onChange(of: selectedTab) { _, tab in
-            if tab == .profile {
-                onSwitchProfile()
-            }
-        }
-        // Re-attempt once the catalog finishes loading, since the first refresh
-        // can't resolve the avatar image before then.
-        .onReceive(AvatarCatalogStore.shared.$items) { _ in
-            profileTabAvatar.refresh(avatarId: displayedProfile?.avatarId)
         }
     }
 }
