@@ -11,6 +11,12 @@ public struct UserProfileView: View {
     @State private var newProfilePin = ""
     @State private var newProfileAvatarId = ProfileAvatarCatalog.defaultId
     @FocusState private var focusedItem: String?
+    #if os(macOS)
+    /// macOS has no focus engine, so the cards were unreachable: the profile
+    /// screen could only be used with the mouse. One band, left to right.
+    @StateObject private var macFocus = MacScreenFocus("profiles")
+    @ObservedObject private var keyRouter = MacKeyRouter.shared
+    #endif
 
     private static let addProfileFocusId = "add_profile"
     private static let retryFocusId = "retry_account_sync"
@@ -26,6 +32,47 @@ public struct UserProfileView: View {
         self.onRetryAccountSync = onRetryAccountSync
         self.onProfileCreated = onProfileCreated
     }
+
+    /// Whether `id` draws as focused.
+    private func isItemFocused(_ id: String) -> Bool {
+        #if os(macOS)
+        macFocus.itemID == id
+        #else
+        focusedItem == id
+        #endif
+    }
+
+    #if os(macOS)
+    /// The cards and Add Profile in one row, with Retry above them when the
+    /// account failed to sync.
+    private var macBands: [MacFocusBand] {
+        var bands: [MacFocusBand] = []
+        if accountSyncError != nil, onRetryAccountSync != nil {
+            bands.append(MacFocusBand(id: "retry", items: [Self.retryFocusId]))
+        }
+        bands.append(MacFocusBand(
+            id: "profiles",
+            items: viewModel.profiles.map(\.id) + [Self.addProfileFocusId]
+        ))
+        return bands
+    }
+
+    private func macActivate(_ band: String, _ item: String) {
+        if item == Self.retryFocusId {
+            onRetryAccountSync?()
+        } else if item == Self.addProfileFocusId {
+            showingAddProfile = true
+        } else if let profile = viewModel.profiles.first(where: { $0.id == item }) {
+            handleProfileSelection(profile)
+        }
+    }
+
+    /// The PIN pad and the Add Profile sheet cover this screen and disable it,
+    /// so they own the keyboard while they are up.
+    private var macOwnsKeyboard: Bool {
+        !viewModel.isPinEntryVisible && !showingAddProfile
+    }
+    #endif
 
     public var body: some View {
         ZStack {
@@ -83,7 +130,7 @@ public struct UserProfileView: View {
                     ForEach(viewModel.profiles, id: \.id) { profile in
                         ProfileCard(
                             profile: profile,
-                            isFocused: focusedItem == profile.id
+                            isFocused: isItemFocused(profile.id)
                         ) {
                             handleProfileSelection(profile)
                         }
@@ -92,7 +139,7 @@ public struct UserProfileView: View {
                     }
 
                     AddProfileButton(
-                        isFocused: focusedItem == Self.addProfileFocusId
+                        isFocused: isItemFocused(Self.addProfileFocusId)
                     ) {
                         showingAddProfile = true
                     }
@@ -147,6 +194,23 @@ public struct UserProfileView: View {
         .onChange(of: accountSyncError) { _, _ in
             focusRetryIfNeeded()
         }
+        #if os(macOS)
+        .onAppear {
+            macFocus.update(macBands)
+            if let target = initialFocusTarget() {
+                macFocus.focus(band: target == Self.retryFocusId ? "retry" : "profiles", item: target)
+            }
+            macFocus.syncClaim(isCurrent: macOwnsKeyboard)
+        }
+        .onDisappear { macFocus.release() }
+        .onChange(of: viewModel.profiles.map(\.id)) { _, _ in macFocus.update(macBands) }
+        .onChange(of: accountSyncError) { _, _ in macFocus.update(macBands) }
+        .onChange(of: macOwnsKeyboard) { _, owns in macFocus.syncClaim(isCurrent: owns) }
+        .onChange(of: keyRouter.latest) { _, press in
+            guard let press else { return }
+            macFocus.handle(press.key, activate: macActivate)
+        }
+        #endif
     }
 
     private func initialFocusTarget() -> String? {

@@ -14,6 +14,10 @@ final class MacMenuState: ObservableObject {
     @Published var isFocused = false
     /// The row the caret sits on, which is not yet the selected tab.
     @Published var highlighted: TVTab = .home
+    /// The signed-in profile's avatar, drawn on the Profiles row as the tvOS
+    /// tab bar draws it. Published from `TVMainTabView`, which owns the
+    /// profile; nil falls back to the person symbol.
+    @Published var profileAvatarId: String?
 
     private init() {}
 
@@ -253,9 +257,14 @@ struct MacHomeMenu: View {
         let isCurrent = selectedTab == tab
 
         HStack(spacing: 14) {
-            Image(systemName: tab.symbol)
-                .font(.system(size: 22, weight: .medium))
-                .frame(width: 30)
+            if tab == .profile, let avatarId = state.profileAvatarId, !avatarId.isEmpty {
+                ProfileAvatarView(avatarId: avatarId, size: 30)
+                    .frame(width: 30)
+            } else {
+                Image(systemName: tab.symbol)
+                    .font(.system(size: 22, weight: .medium))
+                    .frame(width: 30)
+            }
             if state.isFocused {
                 Text(tab.title)
                     .font(.system(size: 20, weight: isCurrent ? .semibold : .regular))

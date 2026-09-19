@@ -336,6 +336,19 @@ struct ContentView: View {
         .onChange(of: tabCommands.requestedTab) { _, requested in
             guard let requested else { return }
             tabCommands.requestedTab = nil
+            // Profile is a row in the menu but not a tab: macOS fences the
+            // profile page out of the `TabView`, so selecting it would leave
+            // the window on a tag with nothing behind it. It switches profiles
+            // instead, which is what the tvOS tab does when chosen.
+            if requested == .profile {
+                MacDiagnostics.log("tab.request profile screen=\(activeScreen)")
+                homeStore.reset()
+                withAnimation(.easeInOut(duration: 0.28)) {
+                    profileViewModel.activeProfile = nil
+                    activeScreen = .profileSelection
+                }
+                return
+            }
             selectedTab = requested
             MacDiagnostics.log("tab.request \(requested.rawValue) screen=\(activeScreen)")
             // Switching tabs from the menu changed the tab underneath a details
@@ -2914,6 +2927,9 @@ private struct TVMainTabView: View {
         .onAppear {
             AvatarCatalogStore.shared.loadIfNeeded()
             profileTabAvatar.refresh(avatarId: displayedProfile?.avatarId)
+            #if os(macOS)
+            MacMenuState.shared.profileAvatarId = displayedProfile?.avatarId
+            #endif
             if sessionNeedsReauthentication {
                 showingReauthSheet = true
             }
@@ -2925,6 +2941,9 @@ private struct TVMainTabView: View {
         }
         .onChange(of: displayedProfile?.avatarId) { _, newValue in
             profileTabAvatar.refresh(avatarId: newValue)
+            #if os(macOS)
+            MacMenuState.shared.profileAvatarId = newValue
+            #endif
         }
         .onChange(of: selectedTab) { _, tab in
             if tab == .profile {

@@ -16,10 +16,13 @@ final class MacTabCommandBus: ObservableObject {
 
     @Published var requestedTab: TVTab?
 
-    /// Only the tabs that exist on macOS right now. Search, Library, Calendar
-    /// and the profile switcher are parked while keyboard navigation is being
-    /// settled — see the `#if !os(macOS)` fences in `TVMainTabView.tabs`.
-    static let availableTabs: [TVTab] = [.home, .search, .library, .calendar, .settings]
+    /// What the menu column offers, in order.
+    ///
+    /// Profile leads, as it does in the tvOS tab bar. It is not a tab here —
+    /// the macOS `TabView` has no page behind it — so choosing it switches
+    /// profiles rather than selecting anything; see the request handler in
+    /// `ContentView`.
+    static let availableTabs: [TVTab] = [.profile, .home, .search, .library, .calendar, .settings]
 
     private init() {}
 
