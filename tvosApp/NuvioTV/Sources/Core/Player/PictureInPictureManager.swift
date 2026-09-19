@@ -100,6 +100,14 @@ final class PictureInPictureManager: NSObject, ObservableObject {
     private var startedAutomatically = false
     private var focusObserver: NSObjectProtocol?
 
+    /// True while this object, rather than AVKit, is driving the return to the
+    /// full-screen player.
+    private var isReturningFromAutomaticPiP = false
+
+    /// True once that return has asked AVKit to close the mini player, so a
+    /// second surface rebind does not ask again.
+    private var didRequestAutomaticStop = false
+
     /// Open the mini player because the app lost focus, and arm the return.
     ///
     /// Owned here rather than by `PlayerViewModel` because starting PiP
@@ -138,10 +146,63 @@ final class PictureInPictureManager: NSObject, ObservableObject {
                 guard let self else { return }
                 pipLog("focus returned auto=\(self.startedAutomatically) active=\(self.isPictureInPictureActive)")
                 guard self.startedAutomatically else { return }
-                self.startedAutomatically = false
-                self.stopPictureInPicture()
+                self.returnFromAutomaticStart()
             }
         }
+    }
+
+    /// Put the film back in the app window now that the viewer is looking at it
+    /// again.
+    ///
+    /// Not simply `stopPictureInPicture()`. Starting PiP dismisses the
+    /// full-screen player, so by the time focus comes back AVKit's source layer
+    /// is in no window at all and the stop request is ignored outright: the log
+    /// showed the call going in and no `willStop` ever coming back, and the
+    /// film stayed in the mini player for the rest of the session. AVKit's own
+    /// restore button works because it asks the app to put its UI back *first*,
+    /// so that is the order used here — remount the player, wait for the
+    /// surface to rebind, then close the mini player.
+    private func returnFromAutomaticStart() {
+        guard isPictureInPictureActive, !isRestoringUI else {
+            startedAutomatically = false
+            return
+        }
+        guard let context = activeContext, let onRestoreUI else {
+            // Nothing to restore into. Ask AVKit to close it anyway rather than
+            // leaving the viewer with a mini player they did not open.
+            startedAutomatically = false
+            stopPictureInPicture()
+            return
+        }
+
+        isRestoringUI = true
+        isReturningFromAutomaticPiP = true
+        didRequestAutomaticStop = false
+        restoreSurfaceReady = false
+        onRestoreUI(context) { [weak self] success in
+            guard let self, self.isReturningFromAutomaticPiP, !success else { return }
+            pipLog("return refused by the app")
+            self.clearAutomaticReturn()
+            self.isRestoringUI = false
+            self.startedAutomatically = false
+        }
+
+        // The player is remounted asynchronously, and AVKit can still refuse
+        // the stop. Neither is worth holding the restore flags open for — they
+        // suppress the surface rebinding that the full-screen player needs.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard let self, self.isReturningFromAutomaticPiP else { return }
+            pipLog("return did not complete; letting go")
+            self.clearAutomaticReturn()
+            self.isRestoringUI = false
+            self.startedAutomatically = false
+        }
+    }
+
+    private func clearAutomaticReturn() {
+        isReturningFromAutomaticPiP = false
+        didRequestAutomaticStop = false
     }
     #endif
 
@@ -301,6 +362,10 @@ final class PictureInPictureManager: NSObject, ObservableObject {
         pendingRestoreResult = nil
         restoreSurfaceReady = false
         configuredSoftwareDisplayLayer = nil
+        #if os(macOS)
+        startedAutomatically = false
+        clearAutomaticReturn()
+        #endif
         restoreCompletion?(false)
     }
 }
@@ -350,6 +415,9 @@ extension PictureInPictureManager: @preconcurrency AVPictureInPictureControllerD
     ) {
         guard pipController === pictureInPictureController else { return }
         pipLog("failedToStartPictureInPictureWithError: \(error.localizedDescription)")
+        #if os(macOS)
+        startedAutomatically = false
+        #endif
         isPictureInPictureActive = false
         activeAetherController?.engine.pictureInPictureActive = false
     }
@@ -362,6 +430,10 @@ extension PictureInPictureManager: @preconcurrency AVPictureInPictureControllerD
     func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         guard pipController === pictureInPictureController else { return }
         pipLog("didStopPictureInPicture (isRestoringUI=\(isRestoringUI))")
+        #if os(macOS)
+        startedAutomatically = false
+        clearAutomaticReturn()
+        #endif
         isPictureInPictureActive = false
         activeAetherController?.engine.pictureInPictureActive = false
         activeAetherController?.rebindSurface()
@@ -381,6 +453,17 @@ extension PictureInPictureManager: @preconcurrency AVPictureInPictureControllerD
         guard isRestoringUI else { return }
         restoreSurfaceReady = true
         activeAetherController?.rebindSurface()
+        #if os(macOS)
+        if isReturningFromAutomaticPiP {
+            // Our own return: the surface is back, so AVKit now has somewhere
+            // to put the picture and the stop request will be honoured.
+            guard !didRequestAutomaticStop else { return }
+            didRequestAutomaticStop = true
+            pipLog("surface rebound; closing the mini player")
+            pipController?.stopPictureInPicture()
+            return
+        }
+        #endif
         finishRestoreIfReady()
     }
 
