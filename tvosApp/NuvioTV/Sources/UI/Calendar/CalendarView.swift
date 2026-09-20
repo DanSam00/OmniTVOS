@@ -1216,23 +1216,38 @@ private struct DayEntriesPanel: View {
                 .padding(.top, 52)
                 .padding(.bottom, 20)
 
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(spacing: 12) {
-                        ForEach(entries) { entry in
-                            DayPanelRow(
-                                entry: entry,
-                                accentColor: accentColor,
-                                macIsFocused: macFocusedEntryID == entry.id
-                            ) {
-                                onSelect(entry)
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical, showsIndicators: false) {
+                        VStack(spacing: 12) {
+                            ForEach(entries) { entry in
+                                DayPanelRow(
+                                    entry: entry,
+                                    accentColor: accentColor,
+                                    macIsFocused: macFocusedEntryID == entry.id
+                                ) {
+                                    onSelect(entry)
+                                }
+                                .id(entry.id)
+                                .nuvioFocusable()
+                                .focused($focusedEntryID, equals: entry.id)
+                                .focusEffectDisabledIfAvailable()
                             }
-                            .nuvioFocusable()
-                            .focused($focusedEntryID, equals: entry.id)
-                            .focusEffectDisabledIfAvailable()
+                        }
+                        .padding(.horizontal, 26)
+                        .padding(.bottom, 40)
+                    }
+                    #if os(macOS)
+                    // tvOS scrolls the focused row into view by itself. macOS
+                    // has no focus engine to do it, so the caret walked off the
+                    // bottom of the panel and the rows below it stayed
+                    // unreachable however far Down was held.
+                    .onChange(of: macFocusedEntryID) { _, id in
+                        guard let id else { return }
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            proxy.scrollTo(id, anchor: .center)
                         }
                     }
-                    .padding(.horizontal, 26)
-                    .padding(.bottom, 40)
+                    #endif
                 }
             }
             .frame(width: 760)
