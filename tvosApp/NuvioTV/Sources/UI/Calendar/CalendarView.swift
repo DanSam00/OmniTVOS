@@ -153,6 +153,10 @@ struct CalendarView: View {
         }
         .onDisappear { macFocus.release() }
         .onChange(of: macTabState.current, initial: true) { _, tab in
+            // macOS keeps every tab mounted, so a panel left open stays open
+            // behind the other tabs and owns the keyboard on the way back —
+            // the month grid was unreachable until it was closed.
+            if tab != .calendar { closeDayPanel() }
             macFocus.update(macBands)
             macFocus.syncClaim(isCurrent: tab == .calendar)
         }
@@ -171,6 +175,14 @@ struct CalendarView: View {
         }
         .onChange(of: keyRouter.latest) { _, press in
             guard let press else { return }
+            // The panel slid in from the right, so Left is how it goes back.
+            // Its band is one column wide, so the caret has nowhere to move
+            // and the key would otherwise reach the app-wide rule that says
+            // running off the left edge of a screen opens the menu.
+            if press.key == .left, panelDayKey != nil {
+                closeDayPanel()
+                return
+            }
             macFocus.handle(press.key, activate: macActivate)
             macSkipBlankDay()
         }
@@ -283,13 +295,14 @@ struct CalendarView: View {
     /// open. Returning nil hands Menu back to the tab bar — without that the
     /// app would quit from here.
     private var exitCommand: (() -> Void)? {
-        if let openDay = panelDayKey {
-            return {
-                withAnimation(.easeOut(duration: 0.22)) { panelDayKey = nil }
-                restoreFocus(toDay: openDay)
-            }
-        }
-        return nil
+        panelDayKey == nil ? nil : { closeDayPanel() }
+    }
+
+    /// Closes the day panel and puts the caret back on the day it came from.
+    private func closeDayPanel() {
+        guard let openDay = panelDayKey else { return }
+        withAnimation(.easeOut(duration: 0.22)) { panelDayKey = nil }
+        restoreFocus(toDay: openDay)
     }
 
     /// Puts focus back on the day whose panel was just closed, instead of
