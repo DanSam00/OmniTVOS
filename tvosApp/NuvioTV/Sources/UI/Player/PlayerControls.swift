@@ -1014,8 +1014,7 @@ struct PlayerSettingsPanel: View {
             case .up:
                 break
             case .back:
-                // The player's own key catcher owns Escape — it closes the
-                // panel rather than moving the caret inside it.
+                // Closed above, before the caret sees the key.
                 break
             }
             return
@@ -1028,7 +1027,7 @@ struct PlayerSettingsPanel: View {
 
         switch key {
         case .back:
-            // Handled by the player's key catcher, which closes the panel.
+            // Closed above, before the caret sees the key.
             break
         case .up:
             if position.row > 0 {
@@ -1110,6 +1109,14 @@ struct PlayerSettingsPanel: View {
         #if os(macOS)
         .onChange(of: keyRouter.latest) { _, press in
             guard let press, MacKeyRouter.shared.isFront(macKeyToken) else { return }
+            // Escape closes the panel, and it has to be done here: claiming the
+            // router is what routes these presses, and the router consumes
+            // every key it routes, so the player's own catcher never sees this
+            // one. It used to be left to that catcher, and Escape simply died.
+            if press.key == .back {
+                onClose()
+                return
+            }
             macMove(press.key)
         }
         // Changing tab rebuilds the page, so the caret has to land somewhere
