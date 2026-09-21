@@ -91,6 +91,7 @@ final class MacKeyRouter: ObservableObject {
     @Published private(set) var latest: Press?
 
     private var stack: [UUID] = []
+    private var barriers: [(token: UUID, depth: Int)] = []
     private var sequence = 0
     private var monitor: Any?
 
@@ -110,8 +111,39 @@ final class MacKeyRouter: ObservableObject {
     }
 
     func isFront(_ token: UUID?) -> Bool {
-        guard let token else { return false }
+        guard let token, isRoutable else { return false }
         return stack.last == token
+    }
+
+    /// Claims made before this point stop receiving keys until the barrier is
+    /// lifted.
+    ///
+    /// A full-screen overlay with its own key monitor — the player — covers
+    /// the tab screens, but those screens go on holding the router: the tab
+    /// view keeps every tab mounted, so their claim tracks which tab is
+    /// current and knows nothing about what is on top of it. Since the router
+    /// consumes every key it routes, the player's monitor never saw one, and
+    /// the log showed calendar holding the keyboard across four playback
+    /// sessions in a row. The barrier masks what is underneath without
+    /// disturbing it, and anything claimed above it — the player's own
+    /// settings panel — still routes normally.
+    func pushBarrier() -> UUID {
+        installMonitorIfNeeded()
+        let token = UUID()
+        barriers.append((token, stack.count))
+        MacDiagnostics.log("keys.barrier up depth=\(stack.count)")
+        return token
+    }
+
+    func popBarrier(_ token: UUID?) {
+        guard let token, barriers.contains(where: { $0.token == token }) else { return }
+        barriers.removeAll { $0.token == token }
+        MacDiagnostics.log("keys.barrier down")
+    }
+
+    /// False while every live claim sits below a barrier.
+    private var isRoutable: Bool {
+        stack.count > (barriers.last?.depth ?? 0)
     }
 
     private func installMonitorIfNeeded() {
@@ -133,7 +165,7 @@ final class MacKeyRouter: ObservableObject {
             case .up, .down: break
             }
         }
-        guard !stack.isEmpty else { return event }
+        guard !stack.isEmpty, isRoutable else { return event }
         sequence &+= 1
         latest = Press(key: key, sequence: sequence)
         return nil

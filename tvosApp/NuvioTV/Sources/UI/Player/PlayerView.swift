@@ -102,6 +102,9 @@ struct PlayerView: View {
     /// moves on macOS, so the skip, next-episode and transport buttons were
     /// unreachable from the keyboard.
     @State private var macCaret: MacPlayerCaret?
+    /// Holds the key router's barrier for as long as the player is on screen,
+    /// so the tab screen underneath stops swallowing keys meant for here.
+    @State private var macKeyBarrier: UUID?
     /// The same, for the post-play recommendations screen.
     @State private var macPostPlayCaretState: PostPlayFocusItem?
     @AppStorage(SettingsKey.playerShowPiP) private var playerShowPiP = true
@@ -538,8 +541,15 @@ struct PlayerView: View {
                 resolver: resolveNextStream
             )
         }
+        #if os(macOS)
+        .onAppear { macKeyBarrier = MacKeyRouter.shared.pushBarrier() }
+        #endif
         .onDisappear {
             PlaybackStartupTiming.cancel()
+            #if os(macOS)
+            MacKeyRouter.shared.popBarrier(macKeyBarrier)
+            macKeyBarrier = nil
+            #endif
             if !PictureInPictureManager.shared.isPictureInPictureActive {
                 PlaybackWakeLock.release()
                 viewModel.shutdown()
