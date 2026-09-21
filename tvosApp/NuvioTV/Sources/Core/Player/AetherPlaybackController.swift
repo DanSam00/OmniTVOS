@@ -1566,12 +1566,35 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
     /// already runs on every load; it just had nowhere to go.
     private static let engineLogBridge: Void = {
         EngineLog.handler = { line in
-            // Only the periodic probe and session lifecycle. Per-segment
-            // chatter would bury the app's own traces.
-            guard line.contains("rss=") || line.contains("[NativeAVPlayerHost]") else { return }
+            guard forwardsEngineLine(line) else { return }
             MacDiagnostics.log("aether " + line)
         }
     }()
+
+    /// Which engine lines reach the app log.
+    ///
+    /// The probe and the native host were the whole list, which was enough
+    /// until a stall turned out to be a -15628 loader poison — AVPlayer asking
+    /// for a segment index the producer never emitted. The engine documents
+    /// that cause itself, but the evidence for it is in the planning, cache and
+    /// serving lines, none of which were being forwarded. They are now.
+    ///
+    /// Widening this is cheaper than it looks: `EngineLog` never mirrors its
+    /// `.verbose` level to a host handler at all, so the per-segment and
+    /// per-request traces cannot arrive here whatever this returns. What is
+    /// listed below is the default level only — lifecycle and decisions, a
+    /// handful of lines per session each.
+    private static func forwardsEngineLine(_ line: String) -> Bool {
+        let wanted = [
+            "rss=",                  // the periodic memory/buffer probe
+            "[NativeAVPlayerHost]",  // AVPlayer's own status, errorLog included
+            "[HLSVideoEngine]",      // segment planning, retention budget
+            "[SegmentCache]",        // what was stored, pruned and served
+            "[HLSLocalServer]",      // what AVPlayer actually asked us for
+            "[AetherEngine]",        // session lifecycle
+        ]
+        return wanted.contains { line.contains($0) }
+    }
     #endif
 
     var onPlaybackSuspended: ((Int64, Int64) -> Void)?
