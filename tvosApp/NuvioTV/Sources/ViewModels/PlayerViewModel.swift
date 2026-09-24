@@ -256,6 +256,20 @@ class PlayerViewModel: ObservableObject {
     /// HLS playlist refreshes briefly report loading during healthy playback.
     /// Only surface a spinner when that state persists long enough to be a stall.
     private static let liveBufferingIndicatorDelay: TimeInterval = 1.25
+    /// Last playhead position seen to move, and when.
+    ///
+    /// The engine raises `isPlayerLoading` for seeks, playlist refreshes and
+    /// short buffer top-ups, and on those phases it deliberately keeps the
+    /// previous `isPlayerPlaying` "so UI does not flicker pause icons". The
+    /// status mapping tested loading first, so any of them painted a spinner
+    /// over video that was still moving. Whether the picture actually stopped
+    /// is not a question either flag answers — only the playhead does.
+    private var lastMovingPositionMs: Int64 = -1
+    private var lastPositionMoveAt = Date.distantPast
+    /// How long the playhead must sit still before it counts as stopped rather
+    /// than between frames. A 24fps frame is 42ms; a long GOP fetch is a few
+    /// hundred. Below a second is noise, not a stall a viewer would call one.
+    private static let stoppedPlayheadGrace: TimeInterval = 1.0
     /// Episode being played, parsed from the subtitle line ("S1 · E3 · Title")
     /// DetailsScreen builds; nil for movies/trailers. Persisted with Continue
     /// Watching so the Home hero can say which episode is in progress.
@@ -1792,6 +1806,14 @@ class PlayerViewModel: ObservableObject {
             }
         }
 
+        // Track the playhead before anything reads `playheadHasStopped`.
+        if c.positionMs != lastMovingPositionMs {
+            lastMovingPositionMs = c.positionMs
+            lastPositionMoveAt = Date()
+        }
+        let playheadHasStopped =
+            Date().timeIntervalSince(lastPositionMoveAt) >= Self.stoppedPlayheadGrace
+
         let engineStatus: PlayerStatus
         if !c.currentErrorMessage.isEmpty {
             engineStatus = .error(c.currentErrorMessage)
@@ -1804,6 +1826,10 @@ class PlayerViewModel: ObservableObject {
                 engineStatus = Date().timeIntervalSince(beganAt) >= Self.liveBufferingIndicatorDelay
                     ? .buffering
                     : .playing
+            } else if c.isPlayerPlaying, !playheadHasStopped {
+                // Loading, but the picture is still moving: a seek, a playlist
+                // refresh or a top-up. Not something to put a spinner over.
+                engineStatus = .playing
             } else {
                 engineStatus = .buffering
             }
