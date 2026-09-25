@@ -1579,12 +1579,21 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
     /// that cause itself, but the evidence for it is in the planning, cache and
     /// serving lines, none of which were being forwarded. They are now.
     ///
-    /// Widening this is cheaper than it looks: `EngineLog` never mirrors its
-    /// `.verbose` level to a host handler at all, so the per-segment and
-    /// per-request traces cannot arrive here whatever this returns. What is
-    /// listed below is the default level only — lifecycle and decisions, a
-    /// handful of lines per session each.
+    /// `EngineLog` never mirrors its `.verbose` level to a host handler, so the
+    /// traces gated behind that level cannot arrive here whatever this returns.
+    /// That is not the same as "nothing per-item arrives", which is what this
+    /// comment used to claim: plenty is emitted per cue or per request at the
+    /// default level, so anything that chatty is turned away by name above.
     private static func forwardsEngineLine(_ line: String) -> Bool {
+        // Per-cue subtitle bookkeeping, one line a second each. Measured at 41%
+        // of the whole log after this filter was widened, and neither says
+        // anything about whether video segments are arriving — which is what
+        // the widening was for. The claim at the time, that `.verbose` gating
+        // meant nothing per-item could reach a host handler, was wrong: these
+        // are emitted at the default level.
+        if line.contains("subtitle-delivery") || line.contains("subtitle-resolution") {
+            return false
+        }
         let wanted = [
             "rss=",                  // the periodic memory/buffer probe
             "[NativeAVPlayerHost]",  // AVPlayer's own status, errorLog included
