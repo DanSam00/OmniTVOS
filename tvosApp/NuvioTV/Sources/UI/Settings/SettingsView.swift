@@ -9369,6 +9369,16 @@ private struct SyncedAddonSettingsRow: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
+        rowBody
+            // Never registered, so the caret could not reach an add-on at all —
+            // and the buttons wired to its columns were unreachable with it,
+            // since they read the row id from the environment this installs.
+            .macSettingsRow("addon.synced.\(addon.id)") {
+                onEnabledChange?(!addon.isEnabled)
+            }
+    }
+
+    private var rowBody: some View {
         HStack(spacing: 14) {
             rowButton
 
@@ -12354,6 +12364,13 @@ private struct AddonSettingsRow: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
+        rowBody
+            .macSettingsRow("addon.\(addon.id)") {
+                onEnabledChange?(!addon.isInstalled)
+            }
+    }
+
+    private var rowBody: some View {
         HStack(spacing: 14) {
             rowButton
 
