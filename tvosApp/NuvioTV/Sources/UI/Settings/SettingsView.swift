@@ -8871,6 +8871,7 @@ private struct AddonsSettingsSection: View {
     @State private var addonURLInput = ""
     @State private var addons: [AddonItem] = AddonItem.defaults
     @State private var syncedAddons: [SyncedAddon] = []
+    @State private var editingAddon: SyncedAddon?
 
     /// The add-on rows in view order, named from the data rather than counted
     /// as they render — which is what lets the list below be lazy.
@@ -8912,6 +8913,7 @@ private struct AddonsSettingsSection: View {
                         canMoveDown: index < syncedAddons.count - 1,
                         onEnabledChange: { isEnabled in setAddonEnabled(at: index, isEnabled: isEnabled) },
                         onDelete: { removeAddon(at: index) },
+                        onEdit: { editingAddon = addon },
                         onMove: { up in moveAddon(at: index, up: up) }
                     )
                 }
@@ -8943,6 +8945,47 @@ private struct AddonsSettingsSection: View {
         .task(id: streamAddonManifestURL + "\n" + streamAddonManifestURLs + "\n" + streamAddonManifestStates) {
             await loadSyncedAddons()
         }
+        .modalCover(item: $editingAddon) { addon in
+            AddonEditorSheet(
+                addon: addon,
+                accentColor: accentColor,
+                onSave: { name, urlText in
+                    saveAddonEdit(addon, name: name, urlText: urlText)
+                    editingAddon = nil
+                },
+                onCancel: { editingAddon = nil }
+            )
+        }
+    }
+
+    /// Applies an edit to one add-on.
+    ///
+    /// The name is an override stored beside the preferences, because
+    /// `StreamAddonPreference` holds a URL and a flag and nothing else. A
+    /// changed URL is a different add-on: the entry is repointed in place so it
+    /// keeps its position in the list, and the name travels with it.
+    private func saveAddonEdit(_ addon: SyncedAddon, name: String, urlText: String) {
+        guard let index = syncedAddons.firstIndex(where: { $0.id == addon.id }),
+              let newURL = CinemetaCatalogRepository.normalizedManifestURL(from: urlText)
+        else { return }
+
+        let urlChanged = newURL != addon.url
+        if urlChanged {
+            AddonNameOverrides.move(from: addon.url, to: newURL)
+        }
+        // An empty name clears the override rather than storing a blank.
+        let manifestName = CinemetaCatalogRepository.streamAddonName(for: newURL)
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        AddonNameOverrides.setName(trimmed == manifestName ? nil : trimmed, for: newURL)
+
+        if urlChanged {
+            var replacement = SyncedAddon(url: newURL, isEnabled: addon.isEnabled)
+            replacement.name = AddonNameOverrides.name(for: newURL) ?? replacement.name
+            syncedAddons[index] = replacement
+        } else {
+            syncedAddons[index].name = AddonNameOverrides.name(for: newURL) ?? manifestName
+        }
+        persistSyncedAddons()
     }
 
     /// Reorders the configured manifests, rewrites the settings the repository
@@ -9268,6 +9311,133 @@ private struct AddonsSettingsSection: View {
 /// One add-on synced from the account (or entered manually), shown in the
 /// Add-ons section. Starts with just the manifest URL; name/version/description
 /// arrive once the manifest is fetched.
+/// Editing one add-on: the name shown for it, and the manifest it points at.
+private struct AddonEditorSheet: View {
+    let original: SyncedAddon
+    let accentColor: Color
+    let onSave: (String, String) -> Void
+    let onCancel: () -> Void
+
+    @State private var name: String
+    @State private var urlText: String
+
+    init(addon: SyncedAddon,
+         accentColor: Color,
+         onSave: @escaping (String, String) -> Void,
+         onCancel: @escaping () -> Void) {
+        self.original = addon
+        self.accentColor = accentColor
+        self.onSave = onSave
+        self.onCancel = onCancel
+        _name = State(initialValue: addon.name)
+        _urlText = State(initialValue: addon.url.absoluteString)
+    }
+
+    private var isValid: Bool {
+        CinemetaCatalogRepository.normalizedManifestURL(from: urlText) != nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            Text(L10n.string("settings_edit_addon", fallback: "Edit Add-on"))
+                .font(.system(size: 34, weight: .semibold))
+                .foregroundColor(.white)
+
+            SettingsTextFieldRow(
+                title: L10n.string("settings_addon_name", fallback: "Name"),
+                subtitle: L10n.string("settings_addon_name_subtitle",
+                                      fallback: "Leave empty to use the name from the manifest"),
+                placeholder: original.name,
+                text: $name,
+                fieldWidth: 520
+            )
+
+            SettingsTextFieldRow(
+                title: L10n.string("tvos_settings_add_on_url", fallback: "Add-on URL"),
+                subtitle: L10n.string("settings_addon_url_subtitle",
+                                      fallback: "Changing this replaces the add-on with the one at the new URL"),
+                placeholder: "https://.../manifest.json",
+                text: $urlText,
+                fieldWidth: 520
+            )
+
+            HStack(spacing: 16) {
+                Spacer()
+                Button(L10n.string("action_cancel", fallback: "Cancel"), action: onCancel)
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 26)
+                    .frame(height: 52)
+                    .background(Color.white.opacity(0.12), in: Capsule())
+                    .foregroundColor(.white)
+
+                Button(L10n.string("action_save", fallback: "Save")) {
+                    onSave(name, urlText)
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 26)
+                .frame(height: 52)
+                .background(isValid ? accentColor : Color.white.opacity(0.12), in: Capsule())
+                .foregroundColor(isValid ? .black : .white.opacity(0.4))
+                .disabled(!isValid)
+            }
+        }
+        .padding(40)
+        .frame(width: 900, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .fill(Color.black.opacity(0.95))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+        )
+    }
+}
+
+/// Display names the viewer set by hand, keyed by manifest URL.
+///
+/// An add-on's name comes from its manifest, and `StreamAddonPreference` — the
+/// only thing persisted — carries a URL and a flag, nowhere to put a different
+/// one. So an override is stored beside it and applied on the way to the
+/// screen; clearing it restores whatever the manifest says.
+enum AddonNameOverrides {
+    private static let key = "nuvio.tv.settings.addonNameOverrides"
+
+    static func all() -> [String: String] {
+        guard let raw = ProfileSettings.current.string(forKey: key),
+              let data = raw.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode([String: String].self, from: data)
+        else { return [:] }
+        return decoded
+    }
+
+    static func name(for url: URL) -> String? {
+        let value = all()[url.absoluteString]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (value?.isEmpty == false) ? value : nil
+    }
+
+    /// An empty or whitespace-only name clears the override rather than storing
+    /// a blank one, so the manifest's name comes back.
+    static func setName(_ name: String?, for url: URL) {
+        var overrides = all()
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty {
+            overrides.removeValue(forKey: url.absoluteString)
+        } else {
+            overrides[url.absoluteString] = trimmed
+        }
+        guard let data = try? JSONEncoder().encode(overrides),
+              let raw = String(data: data, encoding: .utf8) else { return }
+        ProfileSettings.current.set(raw, forKey: key)
+    }
+
+    static func move(from oldURL: URL, to newURL: URL) {
+        guard let existing = name(for: oldURL) else { return }
+        setName(nil, for: oldURL)
+        setName(existing, for: newURL)
+    }
+}
+
 private struct SyncedAddon: Identifiable {
     let url: URL
     var name: String
@@ -9284,15 +9454,19 @@ private struct SyncedAddon: Identifiable {
 
     init(url: URL, isEnabled: Bool = true) {
         self.url = url
-        self.name = CinemetaCatalogRepository.streamAddonName(for: url)
+        self.name = AddonNameOverrides.name(for: url) ?? CinemetaCatalogRepository.streamAddonName(for: url)
         self.manifestID = nil
         self.isEnabled = isEnabled
     }
 
     mutating func apply(_ manifest: StremioManifest) {
         manifestID = manifest.id
-        if let manifestName = manifest.name?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !manifestName.isEmpty {
+        // A name the viewer set outranks the manifest's, including when the
+        // manifest is refetched later.
+        if let chosen = AddonNameOverrides.name(for: url) {
+            name = chosen
+        } else if let manifestName = manifest.name?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !manifestName.isEmpty {
             name = manifestName
         }
         version = manifest.version
@@ -9397,6 +9571,7 @@ private struct SyncedAddonSettingsRow: View {
     var canMoveDown: Bool = false
     var onEnabledChange: ((Bool) -> Void)? = nil
     var onDelete: (() -> Void)? = nil
+    var onEdit: (() -> Void)? = nil
     /// Called with `true` for up, `false` for down. nil hides the arrows.
     var onMove: ((Bool) -> Void)? = nil
 
@@ -9418,20 +9593,25 @@ private struct SyncedAddonSettingsRow: View {
 
             // The row itself toggles active/inactive, so a power button beside it
             // did the same job twice. Uninstall is what the row could not offer.
+            if let onEdit {
+                AddonReorderButton(systemImage: "pencil", disabled: false, action: onEdit)
+                    .macSettingsRowAction(1, action: onEdit)
+            }
+
             if let onDelete {
                 AddonReorderButton(systemImage: "trash", disabled: false, action: onDelete)
-                    .macSettingsRowAction(1, action: onDelete)
+                    .macSettingsRowAction(2, action: onDelete)
             }
 
             if let onMove {
                 AddonReorderButton(systemImage: "chevron.up", disabled: !canMoveUp) {
                     onMove(true)
                 }
-                .macSettingsRowAction(2) { if canMoveUp { onMove(true) } }
+                .macSettingsRowAction(3) { if canMoveUp { onMove(true) } }
                 AddonReorderButton(systemImage: "chevron.down", disabled: !canMoveDown) {
                     onMove(false)
                 }
-                .macSettingsRowAction(3) { if canMoveDown { onMove(false) } }
+                .macSettingsRowAction(4) { if canMoveDown { onMove(false) } }
             }
         }
     }
