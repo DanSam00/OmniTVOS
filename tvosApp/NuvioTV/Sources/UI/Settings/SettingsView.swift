@@ -13216,18 +13216,15 @@ private struct MacSwatchRowFocus: ViewModifier {
     let title: String
     let swatches: [SettingsSwatch]
     @Binding var selection: String
-    @ObservedObject private var macRows = MacSettingsRowFocus.shared
+    /// Local, for the same reason as `SettingsRowShell`: observing the store
+    /// redrew every swatch row whenever the caret moved anywhere.
+    @State private var highlighted = false
 
     init(rowID: String?, title: String, swatches: [SettingsSwatch], selection: Binding<String>) {
         self.rowID = rowID
         self.title = title
         self.swatches = swatches
         _selection = selection
-    }
-
-    private var highlighted: Bool {
-        guard let rowID else { return false }
-        return macRows.focusedRowID == rowID
     }
 
     @ViewBuilder
@@ -13243,6 +13240,10 @@ private struct MacSwatchRowFocus: ViewModifier {
                             lineWidth: AppFocusOutline.width
                         )
                 )
+                .onReceive(MacSettingsRowFocus.shared.$caret) { caret in
+                    let mine = caret.rowID == rowID
+                    if mine != highlighted { highlighted = mine }
+                }
                 .animation(.easeOut(duration: 0.18), value: highlighted)
                 .macSettingsRow(rowID) { present() }
         } else {
@@ -13329,7 +13330,10 @@ private struct SettingsRowShell<Content: View>: View {
     /// Set by `macSettingsRow`, so every row type picks the macOS highlight up
     /// from one place rather than each growing its own parameter.
     @Environment(\.macSettingsRowID) private var macRowID
-    @ObservedObject private var macRows = MacSettingsRowFocus.shared
+    /// Kept locally and updated from the caret publisher rather than observed.
+    /// Observing meant every row in the pane redrew whenever the caret moved
+    /// anywhere; this way a row redraws only when its own answer changes.
+    @State private var macHighlighted = false
     #endif
 
     /// tvOS reads the focus engine; macOS has none, so the caret decides.
@@ -13339,8 +13343,8 @@ private struct SettingsRowShell<Content: View>: View {
         // to `isFocused` was reading a @FocusState that never moves on macOS,
         // so a row could sit lit while the caret was over in the sidebar —
         // which the flatter styling turned into the only fill on the screen.
-        guard let macRowID else { return false }
-        return macRows.focusedRowID == macRowID && macRows.focusedColumn == 0
+        guard macRowID != nil else { return false }
+        return macHighlighted
         #else
         return isFocused
         #endif
@@ -13367,6 +13371,12 @@ private struct SettingsRowShell<Content: View>: View {
                               lineWidth: highlighted ? AppFocusOutline.width : 0)
         )
         .animation(.easeOut(duration: 0.18), value: highlighted)
+        #if os(macOS)
+        .onReceive(MacSettingsRowFocus.shared.$caret) { caret in
+            let mine = macRowID != nil && caret.rowID == macRowID && caret.column == 0
+            if mine != macHighlighted { macHighlighted = mine }
+        }
+        #endif
     }
 }
 

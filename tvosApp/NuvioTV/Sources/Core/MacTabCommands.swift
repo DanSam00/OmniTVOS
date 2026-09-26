@@ -474,8 +474,27 @@ struct MacSettingsRowsKey: PreferenceKey {
 final class MacSettingsRowFocus: ObservableObject {
     static let shared = MacSettingsRowFocus()
 
+    /// Where the caret is, as one value.
+    ///
+    /// Published as a pair because a row subscribes to it and keeps its own
+    /// `Bool`: a row only redraws when its own answer changes, so a keypress
+    /// costs two redraws instead of the whole pane. Every row used to hold
+    /// `@ObservedObject` on this object — as did the row modifier and both
+    /// column modifiers, four subscriptions deep in every row — so one
+    /// `@Published` change invalidated all 527 rows the Layout pane builds.
+    /// That was the 2952 ms hitch, and the starved scroll behind it.
+    struct Caret: Equatable {
+        var rowID: String?
+        var column: Int
+    }
+
+    @Published private(set) var caret = Caret(rowID: nil, column: 0)
+
     /// Row the caret is on, or nil while it is in the category sidebar.
-    @Published var focusedRowID: String?
+    var focusedRowID: String? {
+        get { caret.rowID }
+        set { if caret.rowID != newValue { caret.rowID = newValue } }
+    }
     /// Bumped to run the focused row's own action. Rows compare
     /// `activatingRowID` rather than the caret, so a row that moves the caret
     /// as a side effect of acting still fires exactly once.
@@ -490,7 +509,10 @@ final class MacSettingsRowFocus: ObservableObject {
     /// keyboard could not reach any of them. The pane's caret is one vertical
     /// list, so they needed an axis of their own rather than a place in it:
     /// six stops per row across thirty catalogs is not a list anyone can walk.
-    @Published var focusedColumn = 0
+    var focusedColumn: Int {
+        get { caret.column }
+        set { if caret.column != newValue { caret.column = newValue } }
+    }
     private(set) var activatingColumn = 0
     /// How many buttons each row has, reported by the buttons themselves.
     private var columnCounts: [String: Int] = [:]
@@ -577,7 +599,6 @@ extension EnvironmentValues {
 private struct MacSettingsRowModifier: ViewModifier {
     let id: String
     let action: () -> Void
-    @ObservedObject private var focus = MacSettingsRowFocus.shared
 
     init(id: String, action: @escaping () -> Void) {
         self.id = id
@@ -590,7 +611,10 @@ private struct MacSettingsRowModifier: ViewModifier {
             .preference(key: MacSettingsRowsKey.self, value: [id])
             // The rows sit in a ScrollView the caret has to drag along with it.
             .id(id)
-            .onChange(of: focus.activationTick) { _, _ in
+            // Received rather than observed: this needs to run on activation,
+            // not to redraw every time the caret moves somewhere else.
+            .onReceive(MacSettingsRowFocus.shared.$activationTick) { _ in
+                let focus = MacSettingsRowFocus.shared
                 guard focus.activatingRowID == id else { return }
                 action()
             }
@@ -615,12 +639,7 @@ private struct MacSettingsRowActionModifier: ViewModifier {
     let index: Int
     let action: () -> Void
     @Environment(\.macSettingsRowID) private var rowID
-    @ObservedObject private var focus = MacSettingsRowFocus.shared
-
-    private var isFocused: Bool {
-        guard let rowID else { return false }
-        return focus.focusedRowID == rowID && focus.focusedColumn == index
-    }
+    @State private var isFocused = false
 
     func body(content: Content) -> some View {
         content
@@ -631,9 +650,14 @@ private struct MacSettingsRowActionModifier: ViewModifier {
             )
             .onAppear {
                 guard let rowID else { return }
-                focus.noteColumn(index, for: rowID)
+                MacSettingsRowFocus.shared.noteColumn(index, for: rowID)
             }
-            .onChange(of: focus.activationTick) { _, _ in
+            .onReceive(MacSettingsRowFocus.shared.$caret) { caret in
+                let mine = rowID != nil && caret.rowID == rowID && caret.column == index
+                if mine != isFocused { isFocused = mine }
+            }
+            .onReceive(MacSettingsRowFocus.shared.$activationTick) { _ in
+                let focus = MacSettingsRowFocus.shared
                 guard let rowID,
                       focus.activatingRowID == rowID,
                       focus.activatingColumn == index
