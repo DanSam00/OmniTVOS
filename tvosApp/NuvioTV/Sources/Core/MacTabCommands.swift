@@ -583,6 +583,65 @@ extension View {
 }
 #endif
 
+/// The focused settings row's frame, reported by that row alone.
+///
+/// Only the focused row reports, so this costs one value per caret move rather
+/// than a GeometryReader in all 331 rows the Layout pane builds.
+struct MacFocusedRowFrameKey: PreferenceKey {
+    static let defaultValue: CGRect? = nil
+    static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
+        value = nextValue() ?? value
+    }
+}
+
+/// Hands back the NSScrollView that contains it.
+///
+/// `ScrollViewReader.scrollTo` does not work in the settings pane. Logged at
+/// the call site: proxy=true, the id registered (known=true), 653 requests,
+/// and the pane never moved — from an onChange, deferred to the next run loop
+/// turn, and from the key handler the way Home does it successfully. The
+/// scroll view itself is fine, a wheel scrolls it. So the offset is set
+/// directly on the AppKit view underneath, which is not at SwiftUI's
+/// discretion.
+struct MacScrollViewFinder: NSViewRepresentable {
+    let onFound: (NSScrollView) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async {
+            guard let scrollView = view.enclosingScrollView else { return }
+            onFound(scrollView)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+extension NSScrollView {
+    /// Centres `rect` (in the document view's coordinates) as far as the
+    /// content allows.
+    func macCenterOnRect(_ rect: CGRect, animated: Bool) {
+        let viewport = contentView.bounds.height
+        guard viewport > 0, let document = documentView else { return }
+        let maximum = max(0, document.bounds.height - viewport)
+        let target = min(max(0, rect.midY - viewport / 2), maximum)
+        guard abs(target - contentView.bounds.origin.y) > 0.5 else { return }
+        let point = NSPoint(x: 0, y: target)
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.18
+                context.allowsImplicitAnimation = true
+                contentView.animator().setBoundsOrigin(point)
+                reflectScrolledClipView(contentView)
+            }
+        } else {
+            contentView.setBoundsOrigin(point)
+            reflectScrolledClipView(contentView)
+        }
+    }
+}
+
 private struct MacSettingsRowIDKey: EnvironmentKey {
     static let defaultValue: String? = nil
 }

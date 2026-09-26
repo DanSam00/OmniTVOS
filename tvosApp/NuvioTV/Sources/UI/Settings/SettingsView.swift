@@ -19,6 +19,11 @@ enum AppFocusOutline {
 }
 
 /// Band identifiers for the macOS keyboard model.
+enum SettingsPaneSpace {
+    /// Coordinate space the focused row reports its frame in.
+    static let name = "settings.pane"
+}
+
 enum SettingsFocusBand {
     static let categories = "categories"
     /// The detail pane. Its rows register themselves — see `macSettingsRow`.
@@ -1055,6 +1060,12 @@ struct SettingsView: View {
     /// The pane's rows, in the order they are laid out. Collected from the
     /// rows themselves rather than described here — see `MacSettingsRowsKey`.
     @State private var macDetailRows: [String] = []
+    /// Holds the detail pane's scroll proxy so the key handler can bring the
+    /// caret's row into view.
+    @State private var macPaneScroll: ScrollViewProxy?
+    /// The AppKit scroll view under the pane, which is what actually moves.
+    @State private var macScrollView: NSScrollView?
+
     /// Row to return to when the caret comes back from the sidebar.
     @State private var macLastDetailRow: String?
     @ObservedObject private var keyRouter = MacKeyRouter.shared
@@ -1209,16 +1220,15 @@ struct SettingsView: View {
                                 .padding(.leading, 44)
                                 .padding(.trailing, 72)
                                 .padding(.vertical, 56)
+                                #if os(macOS)
+                                .background(MacScrollViewFinder { macScrollView = $0 })
+                                #endif
                             }
+                            .coordinateSpace(name: SettingsPaneSpace.name)
                             #if os(macOS)
                             // The highlight is a plain value, so nothing brings a
                             // row below the fold into view on its own.
-                            .onChange(of: macFocus.itemID) { _, row in
-                                guard let row, macFocus.bandID == SettingsFocusBand.rows else { return }
-                                withAnimation(.easeOut(duration: 0.18)) {
-                                    paneScroll.scrollTo(row, anchor: .center)
-                                }
-                            }
+                            .onAppear { macPaneScroll = paneScroll }
                             #endif
                         }
                         // Every category shares this one ScrollView, so without a
@@ -1242,6 +1252,14 @@ struct SettingsView: View {
                 .onPreferenceChange(MacSettingsRowsKey.self) { rows in
                     macDetailRows = rows
                     macFocus.update(macBands)
+                }
+                // The caret's row says where it is; the scroll view is told to
+                // centre it. `ScrollViewReader` is not involved: it was asked
+                // 653 times for registered ids with a live proxy and never
+                // moved the pane once.
+                .onPreferenceChange(MacFocusedRowFrameKey.self) { frame in
+                    guard let frame, let scrollView = macScrollView else { return }
+                    scrollView.macCenterOnRect(frame, animated: true)
                 }
                 #endif
             }
@@ -13372,6 +13390,18 @@ private struct SettingsRowShell<Content: View>: View {
         )
         .animation(.easeOut(duration: 0.18), value: highlighted)
         #if os(macOS)
+        .background {
+            // Only while it is the caret's row: one reported frame per move,
+            // rather than a GeometryReader living in all 331 rows.
+            if macHighlighted {
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: MacFocusedRowFrameKey.self,
+                        value: proxy.frame(in: .named(SettingsPaneSpace.name))
+                    )
+                }
+            }
+        }
         .onReceive(MacSettingsRowFocus.shared.$caret) { caret in
             let mine = macRowID != nil && caret.rowID == macRowID && caret.column == 0
             if mine != macHighlighted { macHighlighted = mine }
