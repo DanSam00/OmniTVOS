@@ -4346,6 +4346,15 @@ struct TVHomeView: View {
             guard let newValue, newValue != macFocusedCardID else { return }
             macFocusedCardID = newValue
         }
+        // Expand Focused Poster to Backdrop, which had never run here. Its only
+        // caller sits inside the row's `onFocus` closure — the focus engine's
+        // callback, which macOS never fires: `home.focus.end` has not been
+        // logged once, against 2364 `homeFocus.move`. The caret is the macOS
+        // equivalent of landing on a card, so it schedules the expansion.
+        .onChange(of: macFocusedCardID) { _, newValue in
+            guard let newValue else { return }
+            scheduleLandscapeFocus(cardKey: newValue)
+        }
         .onChange(of: macFocusedCardID) { oldValue, newValue in
             MacDiagnostics.log("homeFocus.state \(oldValue ?? "none") -> \(newValue ?? "none")")
             guard let newValue else { return }
