@@ -125,8 +125,14 @@ struct SearchView: View {
     private func macActivate(band: String, item: String) {
         switch band {
         case SearchFocusBand.field:
-            // Return on the field hands the keyboard to the text cursor.
-            searchBarFocused = true
+            // Return on the field hands the keyboard to the text cursor —
+            // which means `searchTextInputActive`, not `searchBarFocused`.
+            // Writing the focus state hands the window's first responder to
+            // the capsule's hidden proxy and takes it off the text field, the
+            // very thing the caret sync above documents avoiding. So pressing
+            // Return on the field was the one action that stopped it accepting
+            // typing: the log shows three activates on band=field and no text.
+            searchTextInputActive = true
         case SearchFocusBand.filters:
             guard let type = SearchContentType(rawValue: item) else { return }
             viewModel.setType(type)
