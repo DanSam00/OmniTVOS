@@ -1476,6 +1476,16 @@ struct SettingsView: View {
                         accentColor: accentColor
                     ) {
                         selectedCategory = category
+                        #if os(macOS)
+                        // The caret has to come with the click. Selecting by
+                        // mouse used to leave it wherever it last was, so the
+                        // rail showed the focus block on one entry and the
+                        // selected page on another — two highlights, neither
+                        // of them wrong, which the quieter styling turned from
+                        // a detail into the loudest thing on the screen.
+                        macFocus.focus(band: SettingsFocusBand.categories,
+                                       item: category.rawValue)
+                        #endif
                     }
                     .nuvioFocusable()
                     .focused($focusedCategory, equals: category)
@@ -1574,23 +1584,23 @@ private struct SettingsCategoryPill: View {
         Button(action: action) {
             HStack(spacing: 22) {
                 Image(systemName: category.iconName)
-                    .font(.system(size: 36, weight: .semibold))
+                    .font(.system(size: 24, weight: .medium))
                     .foregroundColor(iconColor)
-                    .frame(width: 48, height: 48)
+                    .frame(width: 32, height: 32)
 
                 Text(category.title)
-                    .font(.system(size: 30, weight: .bold))
+                    .font(.system(size: 27, weight: .medium))
                     .foregroundColor(textColor)
                     .lineLimit(1)
                     .minimumScaleFactor(0.68)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, 26)
-            .frame(width: 430, height: 92, alignment: .leading)
+            .padding(.horizontal, 22)
+            .frame(width: 430, height: 78, alignment: .leading)
             .modifier(SettingsCategoryPillBackground(isSelected: isSelected, isFocused: isFocused))
             .overlay(
-                Capsule()
-                    .strokeBorder(borderColor, lineWidth: isFocused ? AppFocusOutline.width : 1)
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(borderColor, lineWidth: isFocused ? AppFocusOutline.width : 0)
             )
             .animation(.easeOut(duration: 0.14), value: isSelected)
         }
@@ -1603,19 +1613,19 @@ private struct SettingsCategoryPill: View {
 
     private var iconColor: Color {
         if isFocused { return .black }
-        return isSelected ? .white.opacity(0.90) : .white.opacity(0.78)
+        return isSelected ? .white.opacity(0.92) : .white.opacity(0.42)
     }
 
+    /// Unselected entries recede. They were at 0.82 against the selected 0.96,
+    /// which is not enough of a gap to say which one you are on without the
+    /// capsule that used to sit behind it.
     private var textColor: Color {
         if isFocused { return .black }
-        return isSelected ? .white.opacity(0.96) : .white.opacity(0.82)
+        return isSelected ? .white : .white.opacity(0.52)
     }
 
     private var borderColor: Color {
-        if isFocused {
-            return .clear
-        }
-        return Color.white.opacity(isSelected ? 0.14 : 0.07)
+        return .clear
     }
 }
 
@@ -1625,12 +1635,16 @@ private struct SettingsCategoryPillBackground: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
+        // Unselected entries carried a glass capsule each, so the rail read as
+        // eight buttons rather than a list with one place in it. At rest they
+        // are now just their label.
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
         if isFocused {
-            content.background(Color.white, in: Capsule())
+            content.background(Color.white, in: shape)
         } else if isSelected {
-            content.settingsGlass(shape: Capsule(), isProminent: true)
+            content.background(Color.white.opacity(0.12), in: shape)
         } else {
-            content.settingsGlass(shape: Capsule(), isProminent: false)
+            content
         }
     }
 }
@@ -12388,29 +12402,19 @@ private struct SettingsDetailHeader: View {
     let accentColor: Color
 
     var body: some View {
-        HStack(alignment: .center, spacing: 20) {
+        // The icon sits on the line with the title rather than inside a glass
+        // medallion twice the title's height, which was the heaviest single
+        // object on every settings screen.
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
             Image(systemName: iconName)
-                .font(.system(size: 36, weight: .semibold))
+                .font(.system(size: 26, weight: .medium))
                 .foregroundColor(accentColor)
-                .frame(width: 70, height: 70)
-                .settingsGlass(shape: Circle(), isProminent: true)
-                .overlay(
-                    Circle()
-                        .strokeBorder(accentColor.opacity(0.55), lineWidth: 1)
-                )
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text(title)
-                    .font(.system(size: 40, weight: .bold))
-                    .foregroundColor(.white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
-
-                Text(subtitle)
-                    .font(.system(size: 20, weight: .medium))
-                    .foregroundColor(.white.opacity(0.62))
-                    .lineLimit(2)
-            }
+            Text(title)
+                .font(.system(size: 38, weight: .semibold))
+                .foregroundColor(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
 
             Spacer()
         }
@@ -12423,29 +12427,41 @@ private struct SettingsGroup<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                // Smaller and lighter than the rows it introduces: a heading
+                // that outweighs its own content is what made these read as
+                // separate panels rather than one page.
                 Text(title)
-                    .font(.system(size: 28, weight: .bold))
-                    .foregroundColor(.white)
+                    .font(.system(size: 21, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.92))
+                    .textCase(.uppercase)
+                    .kerning(0.8)
 
-                Text(subtitle)
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundColor(.white.opacity(0.56))
-                    .fixedSize(horizontal: false, vertical: true)
+                if !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.system(size: 17, weight: .regular))
+                        .foregroundColor(.white.opacity(0.45))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 4)
 
-            VStack(spacing: 12) {
+            VStack(spacing: 2) {
                 content
             }
         }
-        .padding(24)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .settingsGlass(shape: RoundedRectangle(cornerRadius: 32, style: .continuous), isProminent: false)
-        .overlay(
-            RoundedRectangle(cornerRadius: 32, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
-        )
+        // A hairline where the card edge used to be: the groups still separate,
+        // without four borders between a row and the page.
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(height: 1)
+                .padding(.horizontal, 20)
+                .offset(y: -26)
+        }
     }
 }
 
@@ -13098,12 +13114,8 @@ private struct SettingsInfoRow: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 20)
+        .padding(.vertical, 14)
         .frame(minHeight: 64)
-        .settingsGlass(shape: RoundedRectangle(cornerRadius: 24, style: .continuous), isProminent: false)
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
-        )
     }
 }
 
@@ -13277,7 +13289,11 @@ private struct SettingsRowShell<Content: View>: View {
     /// tvOS reads the focus engine; macOS has none, so the caret decides.
     private var highlighted: Bool {
         #if os(macOS)
-        guard let macRowID else { return isFocused }
+        // No registered id means the caret cannot reach this row. Falling back
+        // to `isFocused` was reading a @FocusState that never moves on macOS,
+        // so a row could sit lit while the caret was over in the sidebar —
+        // which the flatter styling turned into the only fill on the screen.
+        guard let macRowID else { return false }
         return macRows.focusedRowID == macRowID
         #else
         return isFocused
@@ -13289,12 +13305,20 @@ private struct SettingsRowShell<Content: View>: View {
             content
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 12)
+        .padding(.vertical, 14)
         .frame(minHeight: 74)
-        .settingsGlass(shape: RoundedRectangle(cornerRadius: 24, style: .continuous), isProminent: false)
+        // Nothing at rest. A row used to carry a glass fill and a border of its
+        // own inside a group that carried another, so every screen read as
+        // cards stacked inside cards. The eye only needs to be told where the
+        // focus is, so that is the only thing drawn.
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.white.opacity(highlighted ? 0.10 : 0))
+        )
         .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .strokeBorder(highlighted ? AppFocusOutline.color : Color.white.opacity(0.10), lineWidth: highlighted ? AppFocusOutline.width : 1)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(highlighted ? AppFocusOutline.color : .clear,
+                              lineWidth: highlighted ? AppFocusOutline.width : 0)
         )
         .animation(.easeOut(duration: 0.18), value: highlighted)
     }
