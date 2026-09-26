@@ -619,13 +619,21 @@ struct MacScrollViewFinder: NSViewRepresentable {
 }
 
 extension NSScrollView {
-    /// Centres `rect` (in the document view's coordinates) as far as the
-    /// content allows.
+    /// Centres `rect`, which is measured against the scroll view's own frame
+    /// and so moves as the pane scrolls.
+    ///
+    /// The distinction matters: treating a viewport-relative rect as a
+    /// document coordinate scrolls by roughly the right amount once and then
+    /// compounds its own error, which walked the focused row off the bottom of
+    /// the screen a few presses later. Read as an offset from the middle of the
+    /// viewport it is self-correcting — when the row is already centred the
+    /// delta is zero.
     func macCenterOnRect(_ rect: CGRect, animated: Bool) {
         let viewport = contentView.bounds.height
         guard viewport > 0, let document = documentView else { return }
         let maximum = max(0, document.bounds.height - viewport)
-        let target = min(max(0, rect.midY - viewport / 2), maximum)
+        let delta = rect.midY - viewport / 2
+        let target = min(max(0, contentView.bounds.origin.y + delta), maximum)
         guard abs(target - contentView.bounds.origin.y) > 0.5 else { return }
         let point = NSPoint(x: 0, y: target)
         if animated {
