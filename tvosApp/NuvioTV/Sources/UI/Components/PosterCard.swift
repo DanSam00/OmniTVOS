@@ -346,9 +346,11 @@ struct PosterCard: View {
                 preloadMaximumWidth: landscapeArtworkDecodeWidth,
                 minimumSwapDelay: 0,
                 onPreloadFinished: {
-                    #if os(tvOS)
+                    // Was tvOS-only, with nothing saying why. `effectiveLandscape`
+                    // returns this flag, so on macOS it could never be true and
+                    // the focused poster never expanded — however correctly the
+                    // rest of the chain behaved above it.
                     landscapeArtworkPrepared = true
-                    #endif
                 }
             ) {
                 placeholderView
