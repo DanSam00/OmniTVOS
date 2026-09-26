@@ -7419,6 +7419,9 @@ private struct TVFeatureHeroView: View {
     /// When the viewer last interacted with the block — paging by hand, or
     /// moving focus onto it. Auto-advance waits for this to go quiet.
     @State private var lastInteraction = Date.distantPast
+    /// Set while the timer is the one moving the carousel, so the watcher below
+    /// can tell its own advance from the viewer's.
+    @State private var isAutoAdvancing = false
 
     private var isMac: Bool {
         #if os(macOS)
@@ -7629,7 +7632,9 @@ private struct TVFeatureHeroView: View {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard !Task.isCancelled, isCarouselMode else { return }
                 guard Date().timeIntervalSince(lastInteraction) >= interval else { continue }
+                isAutoAdvancing = true
                 setIndex((index + 1) % items.count)
+                isAutoAdvancing = false
                 // Counts as the new baseline, so the next slide is a full
                 // interval away rather than one second later.
                 lastInteraction = Date()
@@ -7639,6 +7644,22 @@ private struct TVFeatureHeroView: View {
             if count == 0 { selectedIndex = 0 }
             else if selectedIndex >= count { selectedIndex = count - 1 }
         }
+        #if os(macOS)
+        // Paging the carousel has to hold the timer off, and on macOS it never
+        // did. `lastInteraction` was only bumped by `pageManually` and by the
+        // @FocusState arriving — neither of which happens here, because the
+        // caret moves the shared `selectedIndex` binding from the parent and
+        // @FocusState does not move on macOS at all. So the slide kept changing
+        // under the viewer while they were trying to land on one.
+        .onChange(of: selectedIndex) { _, _ in
+            guard !isAutoAdvancing else { return }
+            lastInteraction = Date()
+        }
+        // Arriving on the block counts too, so it holds still while it is read.
+        .onChange(of: macIsFocused) { _, focused in
+            if focused { lastInteraction = Date() }
+        }
+        #endif
     }
 
     private func setIndex(_ next: Int) {

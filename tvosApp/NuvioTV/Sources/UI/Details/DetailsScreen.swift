@@ -1814,10 +1814,15 @@ enum SmartPlaybackSelector {
         }.map(\.stream)
     }
 
+    /// `applyQualityFloor` drops anything that is not provably 720p or better.
+    /// That is a ranking preference, so it belongs to the paths that pick a
+    /// stream on the viewer's behalf — never to the list they opened in order
+    /// to pick one themselves. See the note on the floor below.
     static func playableStreams(
         from streams: [NuvioStream],
         includeDebrid: Bool = false,
-        cachedOnly: Bool = false
+        cachedOnly: Bool = false,
+        applyQualityFloor: Bool = true
     ) -> [NuvioStream] {
         let playable = streams.filter { stream in
             if let url = stream.url?.trimmingCharacters(in: .whitespacesAndNewlines), !url.isEmpty {
@@ -1835,6 +1840,13 @@ enum SmartPlaybackSelector {
         if cachedOnly {
             result = result.filter(\.isLikelyCached)
         }
+        guard applyQualityFloor else { return result }
+        // `isLowQualityOrTicketStream` answers true for res == 0, so anything
+        // whose title carries no resolution token counts as low quality. Live
+        // sports CDN entries are usually named "CDN 1", "Source 2" and the
+        // like, so a single labelled 1080p alongside them made `valid`
+        // non-empty and swept every CDN option out of the list. The fallback
+        // below only rescues them when nothing at all parses.
         let valid = result.filter { stream in
             let tags = StreamQualityTags.parse(stream: stream)
             let res = tags.resolution > 0 ? tags.resolution : inferredResolution(for: stream)
@@ -2140,13 +2152,15 @@ enum StreamPickerListBuilder {
         groups: [AddonStreamGroup],
         selectedAddonId: String?,
         includeDebrid: Bool,
-        cachedOnly: Bool = false
+        cachedOnly: Bool = false,
+        applyQualityFloor: Bool = true
     ) -> [NuvioStream] {
         let source = sourceStreams(streams: streams, groups: groups, selectedAddonId: selectedAddonId)
         return SmartPlaybackSelector.playableStreams(
             from: source,
             includeDebrid: includeDebrid,
-            cachedOnly: cachedOnly
+            cachedOnly: cachedOnly,
+            applyQualityFloor: applyQualityFloor
         )
     }
 
@@ -2160,12 +2174,15 @@ enum StreamPickerListBuilder {
         cachedOnly: Bool = false,
         resolutionFilter: StreamResolutionFilter = .any
     ) -> [NuvioStream] {
+        // Everything playable is listed. The viewer opened this to choose, and
+        // the resolution chip above it is how they narrow it down.
         let playable = playableStreams(
             streams: streams,
             groups: groups,
             selectedAddonId: selectedAddonId,
             includeDebrid: includeDebrid,
-            cachedOnly: cachedOnly
+            cachedOnly: cachedOnly,
+            applyQualityFloor: false
         )
         // Decorated once and carried through both steps: the filter asks the
         // same questions the sort does.
@@ -2791,11 +2808,35 @@ struct TvDetailsContent: View {
                 guard let meta = uiState.meta,
                       macSeasonEpisodes.indices.contains(macFocus.index) else { return }
                 let video = macSeasonEpisodes[macFocus.index]
-                _ = WatchedStore.toggleEpisode(
+                let nowWatched = WatchedStore.toggleEpisode(
                     meta: meta,
                     season: video.season,
                     episode: video.episode
                 )
+                // Only offer catch-up when marking watched. The episode the
+                // viewer picked is marked either way — Cancel declines the
+                // extras, it does not undo what they actually did.
+                guard nowWatched else { return }
+                let earlier = macUnwatchedEpisodesBefore(video, meta: meta)
+                guard !earlier.isEmpty else { return }
+                macCatchUpEpisodes = earlier
+                macShowCatchUpPrompt = true
+            }
+            .confirmationDialog(
+                L10n.format(
+                    "details_catch_up_title",
+                    fallback: "Mark %@ earlier episode(s) as watched too?",
+                    String(macCatchUpEpisodes.count)
+                ),
+                isPresented: $macShowCatchUpPrompt,
+                titleVisibility: .visible
+            ) {
+                Button(L10n.string("details_catch_up_confirm", fallback: "Mark them watched")) {
+                    macMarkCatchUpWatched()
+                }
+                Button(L10n.string("action_cancel", fallback: "Cancel"), role: .cancel) {
+                    macCatchUpEpisodes = []
+                }
             }
             .onChange(of: keyRouter.latest) { _, press in
                 guard let press, keyRouter.isFront(macKeyToken) else { return }
@@ -3019,6 +3060,11 @@ struct TvDetailsContent: View {
         return order
     }
 
+    #if os(macOS)
+    @State private var macCatchUpEpisodes: [NuvioVideo] = []
+    @State private var macShowCatchUpPrompt = false
+    #endif
+
     /// The caret's position within a row, or nil when it is elsewhere — and
     /// always nil off macOS, where the focus engine does this itself.
     private func macFocusedIndex(in row: MacDetailsRow) -> Int? {
@@ -3030,6 +3076,42 @@ struct TvDetailsContent: View {
     }
 
     #if os(macOS)
+    /// Earlier unwatched episodes offered after W marks one watched. tvOS shows
+    /// this from the episode row's own menu, in `TvDetailsEpisodes` — a view
+    /// fenced out of the Mac build entirely, so the prompt had never existed
+    /// here. The logic is the same; only the trigger differs.
+    private func macUnwatchedEpisodesBefore(_ video: NuvioVideo, meta: NuvioMeta) -> [NuvioVideo] {
+        sortedEpisodes(meta)
+            .filter { candidate in
+                guard candidate.season > 0 else { return false }
+                let isEarlier = candidate.season < video.season
+                    || (candidate.season == video.season && candidate.episode < video.episode)
+                guard isEarlier else { return false }
+                return !WatchedStore.containsEpisode(
+                    meta: meta,
+                    season: candidate.season,
+                    episode: candidate.episode
+                )
+            }
+            .sorted { $0.season == $1.season ? $0.episode < $1.episode : $0.season < $1.season }
+    }
+
+    private func macMarkCatchUpWatched() {
+        let episodesToMark = macCatchUpEpisodes
+        macCatchUpEpisodes = []
+        guard !episodesToMark.isEmpty, let meta = uiState.meta else { return }
+        // Grouped per season so each write covers a whole season at once rather
+        // than re-encoding the store once per episode.
+        for (season, videos) in Dictionary(grouping: episodesToMark, by: \.season) {
+            WatchedStore.setSeasonWatched(
+                meta: meta,
+                season: season,
+                episodes: videos.map(\.episode),
+                isWatched: true
+            )
+        }
+    }
+
     // MARK: - Rail
 
     private var macRailMode: MacRailMode {
