@@ -482,8 +482,32 @@ final class MacSettingsRowFocus: ObservableObject {
     @Published private(set) var activationTick = 0
     private(set) var activatingRowID: String?
 
-    func activate(_ id: String) {
+    /// Which of the focused row's controls the caret is on: 0 is the row
+    /// itself, 1... are the buttons along its trailing edge.
+    ///
+    /// Those buttons — visibility, move to top, up, down, move to bottom —
+    /// were drawn with `@FocusState`, which never moves on macOS, so the
+    /// keyboard could not reach any of them. The pane's caret is one vertical
+    /// list, so they needed an axis of their own rather than a place in it:
+    /// six stops per row across thirty catalogs is not a list anyone can walk.
+    @Published var focusedColumn = 0
+    private(set) var activatingColumn = 0
+    /// How many buttons each row has, reported by the buttons themselves.
+    private var columnCounts: [String: Int] = [:]
+
+    func noteColumn(_ index: Int, for id: String) {
+        columnCounts[id] = max(columnCounts[id] ?? 0, index)
+    }
+
+    func columnCount(for id: String?) -> Int {
+        guard let id else { return 0 }
+        return columnCounts[id] ?? 0
+    }
+
+    /// Return on whichever control the caret is on.
+    func activate(_ id: String, column: Int = 0) {
         activatingRowID = id
+        activatingColumn = column
         activationTick += 1
     }
 }
@@ -578,6 +602,44 @@ extension View {
     /// the pane, its highlight, and what Return does to it.
     func macSettingsRow(_ id: String, action: @escaping () -> Void) -> some View {
         modifier(MacSettingsRowModifier(id: id, action: action))
+    }
+
+    /// Registers one of a row's trailing buttons as column `index` (1-based),
+    /// reachable with Right from the row itself.
+    func macSettingsRowAction(_ index: Int, action: @escaping () -> Void) -> some View {
+        modifier(MacSettingsRowActionModifier(index: index, action: action))
+    }
+}
+
+private struct MacSettingsRowActionModifier: ViewModifier {
+    let index: Int
+    let action: () -> Void
+    @Environment(\.macSettingsRowID) private var rowID
+    @ObservedObject private var focus = MacSettingsRowFocus.shared
+
+    private var isFocused: Bool {
+        guard let rowID else { return false }
+        return focus.focusedRowID == rowID && focus.focusedColumn == index
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .strokeBorder(isFocused ? AppFocusOutline.color : .clear,
+                                  lineWidth: isFocused ? AppFocusOutline.width : 0)
+            )
+            .onAppear {
+                guard let rowID else { return }
+                focus.noteColumn(index, for: rowID)
+            }
+            .onChange(of: focus.activationTick) { _, _ in
+                guard let rowID,
+                      focus.activatingRowID == rowID,
+                      focus.activatingColumn == index
+                else { return }
+                action()
+            }
     }
 }
 

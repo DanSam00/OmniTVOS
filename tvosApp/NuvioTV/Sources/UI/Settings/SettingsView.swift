@@ -1125,7 +1125,8 @@ struct SettingsView: View {
         if band == SettingsFocusBand.rows {
             // The row runs its own action: the pane is built from a dozen row
             // types and only the row itself knows what Return means to it.
-            MacSettingsRowFocus.shared.activate(item)
+            let rows = MacSettingsRowFocus.shared
+            rows.activate(item, column: rows.focusedColumn)
             return
         }
         guard let category = SettingsCategory(rawValue: item) else { return }
@@ -1144,7 +1145,18 @@ struct SettingsView: View {
                 ?? macDetailRows.first else { return false }
             macFocus.focus(band: SettingsFocusBand.rows, item: target)
             return true
+        case (SettingsFocusBand.rows, .right):
+            let rows = MacSettingsRowFocus.shared
+            let columns = rows.columnCount(for: macFocus.itemID)
+            guard rows.focusedColumn < columns else { return false }
+            rows.focusedColumn += 1
+            return true
         case (SettingsFocusBand.rows, .left):
+            let rows = MacSettingsRowFocus.shared
+            if rows.focusedColumn > 0 {
+                rows.focusedColumn -= 1
+                return true
+            }
             macLastDetailRow = macFocus.itemID
             macFocus.focus(band: SettingsFocusBand.categories, item: selectedCategory.rawValue)
             return true
@@ -1305,8 +1317,11 @@ struct SettingsView: View {
         // Rows render their highlight from this, and only while the caret is
         // actually in the pane.
         .onChange(of: macFocus.itemID, initial: true) { _, item in
-            MacSettingsRowFocus.shared.focusedRowID =
-                macFocus.bandID == SettingsFocusBand.rows ? item : nil
+            let rows = MacSettingsRowFocus.shared
+            rows.focusedRowID = macFocus.bandID == SettingsFocusBand.rows ? item : nil
+            // A new row starts on the row itself, not on whichever button the
+            // last one was left on.
+            rows.focusedColumn = 0
         }
         // Moving the caret opens that category, so the pane always matches the
         // highlighted pill rather than waiting for Return.
@@ -9361,15 +9376,18 @@ private struct SyncedAddonSettingsRow: View {
             // did the same job twice. Uninstall is what the row could not offer.
             if let onDelete {
                 AddonReorderButton(systemImage: "trash", disabled: false, action: onDelete)
+                    .macSettingsRowAction(1, action: onDelete)
             }
 
             if let onMove {
                 AddonReorderButton(systemImage: "chevron.up", disabled: !canMoveUp) {
                     onMove(true)
                 }
+                .macSettingsRowAction(2) { if canMoveUp { onMove(true) } }
                 AddonReorderButton(systemImage: "chevron.down", disabled: !canMoveDown) {
                     onMove(false)
                 }
+                .macSettingsRowAction(3) { if canMoveDown { onMove(false) } }
             }
         }
     }
@@ -9736,10 +9754,15 @@ private struct HomeCatalogOrderRow: View {
                 disabled: !canToggle,
                 action: onToggle
             )
+            .macSettingsRowAction(1, action: onToggle)
             AddonReorderButton(systemImage: "arrow.up.to.line", disabled: !canMoveUp) { onMoveToEdge(true) }
+                .macSettingsRowAction(2) { if canMoveUp { onMoveToEdge(true) } }
             AddonReorderButton(systemImage: "chevron.up", disabled: !canMoveUp) { onMove(true) }
+                .macSettingsRowAction(3) { if canMoveUp { onMove(true) } }
             AddonReorderButton(systemImage: "chevron.down", disabled: !canMoveDown) { onMove(false) }
+                .macSettingsRowAction(4) { if canMoveDown { onMove(false) } }
             AddonReorderButton(systemImage: "arrow.down.to.line", disabled: !canMoveDown) { onMoveToEdge(false) }
+                .macSettingsRowAction(5) { if canMoveDown { onMoveToEdge(false) } }
         }
     }
 
@@ -12336,15 +12359,18 @@ private struct AddonSettingsRow: View {
 
             if let onDelete {
                 AddonReorderButton(systemImage: "trash", disabled: false, action: onDelete)
+                    .macSettingsRowAction(1, action: onDelete)
             }
 
             if let onMove {
                 AddonReorderButton(systemImage: "chevron.up", disabled: !canMoveUp) {
                     onMove(true)
                 }
+                .macSettingsRowAction(2) { if canMoveUp { onMove(true) } }
                 AddonReorderButton(systemImage: "chevron.down", disabled: !canMoveDown) {
                     onMove(false)
                 }
+                .macSettingsRowAction(3) { if canMoveDown { onMove(false) } }
             }
         }
     }
@@ -13272,6 +13298,9 @@ extension View {
     /// activates these rows. The real one is in `MacTabCommands.swift`; the
     /// call sites are shared, so this has to exist on both platforms.
     func macSettingsRow(_ id: String, action: @escaping () -> Void) -> some View { self }
+    /// tvOS reaches these buttons through the focus engine, so the caret's
+    /// horizontal axis has nothing to add there.
+    func macSettingsRowAction(_ index: Int, action: @escaping () -> Void) -> some View { self }
 }
 #endif
 
@@ -13294,7 +13323,7 @@ private struct SettingsRowShell<Content: View>: View {
         // so a row could sit lit while the caret was over in the sidebar —
         // which the flatter styling turned into the only fill on the screen.
         guard let macRowID else { return false }
-        return macRows.focusedRowID == macRowID
+        return macRows.focusedRowID == macRowID && macRows.focusedColumn == 0
         #else
         return isFocused
         #endif

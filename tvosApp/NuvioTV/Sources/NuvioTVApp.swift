@@ -6222,6 +6222,15 @@ struct TVHomeView: View {
     }
 
     private func scheduleLandscapeFocus(cardKey: String) {
+        // TVHomeDebugTrace is compiled out (`enabled = false`) and prints to
+        // stdout even when it is not, so it says nothing about this path. This
+        // goes to the app log, where it can actually be read.
+        #if os(macOS)
+        MacDiagnostics.log(
+            "backdrop.schedule card=\(cardKey) enabled=\(focusedPosterBackdropEnabled) "
+                + "suppressed=\(suppressReturnFocusAnimations) delay=\(focusedPosterBackdropDelay)"
+        )
+        #endif
         guard !suppressReturnFocusAnimations, focusedPosterBackdropEnabled else {
             focusWork.pendingLandscapeFocusedId = nil
             landscapeFocusedId = nil
@@ -6252,6 +6261,9 @@ struct TVHomeView: View {
             }
 
             landscapeFocusedId = targetKey
+            #if os(macOS)
+            MacDiagnostics.log("backdrop.publish card=\(targetKey)")
+            #endif
             TVHomeDebugTrace.log(
                 "backdrop.publish card=\(targetKey) elapsedMs=\(TVHomeDebugTrace.elapsedMilliseconds(since: started))"
             )
