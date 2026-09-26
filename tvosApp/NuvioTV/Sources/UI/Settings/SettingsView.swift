@@ -272,6 +272,7 @@ enum SettingsKey {
     static let trailersEnabled = "nuvio.tv.settings.playback.trailersEnabled"
     static let trailerPreviewSound = "nuvio.tv.settings.playback.trailerPreviewSound"
     static let trailerDelay = "nuvio.tv.settings.playback.trailerDelay"
+    static let homeFrostedGlass = "nuvio.tv.settings.layout.homeFrostedGlass"
     static let focusedPosterBackdropEnabled = "nuvio.tv.settings.playback.focusedPosterBackdropEnabled"
     static let focusedPosterBackdropDelay = "nuvio.tv.settings.playback.focusedPosterBackdropDelay"
     static let audioLanguage = "nuvio.tv.settings.playback.audioLanguage"
@@ -1118,6 +1119,17 @@ struct SettingsView: View {
     /// `macCrossColumns`, since `MacScreenFocus` stacks bands vertically and
     /// these two sit side by side.
     private var macBands: [MacFocusBand] {
+        // The editor covers the screen, so it takes the keyboard outright
+        // rather than sitting on top of a still-navigable pane. Its fields and
+        // buttons register like any settings row, so Return reaches them
+        // through the same path — they simply need to be the only band.
+        if addonEditor.addon != nil {
+            return [MacFocusBand(
+                id: SettingsFocusBand.rows,
+                items: AddonEditorSheet.macRowIDs,
+                columns: 1
+            )]
+        }
         var bands = [MacFocusBand(
             id: SettingsFocusBand.categories,
             items: SettingsCategory.allCases.map(\.rawValue),
@@ -1162,6 +1174,9 @@ struct SettingsView: View {
             let columns = rows.columnCount(for: macFocus.itemID)
             guard rows.focusedColumn < columns else { return false }
             rows.focusedColumn += 1
+            return true
+        case (SettingsFocusBand.rows, .left) where addonEditor.addon != nil:
+            // Nothing to the left of a modal.
             return true
         case (SettingsFocusBand.rows, .left):
             let rows = MacSettingsRowFocus.shared
@@ -3030,6 +3045,7 @@ private struct LayoutDiscoverySettingsView: View {
     @AppStorage(SettingsKey.showFullDates) private var showFullDates = true
     @AppStorage(SettingsKey.focusedPosterBackdropEnabled) private var focusedPosterBackdropEnabled = true
     @AppStorage(SettingsKey.focusedPosterBackdropDelay) private var focusedPosterBackdropDelay = 3
+    @AppStorage(SettingsKey.homeFrostedGlass) private var homeFrostedGlass = true
 
     /// Classic was never a distinct layout (behaved like Modern).
     private let layouts = ["Modern", "Compact", "Grid View"]
@@ -3169,6 +3185,16 @@ private struct LayoutDiscoverySettingsView: View {
                     fallback: "Expand focused posters into backdrop cards"
                 )
             ) {
+                SettingsToggleRow(
+                    title: L10n.string("tvos_settings_home_frosted_glass", fallback: "Frosted Glass Behind Rows"),
+                    subtitle: L10n.string(
+                        "tvos_settings_home_frosted_glass_subtitle",
+                        fallback: "Blur the backdrop behind the catalog rows, clearing toward the hero"
+                    ),
+                    isOn: $homeFrostedGlass,
+                    accentColor: accentColor
+                )
+
                 SettingsToggleRow(
                     title: L10n.string(
                         "tvos_settings_expand_focused_poster_to_backdrop",
@@ -9348,6 +9374,9 @@ private struct AddonEditorSheet: View {
 
     @State private var name: String
     @State private var urlText: String
+    #if os(macOS)
+    @ObservedObject private var macRows = MacSettingsRowFocus.shared
+    #endif
 
     init(addon: SyncedAddon,
          accentColor: Color,
@@ -9361,8 +9390,32 @@ private struct AddonEditorSheet: View {
         _urlText = State(initialValue: addon.url.absoluteString)
     }
 
+    /// Row ids in view order, so the caret can be pointed at them without
+    /// waiting for the sheet to report itself.
+    static var macRowIDs: [String] {
+        [
+            L10n.string("settings_addon_name", fallback: "Name"),
+            L10n.string("tvos_settings_add_on_url", fallback: "Add-on URL"),
+            "addon.editor.cancel",
+            "addon.editor.save"
+        ]
+    }
+
     private var isValid: Bool {
         CinemetaCatalogRepository.normalizedManifestURL(from: urlText) != nil
+    }
+
+    /// The buttons are not settings rows, so they draw their own highlight.
+    @ViewBuilder
+    private func editorFocusRing(_ id: String) -> some View {
+        #if os(macOS)
+        Capsule().strokeBorder(
+            macRows.focusedRowID == id ? AppFocusOutline.color : .clear,
+            lineWidth: macRows.focusedRowID == id ? AppFocusOutline.width : 0
+        )
+        #else
+        EmptyView()
+        #endif
     }
 
     var body: some View {
@@ -9397,8 +9450,11 @@ private struct AddonEditorSheet: View {
                     .frame(height: 52)
                     .background(Color.white.opacity(0.12), in: Capsule())
                     .foregroundColor(.white)
+                    .overlay(editorFocusRing("addon.editor.cancel"))
+                    .macSettingsRow("addon.editor.cancel", action: onCancel)
 
                 Button(L10n.string("action_save", fallback: "Save")) {
+                    guard isValid else { return }
                     onSave(name, urlText)
                 }
                 .buttonStyle(.plain)
@@ -9406,7 +9462,11 @@ private struct AddonEditorSheet: View {
                 .frame(height: 52)
                 .background(isValid ? accentColor : Color.white.opacity(0.12), in: Capsule())
                 .foregroundColor(isValid ? .black : .white.opacity(0.4))
-                .disabled(!isValid)
+                .overlay(editorFocusRing("addon.editor.save"))
+                .macSettingsRow("addon.editor.save") {
+                    guard isValid else { return }
+                    onSave(name, urlText)
+                }
             }
         }
         .padding(40)

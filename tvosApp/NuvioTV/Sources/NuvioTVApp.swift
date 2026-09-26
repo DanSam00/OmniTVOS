@@ -3301,6 +3301,7 @@ struct TVHomeView: View {
     /// it between carousel mode and ordinary focus-following hero mode.
     @State private var isFeatureFocused = false
     @AppStorage(SettingsKey.fullscreenHeroBackdrop) private var fullscreenHeroBackdrop = true
+    @AppStorage(SettingsKey.homeFrostedGlass) private var homeFrostedGlass = true
     @AppStorage(SettingsKey.focusedPosterBackdropEnabled) private var focusedPosterBackdropEnabled = true
     @AppStorage(SettingsKey.focusedPosterBackdropDelay) private var focusedPosterBackdropDelay = 3
     @AppStorage(SettingsKey.fastNavigation) private var fastNavigation = false
@@ -3434,6 +3435,31 @@ struct TVHomeView: View {
     @State private var macKeyToken: UUID?
     #endif
 
+    /// A material whose own opacity ramps in down the screen.
+    ///
+    /// `.ultraThinMaterial` cannot be faded directly — a mask is what varies it,
+    /// so the blur itself is what thins out rather than a tint drawn over it.
+    /// Clear across the top third so the hero is untouched, then easing to full
+    /// by the time the first row lands.
+    private var homeFrostedPane: some View {
+        Rectangle()
+            .fill(.ultraThinMaterial)
+            .mask(
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0),
+                        .init(color: .clear, location: 0.30),
+                        .init(color: .black.opacity(0.55), location: 0.52),
+                        .init(color: .black, location: 0.72),
+                        .init(color: .black, location: 1)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .ignoresSafeArea()
+    }
+
     var body: some View {
         let _ = TVHomeDebugTrace.log("home.body.render active=\(isActive) isEnabled=\(isEnabled)")
         ZStack(alignment: .topLeading) {
@@ -3544,6 +3570,18 @@ struct TVHomeView: View {
                     }
                 }
                 .ignoresSafeArea()
+            }
+
+            // 2b. Frosted pane between the artwork and the rows.
+            //
+            // The rows sit straight on the backdrop, so their legibility
+            // depends on whatever image happens to be behind them. This lifts
+            // them off it: a blur that is absent over the hero and thickens
+            // toward the rows, so the artwork still reads at the top while the
+            // content below has something settled to sit on.
+            if homeFrostedGlass, isActive {
+                homeFrostedPane
+                    .allowsHitTesting(false)
             }
 
             // 3. Scrollable catalog rows overlay, with pinned Hero at the top
