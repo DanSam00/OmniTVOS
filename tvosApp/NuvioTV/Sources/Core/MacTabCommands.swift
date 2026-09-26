@@ -488,6 +488,55 @@ final class MacSettingsRowFocus: ObservableObject {
     }
 }
 
+#if os(macOS)
+/// A single-letter shortcut, live while the view is on screen.
+///
+/// Deliberately not a `MacKey` case. That enum is the six navigation keys and
+/// every screen switches over it exhaustively, so widening it for one screen's
+/// shortcut would touch all of them. `MacKeyRouter` passes through anything it
+/// does not map, so a plain letter reaches a monitor installed after it —
+/// which is exactly what this is.
+struct MacHotKey: ViewModifier {
+    let character: String
+    let isEnabled: () -> Bool
+    let action: () -> Void
+
+    @State private var monitor: Any?
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                guard monitor == nil else { return }
+                monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                    // A modified press belongs to the system or a text field.
+                    guard event.modifierFlags.intersection([.command, .option, .control]).isEmpty,
+                          !event.isARepeat,
+                          event.charactersIgnoringModifiers?.lowercased() == character
+                    else { return event }
+                    // A focused text field owns its letters.
+                    if let responder = event.window?.firstResponder, responder is NSText { return event }
+                    guard isEnabled() else { return event }
+                    MainActor.assumeIsolated { action() }
+                    return nil
+                }
+            }
+            .onDisappear {
+                if let monitor { NSEvent.removeMonitor(monitor) }
+                monitor = nil
+            }
+    }
+}
+
+extension View {
+    /// `isEnabled` is read at press time, so it can consult a caret that moves.
+    func macHotKey(_ character: String,
+                   isEnabled: @escaping () -> Bool = { true },
+                   action: @escaping () -> Void) -> some View {
+        modifier(MacHotKey(character: character, isEnabled: isEnabled, action: action))
+    }
+}
+#endif
+
 private struct MacSettingsRowIDKey: EnvironmentKey {
     static let defaultValue: String? = nil
 }

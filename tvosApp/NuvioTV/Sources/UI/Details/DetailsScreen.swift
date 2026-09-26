@@ -2777,6 +2777,26 @@ struct TvDetailsContent: View {
                 keyRouter.release(macKeyToken)
                 macKeyToken = nil
             }
+            // W marks the caret's episode watched or unwatched. tvOS offers this
+            // by holding Select, which raises the row's `.contextMenu`; macOS
+            // binds that modifier to right-click, and a right-click never
+            // reaches it inside the scaled canvas. Nothing here holds SwiftUI
+            // focus either, so the caret is the only thing that knows which
+            // episode the viewer means.
+            .macHotKey("w", isEnabled: {
+                macFocus.row == .railList
+                    && macRailMode == .episodes
+                    && macSeasonEpisodes.indices.contains(macFocus.index)
+            }) {
+                guard let meta = uiState.meta,
+                      macSeasonEpisodes.indices.contains(macFocus.index) else { return }
+                let video = macSeasonEpisodes[macFocus.index]
+                _ = WatchedStore.toggleEpisode(
+                    meta: meta,
+                    season: video.season,
+                    episode: video.episode
+                )
+            }
             .onChange(of: keyRouter.latest) { _, press in
                 guard let press, keyRouter.isFront(macKeyToken) else { return }
                 handleMacKey(press.key)

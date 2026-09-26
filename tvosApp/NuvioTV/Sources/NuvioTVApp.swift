@@ -4079,6 +4079,14 @@ struct TVHomeView: View {
                     .onChange(of: store.sections.count) { _, _ in
                         seedMacHomeFocusIfNeeded()
                     }
+                    // R drops the caret's title out of Continue Watching. tvOS
+                    // offers this by holding Select, which raises the block's
+                    // `.contextMenu`; macOS binds that to right-click, and a
+                    // right-click never reaches it inside the scaled canvas.
+                    .macHotKey("r", isEnabled: { macRemovableContinueWatchingItem() != nil }) {
+                        guard let item = macRemovableContinueWatchingItem() else { return }
+                        onRemoveFromContinueWatching?(item)
+                    }
                     #endif
                 }
             }
@@ -5059,6 +5067,23 @@ struct TVHomeView: View {
     private var featureHeroActive: Bool {
         homeFeature && homeLayout != "Grid View" && !featureItems.isEmpty
     }
+
+    #if os(macOS)
+    /// The Continue Watching entry the caret is on, from either the featured
+    /// carousel or the Continue Watching row — or nil anywhere else, which is
+    /// what keeps R inert on the rest of Home.
+    private func macRemovableContinueWatchingItem() -> ContinueWatchingItem? {
+        if featureHeroActive, featureFocused, featureItems.indices.contains(featureIndex) {
+            return featureItems[featureIndex]
+        }
+        guard let key = macFocusedCardID,
+              MacHomeFocus.sectionId(of: key) == TVHomeSection.continueWatchingId,
+              let separator = key.firstIndex(of: "\u{1}")
+        else { return nil }
+        let metaId = String(key[key.index(after: separator)...])
+        return continueWatchingByMetaId[metaId]
+    }
+    #endif
 
     /// Whether the featured block is the focused element, and so in carousel
     /// mode rather than standing in as the focus-following hero.
