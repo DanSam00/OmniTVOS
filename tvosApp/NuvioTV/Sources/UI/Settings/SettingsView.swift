@@ -8872,9 +8872,25 @@ private struct AddonsSettingsSection: View {
     @State private var addons: [AddonItem] = AddonItem.defaults
     @State private var syncedAddons: [SyncedAddon] = []
 
+    /// The add-on rows in view order, named from the data rather than counted
+    /// as they render — which is what lets the list below be lazy.
+    private var macAddonRowIDs: [String] {
+        var ids = [L10n.string("tvos_settings_add_on_url", fallback: "Add-on URL")]
+        ids += syncedAddons.map { "addon.synced.\($0.id)" }
+        ids += addons
+            .filter { !isCoveredBySyncedAddon($0) }
+            .map { "addon.\($0.id)" }
+        return ids
+    }
+
+
     var body: some View {
         VStack(alignment: .leading, spacing: 28) {
-            SettingsGroup(title: L10n.string("tvos_settings_add_ons", fallback: "Add-ons"), subtitle: L10n.string("tvos_settings_stremio_compatible_catalogs_streams_and__cd03738a", fallback: "Stremio-compatible catalogs, streams, and subtitles")) {
+            SettingsGroup(
+                title: L10n.string("tvos_settings_add_ons", fallback: "Add-ons"),
+                subtitle: L10n.string("tvos_settings_stremio_compatible_catalogs_streams_and__cd03738a", fallback: "Stremio-compatible catalogs, streams, and subtitles"),
+                declaredRowIDs: macAddonRowIDs
+            ) {
                 SettingsTextFieldRow(
                     title: L10n.string("tvos_settings_add_on_url", fallback: "Add-on URL"),
                     subtitle: L10n.string("tvos_settings_paste_a_stremio_manifest_link_or_stremio_2968c517", fallback: "Paste a Stremio manifest link or stremio:// install URL"),
@@ -9599,7 +9615,11 @@ private struct HomeCatalogOrderSection: View {
     @State private var enabledByRowId: [String: Bool] = [:]
 
     var body: some View {
-        SettingsGroup(title: L10n.string("tvos_settings_home_catalogs", fallback: "Home Catalogs"), subtitle: L10n.string("tvos_settings_controls_catalog_and_collection_row_orde_b7069193", fallback: "Controls catalog and collection row order on Home")) {
+        SettingsGroup(
+            title: L10n.string("tvos_settings_home_catalogs", fallback: "Home Catalogs"),
+            subtitle: L10n.string("tvos_settings_controls_catalog_and_collection_row_orde_b7069193", fallback: "Controls catalog and collection row order on Home"),
+            declaredRowIDs: rows.map { "layout.catalog.\($0.id)" }
+        ) {
             if rows.isEmpty {
                 SettingsInfoRow(title: L10n.string("tvos_settings_no_rows_recorded_yet", fallback: "No rows recorded yet"), value: L10n.string("tvos_settings_open_home_once", fallback: "Open Home once"))
             } else {
@@ -12485,6 +12505,11 @@ private struct SettingsDetailHeader: View {
 private struct SettingsGroup<Content: View>: View {
     let title: String
     let subtitle: String
+    /// Row ids, in order, for a list long enough to be worth rendering lazily.
+    /// Supplying them lets the rows be built on demand without the caret
+    /// losing the ones off screen. nil keeps the old behaviour, which suits
+    /// the short groups that are on screen anyway.
+    var declaredRowIDs: [String]? = nil
     @ViewBuilder let content: Content
 
     var body: some View {
@@ -12509,8 +12534,15 @@ private struct SettingsGroup<Content: View>: View {
             .padding(.horizontal, 20)
             .padding(.bottom, 4)
 
-            VStack(spacing: 2) {
-                content
+            if let declaredRowIDs {
+                LazyVStack(spacing: 2) {
+                    content
+                }
+                .macSettingsDeclaredRows(declaredRowIDs)
+            } else {
+                VStack(spacing: 2) {
+                    content
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -13337,6 +13369,8 @@ extension View {
     /// tvOS reaches these buttons through the focus engine, so the caret's
     /// horizontal axis has nothing to add there.
     func macSettingsRowAction(_ index: Int, action: @escaping () -> Void) -> some View { self }
+    /// The band this declares is the macOS caret's; tvOS has a focus engine.
+    func macSettingsDeclaredRows(_ ids: [String]) -> some View { self }
 }
 #endif
 

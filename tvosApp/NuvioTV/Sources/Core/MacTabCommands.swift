@@ -663,9 +663,38 @@ extension EnvironmentValues {
     }
 }
 
+private struct MacSettingsRowsDeclaredKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// True inside a list that has already declared its row ids from data, so
+    /// the rows themselves must not also report — and, more importantly, need
+    /// not exist in order to be navigable.
+    var macSettingsRowsDeclared: Bool {
+        get { self[MacSettingsRowsDeclaredKey.self] }
+        set { self[MacSettingsRowsDeclaredKey.self] = newValue }
+    }
+}
+
+extension View {
+    /// Declares a list's rows up front, in order, from the data behind them.
+    ///
+    /// The caret's band used to be assembled from a preference each rendered
+    /// row emitted, which forced the pane to render every row — 397 of them in
+    /// a plain VStack, re-measured on every keypress. Declaring the ids here
+    /// frees the list to be lazy: rows off screen are no longer built, and the
+    /// caret can still walk through them.
+    func macSettingsDeclaredRows(_ ids: [String]) -> some View {
+        preference(key: MacSettingsRowsKey.self, value: ids)
+            .environment(\.macSettingsRowsDeclared, true)
+    }
+}
+
 private struct MacSettingsRowModifier: ViewModifier {
     let id: String
     let action: () -> Void
+    @Environment(\.macSettingsRowsDeclared) private var declared
 
     init(id: String, action: @escaping () -> Void) {
         self.id = id
@@ -675,7 +704,9 @@ private struct MacSettingsRowModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .environment(\.macSettingsRowID, id)
-            .preference(key: MacSettingsRowsKey.self, value: [id])
+            // Silent inside a declared list: its parent named every row from
+            // data, including the ones not currently built.
+            .preference(key: MacSettingsRowsKey.self, value: declared ? [] : [id])
             // The rows sit in a ScrollView the caret has to drag along with it.
             .id(id)
             // Received rather than observed: this needs to run on activation,
