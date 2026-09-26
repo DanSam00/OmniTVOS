@@ -1051,6 +1051,7 @@ struct SettingsView: View {
     }
 
     @State private var selectedCategory: SettingsCategory = .account
+    @ObservedObject private var addonEditor = AddonEditorPresenter.shared
     @State private var presentedLanguagePicker: LanguagePickerKind?
     @State private var presentedProfilePinMode: ProfilePinSheetMode?
     #if os(macOS)
@@ -1265,6 +1266,17 @@ struct SettingsView: View {
             }
             .disabled(presentedLanguagePicker != nil || presentedProfilePinMode != nil)
             .allowsHitTesting(presentedLanguagePicker == nil && presentedProfilePinMode == nil)
+            .modalCover(item: $addonEditor.addon) { addon in
+                AddonEditorSheet(
+                    addon: addon,
+                    accentColor: accentColor,
+                    onSave: { name, urlText in
+                        addonEditor.onSave?(name, urlText)
+                        addonEditor.dismiss()
+                    },
+                    onCancel: { addonEditor.dismiss() }
+                )
+            }
 
             if let picker = presentedLanguagePicker {
                 LanguagePickerWindow(
@@ -8871,7 +8883,6 @@ private struct AddonsSettingsSection: View {
     @State private var addonURLInput = ""
     @State private var addons: [AddonItem] = AddonItem.defaults
     @State private var syncedAddons: [SyncedAddon] = []
-    @State private var editingAddon: SyncedAddon?
 
     /// The add-on rows in view order, named from the data rather than counted
     /// as they render — which is what lets the list below be lazy.
@@ -8913,7 +8924,11 @@ private struct AddonsSettingsSection: View {
                         canMoveDown: index < syncedAddons.count - 1,
                         onEnabledChange: { isEnabled in setAddonEnabled(at: index, isEnabled: isEnabled) },
                         onDelete: { removeAddon(at: index) },
-                        onEdit: { editingAddon = addon },
+                        onEdit: {
+                            AddonEditorPresenter.shared.present(addon) { name, urlText in
+                                saveAddonEdit(addon, name: name, urlText: urlText)
+                            }
+                        },
                         onMove: { up in moveAddon(at: index, up: up) }
                     )
                 }
@@ -8944,17 +8959,6 @@ private struct AddonsSettingsSection: View {
         }
         .task(id: streamAddonManifestURL + "\n" + streamAddonManifestURLs + "\n" + streamAddonManifestStates) {
             await loadSyncedAddons()
-        }
-        .modalCover(item: $editingAddon) { addon in
-            AddonEditorSheet(
-                addon: addon,
-                accentColor: accentColor,
-                onSave: { name, urlText in
-                    saveAddonEdit(addon, name: name, urlText: urlText)
-                    editingAddon = nil
-                },
-                onCancel: { editingAddon = nil }
-            )
         }
     }
 
@@ -9311,6 +9315,30 @@ private struct AddonsSettingsSection: View {
 /// One add-on synced from the account (or entered manually), shown in the
 /// Add-ons section. Starts with just the manifest URL; name/version/description
 /// arrive once the manifest is fetched.
+/// Carries an add-on edit up to the screen root.
+///
+/// `modalCover` builds its cover in a ZStack around whatever it is attached
+/// to, so attaching it inside the add-ons section made that section the
+/// "screen": the editor was laid out at the centre of a row deep in a
+/// scrolling pane — off the bottom, unreachable by mouse or keyboard — while
+/// its `ignoresSafeArea` backdrop covered everything else.
+private final class AddonEditorPresenter: ObservableObject {
+    static let shared = AddonEditorPresenter()
+
+    @Published var addon: SyncedAddon?
+    var onSave: ((String, String) -> Void)?
+
+    func present(_ addon: SyncedAddon, onSave: @escaping (String, String) -> Void) {
+        self.onSave = onSave
+        self.addon = addon
+    }
+
+    func dismiss() {
+        addon = nil
+        onSave = nil
+    }
+}
+
 /// Editing one add-on: the name shown for it, and the manifest it points at.
 private struct AddonEditorSheet: View {
     let original: SyncedAddon
