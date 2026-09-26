@@ -12,6 +12,8 @@ import AppKit
 enum SearchFocusBand {
     /// Recent-search chips, shown above Discover before anything is typed.
     static let recent = "recent"
+    /// Cached searches matching what is being typed, under the field.
+    static let suggestions = "suggestions"
     static let field = "field"
     static let filters = "filters"
     static let results = "results"
@@ -96,6 +98,9 @@ struct SearchView: View {
     /// the results. Republished whenever any of the three changes.
     private var macBands: [MacFocusBand] {
         var bands = [MacFocusBand(id: SearchFocusBand.field, items: [SearchFocusBand.field])]
+        if !cachedSearchMatches.isEmpty {
+            bands.append(MacFocusBand(id: SearchFocusBand.suggestions, items: cachedSearchMatches))
+        }
         guard viewModel.hasQuery else {
             // Nothing typed yet, so the screen is the recent chips above the
             // embedded Discover section — which describes its own rows, since
@@ -136,6 +141,9 @@ struct SearchView: View {
         case SearchFocusBand.filters:
             guard let type = SearchContentType(rawValue: item) else { return }
             viewModel.setType(type)
+        case SearchFocusBand.suggestions:
+            searchTextInputActive = false
+            viewModel.applyRecent(item)
         case SearchFocusBand.recent:
             if item == "clear" { viewModel.clearRecent() } else { viewModel.applyRecent(item) }
         case DiscoverFocusBand.filters, DiscoverFocusBand.grid:
@@ -148,12 +156,32 @@ struct SearchView: View {
     }
     #endif
 
+    /// Cached searches that match the query so far, newest first.
+    ///
+    /// Only while typing: the list is a way to finish a thought, not a thing to
+    /// browse, so it stays out of the way until there is a thought to finish.
+    var cachedSearchMatches: [String] {
+        let query = viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return [] }
+        return viewModel.recentSearches
+            .filter { $0.localizedCaseInsensitiveContains(query) && $0.localizedCaseInsensitiveCompare(query) != .orderedSame }
+            .prefix(6)
+            .map { $0 }
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
             Color.nuvioBackground(amoled: amoled, body: bodyColor).ignoresSafeArea()
 
             VStack(alignment: .leading, spacing: 24) {
                 header
+                    .overlay(alignment: .bottomLeading) {
+                        if !cachedSearchMatches.isEmpty {
+                            searchSuggestionsList
+                                .offset(y: 62)
+                        }
+                    }
+                    .zIndex(2)
                     // Outside the capsule: applied within it, the inset only
                     // moved the magnifier inwards and left the bar's own left
                     // edge sitting under the menu icon.
@@ -173,10 +201,6 @@ struct SearchView: View {
                     resultsContainer
                         .zIndex(0)
                 } else {
-                    if !viewModel.recentSearches.isEmpty {
-                        recentRow
-                            .disabled(discoverOverlayTransitionActive)
-                    }
                     if showDiscover {
                         discoverSection
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -319,6 +343,68 @@ struct SearchView: View {
 
     private var header: some View {
         searchBar
+    }
+
+    /// Cached searches under the field, offered while typing.
+    ///
+    /// Replaces the row of recent chips that used to sit above Discover: that
+    /// row occupied the screen whether or not it was wanted, and could only be
+    /// reached by leaving the field. This is on the way to the results instead
+    /// — Down walks into it, Return runs one.
+    private var searchSuggestionsList: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(cachedSearchMatches, id: \.self) { term in
+                suggestionRow(term)
+            }
+        }
+        .padding(.vertical, 8)
+        .frame(width: 760, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.black.opacity(0.92))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.5), radius: 24, y: 10)
+    }
+
+    @ViewBuilder
+    private func suggestionRow(_ term: String) -> some View {
+        Button {
+            searchTextInputActive = false
+            viewModel.applyRecent(term)
+        } label: {
+            HStack(spacing: 14) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 20))
+                    .foregroundColor(.white.opacity(0.5))
+                Text(term)
+                    .font(.system(size: 22))
+                    .foregroundColor(.white.opacity(0.92))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 24)
+            .frame(height: 56)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(suggestionFill(term))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func suggestionFill(_ term: String) -> some View {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(Color.white.opacity(isSuggestionFocused(term) ? 0.14 : 0))
+    }
+
+    private func isSuggestionFocused(_ term: String) -> Bool {
+        #if os(macOS)
+        return macIsFocused(SearchFocusBand.suggestions, term)
+        #else
+        return false
+        #endif
     }
 
     private var searchBar: some View {
