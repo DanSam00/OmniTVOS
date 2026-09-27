@@ -7025,10 +7025,68 @@ enum TVHomeCatalogOrder {
     /// Account catalog keys (`<addonId>_<type>_<catalogId>`) the user has hidden
     /// from Home on another device, pulled from the account. The repository
     /// consults this to drop hidden catalog rows before building Home.
+    ///
+    /// Removed rows are included: a removed row is hidden everywhere a disabled
+    /// one is — Home, its loading placeholders, and the account — and differs
+    /// only in leaving the Settings list.
     static func disabledCatalogKeys() -> Set<String> {
+        storedDisabledCatalogKeys().union(
+            removedKeys().filter { !$0.hasPrefix(TVHomeSection.collectionIdPrefix) }
+        )
+    }
+
+    private static func storedDisabledCatalogKeys() -> Set<String> {
         guard let data = ProfileSettings.current.data(forKey: SettingsKey.homeCatalogDisabled),
               let keys = try? JSONDecoder().decode([String].self, from: data) else { return [] }
         return Set(keys)
+    }
+
+    // MARK: Removed rows
+
+    /// Settings keys of rows removed from Home.
+    static func removedKeys() -> Set<String> {
+        migrateDisabledToRemovedIfNeeded()
+        guard let data = ProfileSettings.current.data(forKey: SettingsKey.homeCatalogRemoved),
+              let keys = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+        return Set(keys)
+    }
+
+    static func isRowRemoved(_ row: SnapshotRow) -> Bool {
+        guard let key = row.settingsKey else { return false }
+        return removedKeys().contains(key)
+    }
+
+    /// Takes a row off Home and out of the Settings list, or puts it back.
+    /// Adding a row back also shows it: it returns to Home, not to the list as
+    /// a disabled row.
+    static func setRowRemoved(_ row: SnapshotRow, isRemoved: Bool) {
+        guard let key = row.settingsKey else { return }
+        var keys = removedKeys()
+        if isRemoved { keys.insert(key) } else { keys.remove(key) }
+        persist(keys, forKey: SettingsKey.homeCatalogRemoved)
+        if isRemoved {
+            // Recorded as disabled as well, so the account — which knows
+            // nothing of removal — stops showing it on other devices too.
+            setRowEnabled(row, isEnabled: false)
+        } else {
+            setRowEnabled(row, isEnabled: true)
+        }
+    }
+
+    /// One-time move of every row that was disabled when removal arrived into
+    /// the removed list, so a long list of switched-off rows stops cluttering
+    /// Settings and can be added back individually.
+    private static func migrateDisabledToRemovedIfNeeded() {
+        let store = ProfileSettings.current
+        guard !store.bool(forKey: SettingsKey.homeCatalogRemovedMigrated) else { return }
+        store.set(true, forKey: SettingsKey.homeCatalogRemovedMigrated)
+        let collections = storedDisabledCollectionIds().map { TVHomeSection.collectionIdPrefix + $0 }
+        let moved = storedDisabledCatalogKeys().union(collections)
+        guard !moved.isEmpty else { return }
+        persist(moved, forKey: SettingsKey.homeCatalogRemoved)
+        #if os(macOS)
+        MacDiagnostics.log("catalogs.removed.migrated count=" + String(moved.count))
+        #endif
     }
 
     static func disabledAddonIDs() -> Set<String> {
@@ -7057,6 +7115,14 @@ enum TVHomeCatalogOrder {
 
     /// Collection ids the user has hidden from Home on another device.
     static func disabledCollectionIds() -> Set<String> {
+        let prefix = TVHomeSection.collectionIdPrefix
+        let removed = removedKeys()
+            .filter { $0.hasPrefix(prefix) }
+            .map { String($0.dropFirst(prefix.count)) }
+        return storedDisabledCollectionIds().union(removed)
+    }
+
+    private static func storedDisabledCollectionIds() -> Set<String> {
         guard let data = ProfileSettings.current.data(forKey: SettingsKey.homeCollectionDisabled),
               let keys = try? JSONDecoder().decode([String].self, from: data) else { return [] }
         return Set(keys)
@@ -7307,13 +7373,16 @@ enum TVHomeCatalogOrder {
     /// exactly as it would for a catalog hidden on another device.
     static func setRowEnabled(_ row: SnapshotRow, isEnabled: Bool) {
         guard let key = row.settingsKey else { return }
+        // The stored sets, not the readers above: those fold removed rows in,
+        // and writing that back would copy every removed row into the
+        // disabled list on each toggle.
         if key.hasPrefix(TVHomeSection.collectionIdPrefix) {
             let id = String(key.dropFirst(TVHomeSection.collectionIdPrefix.count))
-            var ids = disabledCollectionIds()
+            var ids = storedDisabledCollectionIds()
             if isEnabled { ids.remove(id) } else { ids.insert(id) }
             persist(ids, forKey: SettingsKey.homeCollectionDisabled)
         } else {
-            var keys = disabledCatalogKeys()
+            var keys = storedDisabledCatalogKeys()
             if isEnabled { keys.remove(key) } else { keys.insert(key) }
             persist(keys, forKey: SettingsKey.homeCatalogDisabled)
         }

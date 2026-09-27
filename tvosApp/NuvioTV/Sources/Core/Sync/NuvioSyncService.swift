@@ -245,7 +245,12 @@ final class NuvioSyncManager: ObservableObject {
               AuthConfig.isConfigured,
               authManager?.isAuthenticated == true,
               let key = currentSyncKey(),
-              completedInitialPullKeys.contains(key) else { return }
+              completedInitialPullKeys.contains(key) else {
+            #if os(macOS)
+            MacDiagnostics.log("catalogs.push skipped applyingRemote=" + String(isApplyingRemote))
+            #endif
+            return
+        }
 
         homeCatalogPushTask?.cancel()
         homeCatalogPushTask = Task(priority: .utility) { @MainActor [weak self] in
@@ -275,10 +280,17 @@ final class NuvioSyncManager: ObservableObject {
                 items: items
             )
             Self.catalogSettingsSyncDiagnostic = "pushed \(items.count) item(s)"
+            #if os(macOS)
+            let disabled = items.filter { ($0["enabled"] as? Bool) == false }.count
+            MacDiagnostics.log("catalogs.push ok items=" + String(items.count) + " disabled=" + String(disabled))
+            #endif
         } catch is CancellationError {
             return
         } catch {
             print("Nuvio home catalog settings push failed: \(error.localizedDescription)")
+            #if os(macOS)
+            MacDiagnostics.log("catalogs.push failed " + error.localizedDescription)
+            #endif
         }
     }
 
@@ -2365,6 +2377,19 @@ fileprivate final class NuvioAPIClient {
             || (currentShowType ?? true) != newShowType
 
         if didChange {
+            #if os(macOS)
+            // An account pull replaces the local disabled list outright. A
+            // local toggle whose push never landed is undone here, silently,
+            // and the row comes back on Home — so say when the list moves.
+            let before = currentDisabledData
+                .flatMap { try? JSONDecoder().decode([String].self, from: $0) }.map(Set.init) ?? []
+            let after = Set(disabledKeys)
+            MacDiagnostics.log(
+                "catalogs.pull disabled " + String(before.count) + "->" + String(after.count)
+                    + " reEnabled=" + String(before.subtracting(after).count)
+                    + " newlyDisabled=" + String(after.subtracting(before).count)
+            )
+            #endif
             if let newOrderData { defaults.set(newOrderData, forKey: SettingsKey.homeCatalogSyncedOrder) }
             if let newDisabledData { defaults.set(newDisabledData, forKey: SettingsKey.homeCatalogDisabled) }
             if let newDisabledColData { defaults.set(newDisabledColData, forKey: SettingsKey.homeCollectionDisabled) }

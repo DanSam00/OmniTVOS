@@ -150,6 +150,13 @@ enum SettingsKey {
     /// settings; the repository skips these rows. Not part of `all` — it syncs
     /// through its own RPC, not the tvOS settings blob.
     static let homeCatalogDisabled = "nuvio.tv.settings.layout.homeCatalogDisabled"
+    /// Rows removed from Home outright: hidden like a disabled row, and also
+    /// taken off the Home Catalogs list until added back. Settings keys, in
+    /// the same form as `homeCatalogDisabled` (collections as `collection_<id>`).
+    static let homeCatalogRemoved = "nuvio.tv.settings.layout.homeCatalogRemoved"
+    /// Set once the rows that were disabled before removal existed have been
+    /// moved into `homeCatalogRemoved`.
+    static let homeCatalogRemovedMigrated = "nuvio.tv.settings.layout.homeCatalogRemovedMigrated"
     /// Local derived source state used to hide stale catalog snapshot rows when
     /// an add-on is disabled before Home has rebuilt its snapshot.
     static let homeCatalogDisabledAddonIDs = "nuvio.tv.settings.layout.homeCatalogDisabledAddonIDs"
@@ -320,6 +327,7 @@ enum SettingsKey {
         accountSyncWatchState,
         theme, bodyColor, font, language, amoled, amoledSurfaces, reduceMotion,
         homeLayout, heroEnabled, homeFeature, heroCatalogs, fullscreenHeroBackdrop, posterLabels, catalogAddonNames, discoverLocation,
+        homeCatalogRemoved,
         searchStyle,
         continueWatchingSort, upNextFromFurthestEpisode, showUnairedNextUp,
         cardCornerRadius, cardSize, liquidGlassCards, blurUnwatchedArtwork,
@@ -3261,6 +3269,8 @@ private struct LayoutDiscoverySettingsView: View {
             }
 
             HomeCatalogOrderSection(accentColor: accentColor)
+
+            HomeCatalogAddSection(accentColor: accentColor)
 
             CollectionsSettingsSection(accentColor: accentColor)
 
@@ -9949,7 +9959,12 @@ private struct AddonReorderButton: View {
 @MainActor
 private struct HomeCatalogOrderSection: View {
     let accentColor: Color
+    /// The rows this list shows: every Home row except the removed ones.
     @State private var rows: [TVHomeCatalogOrder.SnapshotRow] = []
+    /// Every row including removed ones, in saved order. A reorder is written
+    /// back over this, so a removed row keeps its place — and its place in the
+    /// snapshot the Add Catalogs list is built from.
+    @State private var allRows: [TVHomeCatalogOrder.SnapshotRow] = []
     /// Enabled state per row, read once on appear and updated by the taps here.
     /// Kept beside `rows` rather than re-read per redraw: each read decodes two
     /// JSON blobs out of the profile's settings.
@@ -9975,7 +9990,8 @@ private struct HomeCatalogOrderSection: View {
                         canMoveDown: index < rows.count - 1,
                         onToggle: { setEnabled(row, isEnabled: !(enabledByRowId[row.id] ?? true)) },
                         onMove: { up in move(index, up: up) },
-                        onMoveToEdge: { top in moveToEdge(index, top: top) }
+                        onMoveToEdge: { top in moveToEdge(index, top: top) },
+                        onRemove: { remove(row) }
                     )
                     #if os(macOS)
                     .macSettingsRow("layout.catalog.\(row.id)") {
@@ -10001,7 +10017,12 @@ private struct HomeCatalogOrderSection: View {
     }
 
     private func reload() {
-        rows = layoutVisibleHomeCatalogRows()
+        allRows = layoutVisibleHomeCatalogRows()
+        let removed = TVHomeCatalogOrder.removedKeys()
+        rows = allRows.filter { row in
+            guard let key = row.settingsKey else { return true }
+            return !removed.contains(key)
+        }
         enabledByRowId = Dictionary(
             rows.map { ($0.id, TVHomeCatalogOrder.isRowEnabled($0)) },
             uniquingKeysWith: { first, _ in first }
@@ -10036,8 +10057,23 @@ private struct HomeCatalogOrderSection: View {
     }
 
     private func persistOrder() {
-        TVHomeCatalogOrder.save(rows.map(\.id))
-        TVHomeCatalogOrder.writeSnapshotRows(rows)
+        // The visible rows fill the visible rows' slots in the full list, in
+        // their new order; removed rows stay exactly where they were.
+        let visibleIDs = Set(rows.map(\.id))
+        var reordered = rows.makeIterator()
+        let full = allRows.map { row in
+            visibleIDs.contains(row.id) ? (reordered.next() ?? row) : row
+        }
+        allRows = full
+        TVHomeCatalogOrder.save(full.map(\.id))
+        TVHomeCatalogOrder.writeSnapshotRows(full)
+        NuvioSyncManager.current?.noteHomeCatalogSettingsChangedLocally()
+    }
+
+    private func remove(_ row: TVHomeCatalogOrder.SnapshotRow) {
+        guard row.settingsKey != nil else { return }
+        rows.removeAll { $0.id == row.id }
+        TVHomeCatalogOrder.setRowRemoved(row, isRemoved: true)
         NuvioSyncManager.current?.noteHomeCatalogSettingsChangedLocally()
     }
 
@@ -10057,6 +10093,10 @@ private struct HomeCatalogOrderSection: View {
             options.append(FilterOption(label, isSelected: false) {
                 setEnabled(row, isEnabled: !isEnabled)
             })
+            options.append(FilterOption(
+                L10n.string("omni_settings_remove_catalog", fallback: "Delete from Home"),
+                isSelected: false
+            ) { remove(row) })
         }
 
         if index > 0 {
@@ -10101,6 +10141,8 @@ private struct HomeCatalogOrderRow: View {
     let onMove: (Bool) -> Void
     /// true = jump to top, false = jump to bottom.
     let onMoveToEdge: (Bool) -> Void
+    /// Takes the row off Home and out of this list; Add Catalogs brings it back.
+    var onRemove: (() -> Void)? = nil
 
     @FocusState private var isFocused: Bool
 
@@ -10152,6 +10194,10 @@ private struct HomeCatalogOrderRow: View {
                 .macSettingsRowAction(4) { if canMoveDown { onMove(false) } }
             AddonReorderButton(systemImage: "arrow.down.to.line", disabled: !canMoveDown) { onMoveToEdge(false) }
                 .macSettingsRowAction(5) { if canMoveDown { onMoveToEdge(false) } }
+            if let onRemove {
+                AddonReorderButton(systemImage: "trash", disabled: !canToggle, action: onRemove)
+                    .macSettingsRowAction(6) { if canToggle { onRemove() } }
+            }
         }
     }
 
@@ -10167,6 +10213,104 @@ private struct HomeCatalogOrderRow: View {
     private var statusColor: Color {
         guard canToggle else { return .white.opacity(0.42) }
         return isEnabled ? .white.opacity(0.7) : .white.opacity(0.42)
+    }
+}
+
+/// Rows removed from Home, offered back one at a time.
+private struct HomeCatalogAddSection: View {
+    let accentColor: Color
+    @State private var rows: [TVHomeCatalogOrder.SnapshotRow] = []
+
+    var body: some View {
+        SettingsGroup(
+            title: L10n.string("omni_settings_add_catalogs", fallback: "Add Catalogs"),
+            subtitle: L10n.string(
+                "omni_settings_add_catalogs_subtitle",
+                fallback: "Catalogs deleted from Home. Add one back at any time."
+            ),
+            declaredRowIDs: rows.map { "layout.catalog.add.\($0.id)" }
+        ) {
+            if rows.isEmpty {
+                SettingsInfoRow(
+                    title: L10n.string("omni_settings_no_removed_catalogs", fallback: "Nothing deleted"),
+                    value: L10n.string(
+                        "omni_settings_no_removed_catalogs_value",
+                        fallback: "Delete a catalog above to move it here"
+                    )
+                )
+            } else {
+                ForEach(rows, id: \.id) { row in
+                    HomeCatalogAddRow(
+                        title: row.title,
+                        addonName: row.addonName,
+                        accentColor: accentColor,
+                        onAdd: { add(row) }
+                    )
+                    .macSettingsRow("layout.catalog.add.\(row.id)") { add(row) }
+                }
+            }
+        }
+        .onAppear(perform: reload)
+        .onReceive(NotificationCenter.default.publisher(for: TVHomeCatalogOrder.changedNotification)) { _ in
+            reload()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: TVHomeCatalogOrder.snapshotChangedNotification)) { _ in
+            reload()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NuvioSyncManager.homeContentSyncedNotification)) { _ in
+            reload()
+        }
+    }
+
+    private func reload() {
+        let removed = TVHomeCatalogOrder.removedKeys()
+        rows = layoutVisibleHomeCatalogRows().filter { row in
+            row.settingsKey.map(removed.contains) ?? false
+        }
+    }
+
+    private func add(_ row: TVHomeCatalogOrder.SnapshotRow) {
+        rows.removeAll { $0.id == row.id }
+        TVHomeCatalogOrder.setRowRemoved(row, isRemoved: false)
+        NuvioSyncManager.current?.noteHomeCatalogSettingsChangedLocally()
+    }
+}
+
+private struct HomeCatalogAddRow: View {
+    let title: String
+    let addonName: String?
+    let accentColor: Color
+    let onAdd: () -> Void
+
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        Button(action: onAdd) {
+            SettingsRowShell(isFocused: isFocused, accentColor: accentColor) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.86))
+                        .lineLimit(1)
+                    if let addonName, !addonName.isEmpty {
+                        Text(addonName)
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.white.opacity(0.5))
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer(minLength: 20)
+
+                Label(L10n.string("omni_settings_add_catalog", fallback: "Add"), systemImage: "plus")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundColor(.white.opacity(0.8))
+            }
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
+        .focused($isFocused)
+        .focusEffectDisabledIfAvailable()
     }
 }
 
