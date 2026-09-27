@@ -4826,8 +4826,43 @@ struct TVHomeView: View {
         // leading edge under the collapsed sidebar, and the focus engine reads
         // that geometry when deciding where a left press should land.
         .scrollClipDisabledIfAvailable()
+        #if os(macOS)
+        .onAppear { macRestoreGridViewport(using: gridScrollProxy) }
+        #endif
         }
     }
+
+    #if os(macOS)
+    /// Brings the caret's card back into view when the grid is rebuilt.
+    ///
+    /// Only the selected tab keeps a Home tree, so leaving Home discards the
+    /// grid's scroll view and returning builds a new one at the top — while
+    /// the caret, which is plain state, stays on the card it was left on,
+    /// scrolled out of sight. Positioned the way a move would place it, with
+    /// no animation, so Home simply reopens where it was.
+    private func macRestoreGridViewport(using proxy: ScrollViewProxy) {
+        guard let key = macFocusedCardID,
+              key != MacHomeFocus.gridHeroCardKey,
+              let section = MacHomeFocus.sectionId(of: key) else { return }
+        let isGridSection = macGridSectionIds.contains(section)
+        // A second pass once the lazy stack has measured the rows it crossed:
+        // the first lands on estimated heights and can stop short.
+        for delay in [0.0, 0.2] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                var transaction = Transaction()
+                transaction.animation = nil
+                withTransaction(transaction) {
+                    if isGridSection {
+                        proxy.scrollTo(key, anchor: .center)
+                    } else {
+                        proxy.scrollTo(section, anchor: .top)
+                    }
+                }
+            }
+        }
+        MacDiagnostics.log("homeGrid.restore key=" + key)
+    }
+    #endif
 
     /// Scroll target for the grid hero; matches the stand-in section id the
     /// macOS caret uses for it, so the move handler scrolls to it by name.
