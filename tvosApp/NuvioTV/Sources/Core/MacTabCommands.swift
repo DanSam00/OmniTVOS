@@ -268,13 +268,28 @@ final class MacScreenFocus: ObservableObject {
     /// Republish whenever the screen's contents change. The caret stays where
     /// it is when that item still exists, so a filter or a new result set does
     /// not throw it back to the top.
+    ///
+    /// When the item itself goes but its band remains — a row deleted from a
+    /// list — the caret stays in that band on whatever now holds the item's
+    /// place. Reseeding instead sent it to the screen's first item: in
+    /// Settings that is the Account category, so every catalog deleted from
+    /// Layout's list threw the user out to Account.
     func update(_ bands: [MacFocusBand]) {
+        let previous = self.bands
         self.bands = bands.filter { !$0.items.isEmpty }
-        guard let itemID, let bandID,
-              self.bands.first(where: { $0.id == bandID })?.items.contains(itemID) == true
-        else {
+        guard let itemID, let bandID else {
             seed()
             return
+        }
+        guard let band = self.bands.first(where: { $0.id == bandID }) else {
+            seed()
+            return
+        }
+        guard !band.items.contains(itemID) else { return }
+        if let oldIndex = previous.first(where: { $0.id == bandID })?.items.firstIndex(of: itemID) {
+            self.itemID = band.items[min(oldIndex, band.items.count - 1)]
+        } else {
+            seed()
         }
     }
 
