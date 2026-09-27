@@ -3315,6 +3315,7 @@ struct TVHomeView: View {
     @State private var isFeatureFocused = false
     @AppStorage(SettingsKey.fullscreenHeroBackdrop) private var fullscreenHeroBackdrop = true
     @AppStorage(SettingsKey.homeFrostedGlass) private var homeFrostedGlass = true
+    @AppStorage(SettingsKey.homeFrostedGlassLiquid) private var homeFrostedGlassLiquid = false
     @AppStorage(SettingsKey.focusedPosterBackdropEnabled) private var focusedPosterBackdropEnabled = true
     @AppStorage(SettingsKey.focusedPosterBackdropDelay) private var focusedPosterBackdropDelay = 3
     @AppStorage(SettingsKey.fastNavigation) private var fastNavigation = false
@@ -3458,7 +3459,47 @@ struct TVHomeView: View {
     /// It blurs whatever is drawn beneath it, so it has to sit directly on the
     /// artwork: placed above the readability gradients, all it had to blur was
     /// their near-opaque page colour, and it read as a flat black panel.
+    @ViewBuilder
     private var homeFrostedPane: some View {
+        if homeFrostedGlassLiquid, #available(tvOS 26.0, macOS 26.0, *) {
+            homeLiquidGlassPane
+        } else {
+            homeBlurPane
+        }
+    }
+
+    /// The menu's Liquid Glass stretched across the bottom of the screen.
+    ///
+    /// Unlike a material this is a sheet with an edge: it lenses the artwork
+    /// near its rim and catches a highlight along it. So the sheet starts a
+    /// little above where the blur would, and its top edge is left faintly
+    /// visible rather than faded to nothing, which is where that rim lives.
+    @available(tvOS 26.0, macOS 26.0, *)
+    private var homeLiquidGlassPane: some View {
+        GeometryReader { proxy in
+            let top = proxy.size.height * 0.64
+            Rectangle()
+                .fill(Color.clear)
+                .glassEffect(.regular, in: Rectangle())
+                .mask(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .black.opacity(0.35), location: 0),
+                            .init(color: .black.opacity(0.75), location: 0.30),
+                            .init(color: .black, location: 0.60),
+                            .init(color: .black, location: 1)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .frame(width: proxy.size.width, height: proxy.size.height - top)
+                .offset(y: top)
+        }
+        .ignoresSafeArea()
+    }
+
+    private var homeBlurPane: some View {
         ZStack {
             Rectangle()
                 .fill(.ultraThinMaterial)

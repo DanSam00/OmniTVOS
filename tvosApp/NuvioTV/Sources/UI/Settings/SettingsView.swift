@@ -273,6 +273,7 @@ enum SettingsKey {
     static let trailerPreviewSound = "nuvio.tv.settings.playback.trailerPreviewSound"
     static let trailerDelay = "nuvio.tv.settings.playback.trailerDelay"
     static let homeFrostedGlass = "nuvio.tv.settings.layout.homeFrostedGlass"
+    static let homeFrostedGlassLiquid = "nuvio.tv.settings.layout.homeFrostedGlassLiquid"
     static let focusedPosterBackdropEnabled = "nuvio.tv.settings.playback.focusedPosterBackdropEnabled"
     static let focusedPosterBackdropDelay = "nuvio.tv.settings.playback.focusedPosterBackdropDelay"
     static let audioLanguage = "nuvio.tv.settings.playback.audioLanguage"
@@ -3046,6 +3047,7 @@ private struct LayoutDiscoverySettingsView: View {
     @AppStorage(SettingsKey.focusedPosterBackdropEnabled) private var focusedPosterBackdropEnabled = true
     @AppStorage(SettingsKey.focusedPosterBackdropDelay) private var focusedPosterBackdropDelay = 3
     @AppStorage(SettingsKey.homeFrostedGlass) private var homeFrostedGlass = true
+    @AppStorage(SettingsKey.homeFrostedGlassLiquid) private var homeFrostedGlassLiquid = false
     @AppStorage(SettingsKey.trailersEnabled) private var trailersEnabled = true
     @AppStorage(SettingsKey.trailerDelay) private var trailerDelay = 7
 
@@ -3188,6 +3190,18 @@ private struct LayoutDiscoverySettingsView: View {
                     isOn: $homeFrostedGlass,
                     accentColor: accentColor
                 )
+
+                SettingsToggleRow(
+                    title: L10n.string("omni_settings_home_frosted_glass_liquid", fallback: "Liquid Glass Style"),
+                    subtitle: L10n.string(
+                        "omni_settings_home_frosted_glass_liquid_subtitle",
+                        fallback: "Use the menu's glass, with edge highlights and refraction, instead of a plain blur"
+                    ),
+                    isOn: $homeFrostedGlassLiquid,
+                    accentColor: accentColor
+                )
+                .opacity(homeFrostedGlass ? 1 : 0.46)
+                .disabled(!homeFrostedGlass)
             }
 
             SettingsGroup(
