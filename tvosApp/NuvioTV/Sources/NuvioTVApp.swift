@@ -3562,7 +3562,12 @@ struct TVHomeView: View {
                     .equatable()
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .overlay {
-                        HomeHeroTrailer(meta: showsLoading ? nil : homeBackdropMeta)
+                        // Grid View's backdrop is empty, but the focused title
+                        // still reached here and played its trailer behind the
+                        // grids.
+                        HomeHeroTrailer(
+                            meta: showsLoading || homeLayout == "Grid View" ? nil : homeBackdropMeta
+                        )
                     }
                     .clipped()
                 } else {
@@ -3582,7 +3587,9 @@ struct TVHomeView: View {
                         // Inside the masks, so the trailer dissolves into the
                         // page on exactly the same edges the artwork does.
                         .overlay {
-                            HomeHeroTrailer(meta: showsLoading ? nil : homeBackdropMeta)
+                            HomeHeroTrailer(
+                                meta: showsLoading || homeLayout == "Grid View" ? nil : homeBackdropMeta
+                            )
                         }
                         .mask(
                             LinearGradient(
@@ -3620,7 +3627,9 @@ struct TVHomeView: View {
             // Absent over the hero and thickening toward the rows, so the
             // artwork still reads at the top while the rows sit on a blurred
             // copy of it rather than on the raw image or a black page.
-            let frosted = homeFrostedGlass && fullscreenHeroBackdrop
+            // Grid View draws its own hero and has no backdrop behind the
+            // grids, so there is nothing here for the glass to frost.
+            let frosted = homeFrostedGlass && fullscreenHeroBackdrop && homeLayout != "Grid View"
             if frosted {
                 homeFrostedPane
                     // The Liquid Glass sheet's edge is placed for a focused
@@ -4633,6 +4642,12 @@ struct TVHomeView: View {
     ///   gutter the rest of Home uses.
     @ViewBuilder
     private func homeGrid(sections: [TVHomeSection], heroBleed: CGFloat) -> some View {
+        ScrollViewReader { gridScrollProxy in
+        #if os(macOS)
+        // The move handler scrolls through whichever proxy is held, and only
+        // the row layout used to hand one over — so the grid never moved.
+        let _ = DispatchQueue.main.async { macScrollProxy = gridScrollProxy }
+        #endif
         ScrollView(.vertical) {
             LazyVStack(alignment: .leading, spacing: TVHomeGridLayout.sectionSpacing) {
                 if sessionNeedsReauthentication && !isBannerDismissed {
@@ -4659,13 +4674,16 @@ struct TVHomeView: View {
                             didRequestInitialCardFocus = true
                         },
                         backdropBleed: heroBleed,
+                        macIsFocused: macGridHeroFocused,
                         onFocusChange: { isGridHeroFocused = $0 }
                     ) { selectedMeta in
                         navigateToDetailsFromHome(id: selectedMeta.id, type: selectedMeta.type)
                     }
+                    .id(gridHeroScrollID)
                 }
 
                 ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
+                    Group {
                     if !section.collectionFolders.isEmpty {
                         TVCollectionFolderRow(
                             id: section.id,
@@ -4785,6 +4803,8 @@ struct TVHomeView: View {
                             onSeeAll: { browsingSection = section }
                         )
                     }
+                    }
+                    .id(section.id)
                 }
             }
             // The poster grids have a narrower intrinsic width than the screen.
@@ -4803,6 +4823,25 @@ struct TVHomeView: View {
         // leading edge under the collapsed sidebar, and the focus engine reads
         // that geometry when deciding where a left press should land.
         .scrollClipDisabledIfAvailable()
+        }
+    }
+
+    /// Scroll target for the grid hero; matches the stand-in section id the
+    /// macOS caret uses for it, so the move handler scrolls to it by name.
+    private var gridHeroScrollID: String {
+        #if os(macOS)
+        MacHomeFocus.gridHeroSectionId
+        #else
+        "grid.hero"
+        #endif
+    }
+
+    private var macGridHeroFocused: Bool {
+        #if os(macOS)
+        macFocusedCardID == MacHomeFocus.gridHeroCardKey
+        #else
+        false
+        #endif
     }
 
     /// Nudges focus back to `target` after an overlay dismissal, in case the
@@ -5623,7 +5662,8 @@ struct TVHomeView: View {
         // The carousel draws its own slide and owns the backdrop while it is
         // focused; publishing a row hero here would flip it out of carousel
         // mode the moment it took the highlight.
-        guard cardKey != MacHomeFocus.featureCardKey else { return }
+        guard cardKey != MacHomeFocus.featureCardKey,
+              cardKey != MacHomeFocus.gridHeroCardKey else { return }
         guard let sectionId = MacHomeFocus.sectionId(of: cardKey) else { return }
         let itemId = String(cardKey.dropFirst(sectionId.count + 1))
         guard let section = macNavigableSections.first(where: { $0.id == sectionId }) else { return }
@@ -5639,10 +5679,14 @@ struct TVHomeView: View {
     private func seedMacHomeFocusIfNeeded() {
         guard macFocusedCardID == nil else { return }
         let sections = macNavigableSections
+        let gridIds = macGridSectionIds
         let remembered = store.lastFocusedCardID
         let seed = remembered.flatMap { key in
-            sections.contains { MacHomeFocus.cardKeys(for: $0).contains(key) } ? key : nil
-        } ?? MacHomeFocus.firstCardKey(sections: sections)
+            sections.contains {
+                (gridIds.contains($0.id) ? MacHomeFocus.gridCardKeys(for: $0) : MacHomeFocus.cardKeys(for: $0))
+                    .contains(key)
+            } ? key : nil
+        } ?? MacHomeFocus.firstCardKey(sections: sections, gridSectionIds: gridIds)
         guard let seed else { return }
         MacDiagnostics.log("homeFocus.seed \(seed)")
         macFocusedCardID = seed
@@ -5669,9 +5713,20 @@ struct TVHomeView: View {
             }
             return
         }
+        if cardKey == MacHomeFocus.gridHeroCardKey {
+            let slides = gridHeroItems
+            guard slides.indices.contains(gridHeroIndex) else { return }
+            let meta = slides[gridHeroIndex]
+            navigateToDetailsFromHome(id: meta.id, type: meta.type)
+            return
+        }
         guard let sectionId = MacHomeFocus.sectionId(of: cardKey) else { return }
         let itemId = String(cardKey.dropFirst(sectionId.count + 1))
         guard let section = macNavigableSections.first(where: { $0.id == sectionId }) else { return }
+        if itemId == TVHomeGridLayout.seeAllID {
+            browsingSection = section
+            return
+        }
 
         if let folder = section.collectionFolders.first(where: { $0.id == itemId }) {
             openCollectionFolderFromHome(
@@ -5730,8 +5785,27 @@ struct TVHomeView: View {
         let rows = visibleSections.filter(\.hasContent).filter {
             !(featureHeroActive && $0.id == TVHomeSection.continueWatchingId)
         }
+        if homeLayout == "Grid View" {
+            // The grid drops loading placeholders and puts its own hero
+            // slideshow above the rows.
+            let gridRows = rows.filter { !$0.isLoadingPlaceholder }
+            guard heroEnabled && !gridHeroItems.isEmpty else { return gridRows }
+            return [TVHomeSection(id: MacHomeFocus.gridHeroSectionId, title: "", items: [])] + gridRows
+        }
         guard featureHeroActive else { return rows }
         return [TVHomeSection(id: MacHomeFocus.featureSectionId, title: "", items: [])] + rows
+    }
+
+    /// The sections Grid View draws as poster grids rather than rows: every
+    /// catalog, but not Continue Watching, Upcoming, or collection folders.
+    private var macGridSectionIds: Set<String> {
+        guard homeLayout == "Grid View" else { return [] }
+        return Set(macNavigableSections.filter {
+            $0.id != MacHomeFocus.gridHeroSectionId
+                && $0.id != TVHomeSection.continueWatchingId
+                && $0.id != TVHomeSection.upcomingId
+                && $0.collectionFolders.isEmpty
+        }.map(\.id))
     }
 
     private func handleMacHomeMove(_ direction: MoveCommandDirection, scrollProxy: ScrollViewProxy?) {
@@ -5747,11 +5821,17 @@ struct TVHomeView: View {
             macPageFeature(direction)
             return
         }
+        if current == MacHomeFocus.gridHeroCardKey, direction == .left || direction == .right {
+            macPageGridHero(direction)
+            return
+        }
+        let gridIds = macGridSectionIds
         let next = MacHomeFocus.nextCardKey(
             from: current,
             direction: direction,
             sections: macNavigableSections,
-            lastCardBySection: macLastCardBySection
+            lastCardBySection: macLastCardBySection,
+            gridSectionIds: gridIds
         )
         MacDiagnostics.log(
             "homeFocus.move dir=\(direction) from=\(current ?? "none") to=\(next ?? "none")"
@@ -5771,6 +5851,21 @@ struct TVHomeView: View {
         // the row still has to be brought in to be seen. Scroll minimally, so
         // the hero above is not pushed off screen the way an anchored pin would.
         let toSection = MacHomeFocus.sectionId(of: next)
+        if homeLayout == "Grid View" {
+            // A grid is taller than one step of scrolling, so it follows the
+            // card rather than the section: each line of posters is brought to
+            // the middle as the caret reaches it. Rows and the hero still pin
+            // their top, as they do outside the grid.
+            guard direction == .up || direction == .down else { return }
+            withAnimation(TVHomeLayout.verticalScrollAnimation) {
+                if let toSection, gridIds.contains(toSection) {
+                    scrollProxy?.scrollTo(next, anchor: .center)
+                } else if let toSection {
+                    scrollProxy?.scrollTo(toSection, anchor: .top)
+                }
+            }
+            return
+        }
         if let toSection,
            toSection != MacHomeFocus.featureSectionId,
            toSection != MacHomeFocus.sectionId(of: current) {
@@ -5779,6 +5874,20 @@ struct TVHomeView: View {
             withAnimation(TVHomeLayout.verticalScrollAnimation) {
                 scrollProxy?.scrollTo(toSection, anchor: .top)
             }
+        }
+    }
+
+    /// Pages Grid View's hero slideshow, the same way as the carousel: Right
+    /// stops at the last slide, and Left at the first opens the menu.
+    private func macPageGridHero(_ direction: MoveCommandDirection) {
+        let count = gridHeroItems.count
+        let slide = min(max(gridHeroIndex, 0), max(count - 1, 0))
+        if direction == .right, slide < count - 1 {
+            withAnimation(.easeInOut(duration: 0.35)) { gridHeroIndex = slide + 1 }
+        } else if direction == .left, slide > 0 {
+            withAnimation(.easeInOut(duration: 0.35)) { gridHeroIndex = slide - 1 }
+        } else if direction == .left {
+            MacMenuState.shared.open()
         }
     }
 
@@ -8012,12 +8121,17 @@ private struct TVGridHeroSlideshowView: View {
     /// widens — the hero's frame, its text, and the focus geometry stay inside
     /// the safe area.
     var backdropBleed: CGFloat = 0
+    /// Home's macOS caret is on the hero. There is no focus engine there to
+    /// set `focusState`, so this stands in for it.
+    var macIsFocused = false
     var onFocusChange: ((Bool) -> Void)? = nil
     let onSelect: (NuvioMeta) -> Void
 
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
-    @FocusState private var isFocused: Bool
+    @FocusState private var focusState: Bool
+
+    private var isFocused: Bool { focusState || macIsFocused }
 
     private var index: Int {
         guard !items.isEmpty else { return 0 }
@@ -8104,11 +8218,11 @@ private struct TVGridHeroSlideshowView: View {
         .contentShape(Rectangle())
         .focusable(true)
         .focusEffectDisabledIfAvailable()
-        .focused($isFocused)
+        .focused($focusState)
         .onAppear {
             guard shouldRequestInitialFocus else { return }
             onInitialFocusRequested()
-            DispatchQueue.main.async { isFocused = true }
+            DispatchQueue.main.async { focusState = true }
         }
         .onTapGesture {
             if let activeItem { onSelect(activeItem) }
@@ -8121,8 +8235,8 @@ private struct TVGridHeroSlideshowView: View {
                 // same press, so paging back would also open the menu. Claim
                 // focus again to keep the press here. At index 0 it is left
                 // alone, so the first slide still exits to the menu.
-                isFocused = true
-                DispatchQueue.main.async { isFocused = true }
+                focusState = true
+                DispatchQueue.main.async { focusState = true }
             case .right where index < items.count - 1:
                 setIndex(index + 1)
             default:

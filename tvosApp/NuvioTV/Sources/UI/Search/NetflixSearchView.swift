@@ -813,7 +813,7 @@ private struct NetflixKeyboardKey: View {
 /// Lays keys out left-to-right, wrapping onto another line when the next key
 /// wouldn't fit. The keyboard must never scroll — every key has to be visible
 /// and directly reachable — so overflow becomes a second row instead.
-private struct KeyboardFlowLayout: Layout {
+struct KeyboardFlowLayout: Layout {
     let hSpacing: CGFloat
     let vSpacing: CGFloat
 

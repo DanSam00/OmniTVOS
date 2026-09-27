@@ -3382,6 +3382,8 @@ private struct HeroCatalogSelectionRow: View {
     @Binding var selectionData: Data
     let accentColor: Color
     @State private var catalogs: [TVHomeCatalogOrder.SnapshotRow] = []
+    /// The chip the macOS settings caret is on, or nil when it is elsewhere.
+    @State private var macFocusedColumn: Int?
 
     private var explicitlySelected: Set<String> {
         guard let ids = try? JSONDecoder().decode([String].self, from: selectionData) else { return [] }
@@ -3408,26 +3410,45 @@ private struct HeroCatalogSelectionRow: View {
                     value: L10n.string("tvos_settings_open_home_once", fallback: "Open Home once")
                 )
             } else {
+                #if os(macOS)
+                // Wrapped rather than scrolled: the keyboard caret walks the
+                // chips as one row's columns, and a chip scrolled out of a
+                // horizontal strip could be reached but not seen.
+                KeyboardFlowLayout(hSpacing: 14, vSpacing: 14) {
+                    ForEach(Array(catalogs.enumerated()), id: \.element.id) { index, catalog in
+                        chip(catalog, index: index)
+                    }
+                }
+                .padding(.horizontal, 4)
+                .padding(.vertical, 6)
+                #else
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 14) {
-                        ForEach(catalogs, id: \.id) { catalog in
-                            CollectionChipButton(
-                                title: catalog.title,
-                                isSelected: isSelected(catalog.id)
-                            ) {
-                                toggle(catalog.id)
-                            }
+                        ForEach(Array(catalogs.enumerated()), id: \.element.id) { index, catalog in
+                            chip(catalog, index: index)
                         }
                     }
                     .padding(.horizontal, 4)
                     .padding(.vertical, 6)
                 }
                 .focusSection()
+                #endif
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 8)
         .animation(.easeInOut(duration: 0.2), value: selectionData)
+        // One settings row whose columns are the chips: the row itself is the
+        // first chip, and Right walks the rest.
+        .macSettingsRow(Self.macRowID) {
+            if let first = catalogs.first { toggle(first.id) }
+        }
+        #if os(macOS)
+        .onReceive(MacSettingsRowFocus.shared.$caret) { caret in
+            let column = caret.rowID == Self.macRowID ? caret.column : nil
+            if column != macFocusedColumn { macFocusedColumn = column }
+        }
+        #endif
         .onAppear { loadCatalogs() }
         .onReceive(NotificationCenter.default.publisher(for: TVHomeCatalogOrder.changedNotification)) { _ in
             loadCatalogs()
@@ -3440,6 +3461,25 @@ private struct HeroCatalogSelectionRow: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: TVHomeCatalogOrder.snapshotChangedNotification)) { _ in
             loadCatalogs()
+        }
+    }
+
+    static let macRowID = "Hero Catalogs"
+
+    @ViewBuilder
+    private func chip(_ catalog: TVHomeCatalogOrder.SnapshotRow, index: Int) -> some View {
+        let button = CollectionChipButton(
+            title: catalog.title,
+            isSelected: isSelected(catalog.id),
+            showsCheckmark: true,
+            macFocused: macFocusedColumn == index
+        ) {
+            toggle(catalog.id)
+        }
+        if index == 0 {
+            button
+        } else {
+            button.macSettingsRowAction(index) { toggle(catalog.id) }
         }
     }
 
@@ -11710,14 +11750,28 @@ private struct SettingsSearchStyleField: View {
 private struct CollectionChipButton: View {
     let title: String
     let isSelected: Bool
+    /// Marks selected chips with a tick. A selected chip otherwise differs from
+    /// an unselected one only by a slightly brighter fill, which is too faint
+    /// to read at a glance.
+    var showsCheckmark = false
+    /// The macOS settings caret, which has no SwiftUI focus to ride on.
+    var macFocused = false
     let action: () -> Void
 
-    @FocusState private var focused: Bool
+    @FocusState private var focusState: Bool
+
+    private var focused: Bool { focusState || macFocused }
 
     var body: some View {
         Button(action: action) {
-            Text(title)
-                .font(.system(size: 22, weight: .semibold))
+            HStack(spacing: 10) {
+                if showsCheckmark && isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 18, weight: .bold))
+                }
+                Text(title)
+                    .font(.system(size: 22, weight: .semibold))
+            }
                 .foregroundColor(textColor)
                 .padding(.horizontal, 28)
                 .frame(height: 52)
@@ -11729,7 +11783,7 @@ private struct CollectionChipButton: View {
         }
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
-        .focused($focused)
+        .focused($focusState)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(focused ? 1.05 : 1)
         .animation(.easeOut(duration: 0.12), value: focused)

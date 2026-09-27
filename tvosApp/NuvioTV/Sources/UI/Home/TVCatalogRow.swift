@@ -673,15 +673,22 @@ struct TVHomeCatalogGridSection: View {
                         shouldRequestInitialFocus: shouldRequestInitialFocus,
                         onInitialFocusRequested: shouldRequestInitialFocus ? onInitialFocusRequested : nil,
                         onFocus: { onFocus($0) },
-                        onLongPress: onLongPress.map { cb in { cb(item) } }
+                        onLongPress: onLongPress.map { cb in { cb(item) } },
+                        // Handed in all along but never passed on, so on macOS
+                        // no grid card could ever show the caret.
+                        macIsFocused: macFocusedCardKey == cardKey
                     ) {
                         onSelect(item)
                     }
                     .disabled(restrictFocusToCardKey != nil && restrictFocusToCardKey != cardKey)
+                    // Scroll target: Home brings each line of the grid to the
+                    // middle as the macOS caret reaches it.
+                    .id(cardKey)
                 }
 
                 TVHomeSeeAllCard(
                     title: section.title,
+                    macFocusedCardKey: macFocusedCardKey,
                     externalFocus: externalFocus,
                     externalFocusValue: seeAllKey,
                     retainFocusAppearance: restrictFocusToCardKey == seeAllKey,
@@ -689,6 +696,7 @@ struct TVHomeCatalogGridSection: View {
                     action: onSeeAll
                 )
                 .disabled(restrictFocusToCardKey != nil && restrictFocusToCardKey != seeAllKey)
+                .id(seeAllKey)
             }
         }
         .padding(.horizontal, TVLayout.rowLeading)
@@ -711,7 +719,10 @@ struct TVHomeSeeAllCard: View {
     @AppStorage(SettingsKey.focusHighlighter) private var focusHighlighter = false
     @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
 
-    private var showsFocusedAppearance: Bool { isFocused || retainFocusAppearance }
+    private var showsFocusedAppearance: Bool {
+        isFocused || retainFocusAppearance
+            || (macFocusedCardKey != nil && macFocusedCardKey == externalFocusValue)
+    }
 
     private var cardCornerRadius: CGFloat {
         AppCardStyle.cornerRadius(for: cardCornerRadiusSetting, fallback: 16)

@@ -18,6 +18,21 @@ enum MacHomeFocus {
     static let featureSectionId = "mac.feature"
     /// The carousel's single card key.
     static let featureCardKey = "mac.feature\u{1}slide"
+    /// Grid View's hero slideshow, which it puts above the grids: one focus
+    /// target that Left/Right page, the same as the carousel.
+    static let gridHeroSectionId = "mac.gridhero"
+    static let gridHeroCardKey = "mac.gridhero\u{1}slide"
+
+    /// Card keys for a section drawn as a poster grid: the preview it shows,
+    /// then its See All tile.
+    static func gridCardKeys(for section: TVHomeSection) -> [String] {
+        section.items.prefix(TVHomeGridLayout.previewItemCount).map { "\(section.id)\u{1}\($0.id)" }
+            + ["\(section.id)\u{1}\(TVHomeGridLayout.seeAllID)"]
+    }
+
+    private static func navKeys(for section: TVHomeSection, gridSectionIds: Set<String>) -> [String] {
+        gridSectionIds.contains(section.id) ? gridCardKeys(for: section) : cardKeys(for: section)
+    }
 
     /// Card keys for one row, in display order. Collection rows show folders
     /// where ordinary rows show titles.
@@ -27,6 +42,7 @@ enum MacHomeFocus {
         // A key per slide would also change under the auto-advance timer and
         // strand the highlight.
         if section.id == featureSectionId { return [featureCardKey] }
+        if section.id == gridHeroSectionId { return [gridHeroCardKey] }
         if !section.collectionFolders.isEmpty {
             return section.collectionFolders.map { "\(section.id)\u{1}\($0.id)" }
         }
@@ -38,15 +54,15 @@ enum MacHomeFocus {
     /// `cardKeys(for:)` interpolates a string per item, so asking it merely
     /// whether a row is empty costs the whole row.
     static func isNavigable(_ section: TVHomeSection) -> Bool {
-        if section.id == featureSectionId { return true }
+        if section.id == featureSectionId || section.id == gridHeroSectionId { return true }
         if !section.collectionFolders.isEmpty { return true }
         return !section.items.isEmpty
     }
 
     /// The first card on Home, used to give focus somewhere to start from.
-    static func firstCardKey(sections: [TVHomeSection]) -> String? {
+    static func firstCardKey(sections: [TVHomeSection], gridSectionIds: Set<String> = []) -> String? {
         for section in sections {
-            if let first = cardKeys(for: section).first { return first }
+            if let first = navKeys(for: section, gridSectionIds: gridSectionIds).first { return first }
         }
         return nil
     }
@@ -67,7 +83,8 @@ enum MacHomeFocus {
         from current: String?,
         direction: MoveCommandDirection,
         sections: [TVHomeSection],
-        lastCardBySection: [String: String] = [:]
+        lastCardBySection: [String: String] = [:],
+        gridSectionIds: Set<String> = []
     ) -> String? {
         // Only the rows this press actually touches are expanded. Building
         // every row's keys up front meant a string interpolation per item on
@@ -80,22 +97,48 @@ enum MacHomeFocus {
               let sectionID = sectionId(of: current),
               let rowIndex = rows.firstIndex(where: { $0.id == sectionID }) else {
             // Nothing focused yet: start at the first card.
-            return rows.first.flatMap { cardKeys(for: $0).first }
+            return rows.first.flatMap { navKeys(for: $0, gridSectionIds: gridSectionIds).first }
+        }
+
+        // A poster grid is lines of `columns` cards: Left/Right stay on the
+        // line, Up/Down step between lines, and only the first and last lines
+        // hand over to the rows around it.
+        if gridSectionIds.contains(sectionID) {
+            let keys = gridCardKeys(for: rows[rowIndex])
+            if let index = keys.firstIndex(of: current) {
+                let columns = TVHomeGridLayout.columns
+                let line = index / columns
+                let lastLine = (keys.count - 1) / columns
+                switch direction {
+                case .left:
+                    return index % columns > 0 ? keys[index - 1] : nil
+                case .right:
+                    let next = index + 1
+                    return next < keys.count && next / columns == line ? keys[next] : nil
+                case .up where line > 0:
+                    return keys[index - columns]
+                case .down where line < lastLine:
+                    // The last line can be short: land on its final card.
+                    return keys[min(index + columns, keys.count - 1)]
+                default:
+                    break
+                }
+            }
         }
 
         switch direction {
         case .left, .right:
-            let keys = cardKeys(for: rows[rowIndex])
+            let keys = navKeys(for: rows[rowIndex], gridSectionIds: gridSectionIds)
             guard let columnIndex = keys.firstIndex(of: current) else { return nil }
             let next = direction == .left ? columnIndex - 1 : columnIndex + 1
             return keys.indices.contains(next) ? keys[next] : nil
         case .up:
             guard rowIndex > 0 else { return nil }
-            return entry(into: rows[rowIndex - 1], remembering: lastCardBySection)
+            return entry(into: rows[rowIndex - 1], remembering: lastCardBySection, gridSectionIds: gridSectionIds)
         case .down:
             let next = rowIndex + 1
             guard next < rows.count else { return nil }
-            return entry(into: rows[next], remembering: lastCardBySection)
+            return entry(into: rows[next], remembering: lastCardBySection, gridSectionIds: gridSectionIds)
         @unknown default:
             return nil
         }
@@ -111,16 +154,17 @@ enum MacHomeFocus {
     /// index carries no meaning between them.
     private static func entry(
         into section: TVHomeSection,
-        remembering lastCardBySection: [String: String]
+        remembering lastCardBySection: [String: String],
+        gridSectionIds: Set<String>
     ) -> String? {
         // The remembered key is checked against the section id before the row
         // is expanded, so the common case costs nothing.
         if let remembered = lastCardBySection[section.id] {
-            let keys = cardKeys(for: section)
+            let keys = navKeys(for: section, gridSectionIds: gridSectionIds)
             if keys.contains(remembered) { return remembered }
             return keys.first
         }
-        return cardKeys(for: section).first
+        return navKeys(for: section, gridSectionIds: gridSectionIds).first
     }
 }
 #endif
