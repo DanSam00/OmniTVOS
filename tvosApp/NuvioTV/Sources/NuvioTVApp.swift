@@ -3495,8 +3495,8 @@ struct TVHomeView: View {
                     )
                 )
         }
-        // Smoked rather than milky: the app is dark, the Mac may not be.
-        .environment(\.colorScheme, .dark)
+        // Follows the system appearance, as the menu's glass does: smoked in
+        // dark mode, frosted white in light.
         .ignoresSafeArea()
     }
 
