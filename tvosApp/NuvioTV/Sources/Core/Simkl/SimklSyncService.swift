@@ -1696,10 +1696,28 @@ struct SimklProgressService {
         repository: CatalogRepository,
         store: UserDefaults = ProfileSettings.current
     ) async -> [ContinueWatchingItem]? {
-        guard let service = SimklAuthorizedClient(store: store),
-              let activities = try? await SimklSyncLoader.activities(using: service) else {
+        // Home gives up on this after 60 seconds with nothing to say which
+        // stage it was waiting on. Each stage reports its own time.
+        let started = Date()
+        func stage(_ name: String, _ detail: String = "") {
+            #if os(macOS)
+            MacDiagnostics.log(
+                "simkl.cw " + name + " ms=" + String(Int(Date().timeIntervalSince(started) * 1000))
+                    + (detail.isEmpty ? "" : " " + detail)
+                    + (Task.isCancelled ? " cancelled=true" : "")
+            )
+            #endif
+        }
+        stage("begin")
+        guard let service = SimklAuthorizedClient(store: store) else {
+            stage("end", "result=nil why=no-client")
             return nil
         }
+        guard let activities = try? await SimklSyncLoader.activities(using: service) else {
+            stage("end", "result=nil why=activities-failed")
+            return nil
+        }
+        stage("activities")
 
         let watermark = activities.playbackWatermark
         let playbacks: [SimklPlaybackDTO]
@@ -1711,10 +1729,14 @@ struct SimklProgressService {
             guard let fetched = try? await service.get(
                 [SimklPlaybackDTO].self,
                 path: "sync/playback"
-            ) else { return nil }
+            ) else {
+                stage("end", "result=nil why=playback-failed")
+                return nil
+            }
             playbacks = fetched
             SimklSyncCache.savePlaybacks(fetched, watermark: watermark, store: store)
         }
+        stage("playback", "count=" + String(playbacks.count))
 
         // Simkl has no separate "next up" playback feed. Build the same
         // display-only suggestions Nuvio Sync builds from the provider's
@@ -1722,6 +1744,9 @@ struct SimklProgressService {
         // cache so a first Home load is not one refresh behind.
         if SimklSyncCache.historyWatermark(in: store) != activities.all {
             _ = await SimklHistoryService.syncWatchedHistory(store: store)
+            stage("history", "synced=true")
+        } else {
+            stage("history", "synced=false")
         }
         let watchedItems = SimklSyncCache.history(in: store).flatMap(\.items)
         let upNextSeeds = nextUpSeeds(
@@ -1846,6 +1871,7 @@ struct SimklProgressService {
             return results.sorted { $0.key < $1.key }.map(\.value)
         }
 
+        stage("metadata", "plan=" + String(plan.count) + " rows=" + String(rows.count))
         var results = rows
         if results.count > 20 { results = Array(results.prefix(20)) }
 
@@ -1853,17 +1879,17 @@ struct SimklProgressService {
         // title. This also keeps the one-card-per-title rule in Home from
         // hiding a resume row behind its Up Next counterpart.
         if results.count < 20 {
-            for seed in upNextSeeds where !playbackMetas.contains(where: {
-                WatchedStore.sameContent($0, seed.meta)
-            }) {
-                guard results.count < 20,
-                      !Task.isCancelled,
-                      let item = await makeUpNextItem(from: seed, repository: repository) else {
-                    continue
-                }
-                results.append(item)
+            let candidates = upNextSeeds.filter { seed in
+                !playbackMetas.contains(where: { WatchedStore.sameContent($0, seed.meta) })
             }
+            results += await resolveUpNextItems(
+                candidates,
+                limit: 20 - results.count,
+                repository: repository
+            )
         }
+        stage("end", "result=" + String(results.count) + " seeds=" + String(upNextSeeds.count)
+            + " watched=" + String(watchedItems.count))
         return results
     }
 
@@ -1918,6 +1944,53 @@ struct SimklProgressService {
 
         return selectedByContentID.values.sorted { $0.watchedAt > $1.watchedAt }
     }
+
+    /// Up to `limit` Up Next cards from `seeds`, in seed order.
+    ///
+    /// Each seed costs a series metadata fetch and an episode lookup, and many
+    /// yield nothing (a finished show has no next episode), so reaching twenty
+    /// cards can mean walking dozens of seeds. One at a time that took most of a
+    /// minute on a cold start — long enough for Home to give up on the row, and
+    /// for leaving Home to cancel it and start again from nothing.
+    ///
+    /// A bounded window keeps several in flight. New seeds stop being started
+    /// once enough cards exist; everything started is allowed to finish, so the
+    /// earliest seeds always win and the order matches the one-at-a-time walk.
+    private static func resolveUpNextItems(
+        _ seeds: [UpNextSeed],
+        limit: Int,
+        repository: CatalogRepository
+    ) async -> [ContinueWatchingItem] {
+        guard limit > 0, !seeds.isEmpty else { return [] }
+        return await withTaskGroup(of: (Int, ContinueWatchingItem?).self) { group in
+            var found: [Int: ContinueWatchingItem] = [:]
+            var next = 0
+            var inFlight = 0
+
+            func startNext() {
+                guard next < seeds.count, found.count < limit, !Task.isCancelled else { return }
+                let index = next
+                let seed = seeds[index]
+                next += 1
+                inFlight += 1
+                group.addTask {
+                    (index, await makeUpNextItem(from: seed, repository: repository))
+                }
+            }
+
+            for _ in 0..<upNextConcurrency { startNext() }
+            while inFlight > 0 {
+                guard let (index, item) = await group.next() else { break }
+                inFlight -= 1
+                if let item { found[index] = item }
+                startNext()
+            }
+            return found.sorted { $0.key < $1.key }.prefix(limit).map(\.value)
+        }
+    }
+
+    /// Two requests per seed, to different hosts (the catalog and TMDB).
+    private static let upNextConcurrency = 6
 
     private static func makeUpNextItem(
         from seed: UpNextSeed,

@@ -3439,18 +3439,25 @@ struct TVHomeView: View {
     ///
     /// `.ultraThinMaterial` cannot be faded directly — a mask is what varies it,
     /// so the blur itself is what thins out rather than a tint drawn over it.
-    /// Clear across the top third so the hero is untouched, then easing to full
-    /// by the time the first row lands.
+    /// Clear across the hero and most of the first row, then easing to full
+    /// at the bottom edge.
+    ///
+    /// It blurs whatever is drawn beneath it, so it has to sit directly on the
+    /// artwork: placed above the readability gradients, all it had to blur was
+    /// their near-opaque page colour, and it read as a flat black panel.
     private var homeFrostedPane: some View {
         Rectangle()
             .fill(.ultraThinMaterial)
+            // Smoked rather than milky: the app is dark, the Mac may not be.
+            .environment(\.colorScheme, .dark)
             .mask(
                 LinearGradient(
                     stops: [
+                        // Clear until partway through the first row's
+                        // posters, frosted fully only at the bottom edge.
                         .init(color: .clear, location: 0),
-                        .init(color: .clear, location: 0.30),
-                        .init(color: .black.opacity(0.55), location: 0.52),
-                        .init(color: .black, location: 0.72),
+                        .init(color: .clear, location: 0.74),
+                        .init(color: .black.opacity(0.55), location: 0.87),
                         .init(color: .black, location: 1)
                     ],
                     startPoint: .top,
@@ -3533,8 +3540,23 @@ struct TVHomeView: View {
             }
             .ignoresSafeArea()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            
+
+            // 1b. Frosted glass over the artwork, beneath the rows.
+            //
+            // Absent over the hero and thickening toward the rows, so the
+            // artwork still reads at the top while the rows sit on a blurred
+            // copy of it rather than on the raw image or a black page.
+            let frosted = homeFrostedGlass && fullscreenHeroBackdrop
+            if frosted {
+                homeFrostedPane
+                    .allowsHitTesting(false)
+            }
+
             // 2. Gradients overlay for backdrop blending and readability (Fullscreen mode)
+            //
+            // With frosted glass on, the blur carries the rows' legibility, so
+            // both scrims ease off below the hero: at full strength they paint
+            // the page colour over the very artwork the glass is meant to show.
             if fullscreenHeroBackdrop {
                 GeometryReader { proxy in
                     LinearGradient(
@@ -3548,6 +3570,20 @@ struct TVHomeView: View {
                         startPoint: .leading,
                         endPoint: .trailing
                     )
+                    .mask(
+                        LinearGradient(
+                            stops: frosted
+                                ? [
+                                    .init(color: .black, location: 0),
+                                    .init(color: .black, location: 0.74),
+                                    .init(color: .black.opacity(0.30), location: 0.92),
+                                    .init(color: .black.opacity(0.30), location: 1)
+                                ]
+                                : [.init(color: .black, location: 0), .init(color: .black, location: 1)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
                     .frame(width: proxy.size.width * 0.58, height: proxy.size.height)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
@@ -3559,9 +3595,9 @@ struct TVHomeView: View {
                         LinearGradient(
                             stops: [
                                 .init(color: .clear, location: 0),
-                                .init(color: backdropColor.opacity(0.20), location: 0.42),
-                                .init(color: backdropColor.opacity(0.58), location: 0.78),
-                                .init(color: backdropColor, location: 1)
+                                .init(color: backdropColor.opacity(frosted ? 0.10 : 0.20), location: 0.42),
+                                .init(color: backdropColor.opacity(frosted ? 0.28 : 0.58), location: 0.78),
+                                .init(color: backdropColor.opacity(frosted ? 0.50 : 1), location: 1)
                             ],
                             startPoint: .top,
                             endPoint: .bottom
@@ -3570,18 +3606,6 @@ struct TVHomeView: View {
                     }
                 }
                 .ignoresSafeArea()
-            }
-
-            // 2b. Frosted pane between the artwork and the rows.
-            //
-            // The rows sit straight on the backdrop, so their legibility
-            // depends on whatever image happens to be behind them. This lifts
-            // them off it: a blur that is absent over the hero and thickens
-            // toward the rows, so the artwork still reads at the top while the
-            // content below has something settled to sit on.
-            if homeFrostedGlass, isActive {
-                homeFrostedPane
-                    .allowsHitTesting(false)
             }
 
             // 3. Scrollable catalog rows overlay, with pinned Hero at the top
@@ -6512,25 +6536,43 @@ struct TVHomeView: View {
             return
         }
 
+        #if os(macOS)
+        let fetchStarted = Date()
+        func outcome(_ result: String) {
+            MacDiagnostics.log(
+                "home.cw.remote gen=" + String(generation) + " source=" + source.rawValue
+                    + " ms=" + String(Int(Date().timeIntervalSince(fetchStarted) * 1000))
+                    + " " + result
+            )
+        }
+        #else
+        func outcome(_ result: String) {}
+        #endif
         let items = await TraktProgressService.fetchContinueWatching(
             repository: repository,
             source: source
         )
         guard !Task.isCancelled else {
+            outcome("dropped=cancelled")
             return
         }
         guard generation == continueWatchingRefreshGeneration else {
+            outcome("dropped=superseded current=" + String(continueWatchingRefreshGeneration))
             return
         }
         guard profileID == ContinueWatchingStore.activeProfileId else {
+            outcome("dropped=profile-changed")
             return
         }
         guard source == selectedProgressSource, usesRemoteProgress else {
+            outcome("dropped=source-changed")
             return
         }
         guard let items else {
+            outcome("dropped=nil")
             return
         }
+        outcome("shown=" + String(items.count))
         // The row shows one card per title, but a remote provider can return a
         // paused playback per episode — two rows for one series otherwise, and
         // a duplicate-key trap downstream. The provider already sorts newest
