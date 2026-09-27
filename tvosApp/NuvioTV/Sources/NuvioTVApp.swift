@@ -3623,6 +3623,12 @@ struct TVHomeView: View {
             let frosted = homeFrostedGlass && fullscreenHeroBackdrop
             if frosted {
                 homeFrostedPane
+                    // The Liquid Glass sheet's edge is placed for a focused
+                    // catalog row. The featured carousel sits lower and taller,
+                    // so the edge would cut through its text and button: step
+                    // the sheet aside while the carousel has focus.
+                    .opacity(homeFrostedGlassLiquid && featureFocused ? 0 : 1)
+                    .animation(.easeInOut(duration: 0.35), value: featureFocused)
                     .allowsHitTesting(false)
             }
 
