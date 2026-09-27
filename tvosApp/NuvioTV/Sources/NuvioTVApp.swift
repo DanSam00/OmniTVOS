@@ -3471,22 +3471,22 @@ struct TVHomeView: View {
     /// The menu's Liquid Glass stretched across the bottom of the screen.
     ///
     /// Unlike a material this is a sheet with an edge: it lenses the artwork
-    /// near its rim and catches a highlight along it. So the sheet starts a
-    /// little above where the blur would, and its top edge is left faintly
-    /// visible rather than faded to nothing, which is where that rim lives.
+    /// near its rim and catches a highlight along it. That edge runs through
+    /// the gap between the focused row's title and its cards — the row
+    /// settles at the same height wherever Home is scrolled — so the cards sit
+    /// inside the sheet with their title just above it.
     @available(tvOS 26.0, macOS 26.0, *)
     private var homeLiquidGlassPane: some View {
         GeometryReader { proxy in
-            let top = proxy.size.height * 0.64
+            let top = proxy.size.height * 0.543
             Rectangle()
                 .fill(Color.clear)
                 .glassEffect(.regular, in: Rectangle())
                 .mask(
                     LinearGradient(
                         stops: [
-                            .init(color: .black.opacity(0.35), location: 0),
-                            .init(color: .black.opacity(0.75), location: 0.30),
-                            .init(color: .black, location: 0.60),
+                            .init(color: .black.opacity(0.70), location: 0),
+                            .init(color: .black, location: 0.25),
                             .init(color: .black, location: 1)
                         ],
                         startPoint: .top,
