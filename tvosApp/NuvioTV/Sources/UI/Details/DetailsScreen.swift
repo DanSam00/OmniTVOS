@@ -2393,6 +2393,10 @@ enum StreamPickerListBuilder {
 final class MacStreamListCache {
     var key: StreamPickerListCacheKey?
     var streams: [NuvioStream] = []
+    /// The rail rows built from `streams`, under the same key. Each row's
+    /// detail line parses the stream's text for size, codec, HDR and seeders.
+    var rowsKey: StreamPickerListCacheKey?
+    var rows: [MacRailRow] = []
 }
 #endif
 
@@ -3303,7 +3307,15 @@ struct TvDetailsContent: View {
         case .episodes:
             return macSeasonEpisodes.map(macEpisodeRow)
         case .streams:
-            return macDisplayedStreams.map(macStreamRow)
+            // Memoised with the list itself. The rail redraws on every caret
+            // move, and rebuilding every row meant re-parsing all of them —
+            // 154 streams on one episode, 0.7 to 3.3 seconds a keypress.
+            let streams = macDisplayedStreams
+            if macStreamsCache.rowsKey == macStreamsCacheKey { return macStreamsCache.rows }
+            let rows = streams.map(macStreamRow)
+            macStreamsCache.rowsKey = macStreamsCacheKey
+            macStreamsCache.rows = rows
+            return rows
         }
     }
 
