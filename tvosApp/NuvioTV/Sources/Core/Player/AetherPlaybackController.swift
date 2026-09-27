@@ -1644,6 +1644,7 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
     private(set) var audioTracks: [PlaybackTrackInfo] = []
     private(set) var subtitleTracks: [PlaybackTrackInfo] = []
     private(set) var isPlayerLoading = true
+    private(set) var isPlayerStalled = false
     private(set) var isPlayerPlaying = false
     private(set) var isPlayerEnded = false
     private(set) var isAtEndOfFile = false
@@ -2224,6 +2225,10 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
     }
 
     private func applyPhase(_ phase: PlaybackPhase) {
+        switch phase {
+        case .rebuffering, .stalled: isPlayerStalled = true
+        default: isPlayerStalled = false
+        }
         switch phase {
         case .idle:
             isPlayerLoading = false

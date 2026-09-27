@@ -180,6 +180,10 @@ protocol PlaybackEngineControlling: AnyObject {
     var networkSpeedMbps: Double { get }
 
     var isPlayerLoading: Bool { get }
+    /// True only while playback has run dry mid-stream — rebuffering or
+    /// stalled — and not while seeking or opening, which `isPlayerLoading`
+    /// also covers. The buffering downgrade counts these.
+    var isPlayerStalled: Bool { get }
     var isPlayerPlaying: Bool { get }
     var isPlayerEnded: Bool { get }
     var isAtEndOfFile: Bool { get }
@@ -386,6 +390,8 @@ enum PlaybackSystemMonitor {
 
 
 extension PlaybackEngineControlling {
+    /// Engines that cannot tell a stall from a seek report none.
+    var isPlayerStalled: Bool { false }
     /// Engines that do not expose a download rate report zero, which the
     /// buffering overlay reads as "no figure to show".
     var networkSpeedMbps: Double { 0 }

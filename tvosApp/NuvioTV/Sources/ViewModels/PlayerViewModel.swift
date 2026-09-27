@@ -388,6 +388,19 @@ class PlayerViewModel: ObservableObject {
     @Published var playerToast: String?
     /// URLs that failed to load/play this session (watchdog, mpv error, slate).
     private var failedStreamURLs: Set<String> = []
+
+    // Buffering downgrade — see `BufferingStallMonitor` and
+    // `BufferingDowngradePlanner` at the end of this file.
+    private var bufferingMonitor = BufferingStallMonitor()
+    /// Stream ids tried on this episode, including the one it started on.
+    private var bufferingTriedSourceIDs: Set<String> = []
+    private var isBufferingDowngradeInFlight = false
+    /// The source picked in the player, when it was. The initial stream is
+    /// matched against the list instead.
+    private var activeSourceStream: NuvioStream?
+    /// What the current stream was loaded as, for identifying it in the
+    /// source list when its link has been resolved into another one.
+    private var loadedStreamText: (name: String?, description: String?, filename: String?)
     private var currentLoadStarted = false
     private var retriedLiveURLs: Set<String> = []
     /// True from the moment a new URL is applied until that stream actually
@@ -643,6 +656,7 @@ class PlayerViewModel: ObservableObject {
         streamDescription: String?,
         filename: String?
     ) {
+        loadedStreamText = (streamName, streamDescription, filename)
         let frameRateMode = ProfileSettings.current.string(forKey: SettingsKey.frameRateMatching) ?? "Always"
         let matchContent = frameRateMode.caseInsensitiveCompare("Off") != .orderedSame
         let request = PlaybackLoadRequest(
@@ -1246,6 +1260,12 @@ class PlayerViewModel: ObservableObject {
     /// link reload, which resumes from `resumeFrom`).
     private func replaceStream(prepared: PreparedNextStream, episode: NuvioVideo?, resumeFrom: Double?) {
         guard let meta = activeMeta else { return }
+        bufferingMonitor.reset()
+        if episode != nil {
+            // A new episode is a new set of sources.
+            bufferingTriedSourceIDs = []
+            activeSourceStream = nil
+        }
         applyStreamState(
             url: prepared.url,
             meta: meta,
@@ -1871,6 +1891,17 @@ class PlayerViewModel: ObservableObject {
            !didDetectReplacementStream {
             reloadAttempts = 0
             failedStreamURLs.removeAll()
+        }
+
+        // Long, repeated stalls on one source: move to a smaller one.
+        let isCountableStall = c.isPlayerStalled
+            && currentLoadStarted
+            && !isLiveStream
+            && !isSwitchingSource
+            && !isFailingOver
+            && !isBufferingDowngradeInFlight
+        if bufferingMonitor.sample(isStalled: isCountableStall, now: Date()) {
+            downgradeForBuffering()
         }
 
         if let latestSpeed = PlaybackSpeed(rawValue: c.currentSpeed),
@@ -3451,6 +3482,7 @@ class PlayerViewModel: ObservableObject {
         let resume = lastStablePlaybackTime?.current
             ?? (time.current > 10 ? time.current : nil)
         let subtitleLine = panelSourceSubtitleLine
+        activeSourceStream = stream
         beginSourceSwitch(message: "Switching source…")
         // Drop the panel now, not after the resolve: it covers the whole screen,
         // so leaving it up hides the spinner for the entire round trip.
@@ -3474,6 +3506,102 @@ class PlayerViewModel: ObservableObject {
     /// Shared entry for a user-initiated switch: park the engine and put the
     /// player into a labelled loading state that stays up until the new stream
     /// actually starts.
+    /// The source playing now, as a list entry: the one the player switched
+    /// to, else the listed stream with this link, else the listed stream the
+    /// current one was loaded as (a debrid link differs from its list entry).
+    private func currentSourceEntry() -> NuvioStream? {
+        if let activeSourceStream { return activeSourceStream }
+        if let byURL = availableSources.first(where: { isCurrentSource($0) }) { return byURL }
+        let loaded = loadedStreamText
+        if let filename = loaded.filename, !filename.isEmpty,
+           let byFile = availableSources.first(where: { $0.filename == filename }) { return byFile }
+        return availableSources.first {
+            $0.name == loaded.name && $0.description == loaded.description && loaded.name != nil
+        }
+    }
+
+    /// Replaces a source that keeps buffering with a smaller one, following
+    /// `BufferingDowngradePlanner`. Candidates that fail to resolve are
+    /// skipped; when none is left, says so and leaves playback as it is.
+    private func downgradeForBuffering() {
+        guard !isBufferingDowngradeInFlight,
+              let resolvePlaybackStream,
+              let contentId = panelSourceContentId else { return }
+        isBufferingDowngradeInFlight = true
+        let resume = lastStablePlaybackTime?.current
+            ?? (time.current > 10 ? time.current : nil)
+        let subtitleLine = panelSourceSubtitleLine
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.isBufferingDowngradeInFlight = false }
+
+            if self.availableSources.isEmpty, let fetch = self.fetchPlaybackSources {
+                self.availableSources = await fetch(contentId, self.panelSourceContentType)
+            }
+            let currentEntry = self.currentSourceEntry()
+            let current = currentEntry.map(BufferingDowngradePlanner.profile) ?? BufferingDowngradePlanner.profile(
+                NuvioStream(
+                    url: nil,
+                    name: self.loadedStreamText.name,
+                    description: self.loadedStreamText.description,
+                    addonName: nil,
+                    filename: self.loadedStreamText.filename
+                )
+            )
+            if let currentEntry { self.bufferingTriedSourceIDs.insert(currentEntry.id) }
+            self.logBuffering("trigger current=\(currentEntry?.name ?? "?") tier=\(current.tier) size=\(current.size.map(String.init) ?? "?") tried=\(self.bufferingTriedSourceIDs.count) pool=\(self.availableSources.count)")
+
+            while let next = BufferingDowngradePlanner.next(
+                after: current,
+                from: self.availableSources,
+                excluding: self.bufferingTriedSourceIDs
+            ) {
+                self.bufferingTriedSourceIDs.insert(next.id)
+                let label = Self.bufferingLabel(next)
+                self.logBuffering("try \(next.name ?? "?") \(label)")
+                self.beginSourceSwitch(message: "Buffering — trying \(label)")
+                guard let prepared = await resolvePlaybackStream(next, contentId, subtitleLine) else {
+                    self.logBuffering("resolve failed \(next.name ?? "?")")
+                    continue
+                }
+                self.isSwitchingSource = false
+                self.activeSourceStream = next
+                self.failedStreamURLs.removeAll()
+                self.replaceStream(prepared: prepared, episode: nil, resumeFrom: resume)
+                self.showPlayerToast("Kept buffering — switched to \(label)")
+                return
+            }
+
+            self.logBuffering("exhausted")
+            if self.isSwitchingSource {
+                // A candidate was stopped for but none loaded: the old stream
+                // is parked, so this is where playback actually failed.
+                self.isSwitchingSource = false
+                self.isAwaitingStreamStart = false
+                self.status = .error("This stream kept buffering, and none of the smaller sources could be opened.")
+            } else {
+                self.showPlayerToast("Still buffering — no smaller source left to try")
+            }
+        }
+    }
+
+    private static func bufferingLabel(_ stream: NuvioStream) -> String {
+        let height = StreamPickerListBuilder.resolution(for: stream)
+        var parts: [String] = []
+        if height > 0 { parts.append(height >= 2160 ? "4K" : "\(height)p") }
+        if let size = StreamBadgeSizing.fileSizeLabel(for: stream) {
+            parts.append(size.replacingOccurrences(of: "Size ", with: ""))
+        }
+        return parts.isEmpty ? (stream.name ?? "another source") : parts.joined(separator: " · ")
+    }
+
+    private func logBuffering(_ message: String) {
+        #if os(macOS)
+        MacDiagnostics.log("player.buffering " + message)
+        #endif
+    }
+
     private func beginSourceSwitch(message: String) {
         isSwitchingSource = true
         switchingSourceMessage = message
@@ -4196,5 +4324,141 @@ private enum PlayerTrackSelectionStore {
             return
         }
         ProfileSettings.current.set(json, forKey: SettingsKey.playbackTrackSelections)
+    }
+}
+
+// MARK: - Buffering downgrade
+
+/// Decides when a source has buffered badly enough to be replaced.
+///
+/// Short stalls are normal — the log has hundreds under three seconds — and
+/// switching on those would thrash between sources. What warrants a switch is
+/// the pattern seen on the worst sessions: several long stalls close together
+/// (23 s, 28 s, 13 s inside ninety seconds), or one that simply never ends.
+struct BufferingStallMonitor {
+    /// A stall this long counts towards a switch.
+    static let longStall: TimeInterval = 8
+    /// How many long stalls, within `window`, trigger a switch.
+    static let stallsToSwitch = 3
+    static let window: TimeInterval = 5 * 60
+    /// One stall this long triggers a switch by itself.
+    static let severeStall: TimeInterval = 30
+
+    private var stallStart: Date?
+    private var currentCounted = false
+    private var longStalls: [Date] = []
+
+    mutating func reset() {
+        stallStart = nil
+        currentCounted = false
+        longStalls = []
+    }
+
+    /// Feeds one sample. Returns true when a switch is due, and resets itself
+    /// so the same stalls do not trigger again.
+    mutating func sample(isStalled: Bool, now: Date) -> Bool {
+        guard isStalled else {
+            stallStart = nil
+            currentCounted = false
+            return false
+        }
+        let start = stallStart ?? now
+        stallStart = start
+        let length = now.timeIntervalSince(start)
+        if length >= Self.severeStall {
+            reset()
+            return true
+        }
+        // Counted the moment it passes the threshold, so the third long stall
+        // triggers while it is still happening rather than after it ends.
+        if length >= Self.longStall, !currentCounted {
+            currentCounted = true
+            longStalls = longStalls.filter { now.timeIntervalSince($0) <= Self.window } + [start]
+            if longStalls.count >= Self.stallsToSwitch {
+                reset()
+                return true
+            }
+        }
+        return false
+    }
+}
+
+/// Picks the source to fall back to when the current one keeps buffering.
+///
+/// Size, not resolution, is what the connection is failing to keep up with,
+/// so the first step keeps the resolution and sheds data — at least 1 GB of
+/// it, because a few hundred megabytes less of the same file makes no
+/// difference to the buffer. Only when nothing at this resolution is that
+/// much smaller does it drop a resolution, and then to something smaller than
+/// what is playing. Each step starts from the source it last switched to.
+enum BufferingDowngradePlanner {
+    static let minimumStepBytes: Int64 = 1_000_000_000
+
+    struct Profile: Equatable {
+        let tier: Int
+        let size: Int64?
+    }
+
+    /// 4K, 2K, 1080p, 720p, then everything below or unlabelled.
+    static func tier(forHeight height: Int) -> Int {
+        switch height {
+        case 2160...: return 4
+        case 1440..<2160: return 3
+        case 1080..<1440: return 2
+        case 720..<1080: return 1
+        default: return 0
+        }
+    }
+
+    static func profile(_ stream: NuvioStream) -> Profile {
+        Profile(
+            tier: tier(forHeight: StreamPickerListBuilder.resolution(for: stream)),
+            size: StreamBadgeSizing.fileSizeBytes(for: stream)
+        )
+    }
+
+    static func next(
+        after current: Profile,
+        from candidates: [NuvioStream],
+        excluding tried: Set<String>
+    ) -> NuvioStream? {
+        let pool = candidates
+            .filter { !tried.contains($0.id) }
+            .map { (stream: $0, profile: profile($0)) }
+
+        // Largest first, so each step sheds as little as the rule allows;
+        // among equal sizes a cached source wins, it starts without a fetch.
+        func best(_ options: [(stream: NuvioStream, profile: Profile)]) -> NuvioStream? {
+            options.max { a, b in
+                let sizeA = a.profile.size ?? 0, sizeB = b.profile.size ?? 0
+                if sizeA != sizeB { return sizeA < sizeB }
+                return !a.stream.isLikelyCached && b.stream.isLikelyCached
+            }?.stream
+        }
+
+        // 1. Same resolution, at least a gigabyte smaller.
+        if let size = current.size {
+            let sameTier = pool.filter {
+                $0.profile.tier == current.tier
+                    && ($0.profile.size.map { $0 <= size - minimumStepBytes } ?? false)
+            }
+            if let pick = best(sameTier) { return pick }
+        }
+
+        // 2. Each lower resolution in turn, smaller than what is playing —
+        //    preferring a full gigabyte less when there is one.
+        for tier in stride(from: current.tier - 1, through: 0, by: -1) {
+            let inTier = pool.filter { $0.profile.tier == tier }
+            guard !inTier.isEmpty else { continue }
+            guard let size = current.size else {
+                // Nothing to compare against: the largest known size, else any.
+                if let pick = best(inTier.filter { $0.profile.size != nil }) ?? best(inTier) { return pick }
+                continue
+            }
+            let smaller = inTier.filter { ($0.profile.size ?? .max) < size }
+            let byAGigabyte = smaller.filter { ($0.profile.size ?? .max) <= size - minimumStepBytes }
+            if let pick = best(byAGigabyte) ?? best(smaller) { return pick }
+        }
+        return nil
     }
 }
