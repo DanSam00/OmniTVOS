@@ -153,10 +153,20 @@ enum SettingsKey {
     /// Rows removed from Home outright: hidden like a disabled row, and also
     /// taken off the Home Catalogs list until added back. Settings keys, in
     /// the same form as `homeCatalogDisabled` (collections as `collection_<id>`).
+    ///
+    /// Deliberately not in `all`: iCloud settings sync copies a whole value
+    /// over the local one, last writer wins, so another device's older list
+    /// replaced this one — deletions came undone, catalogs held back as new
+    /// reappeared. Removal reaches other devices through the account instead,
+    /// as disabled rows.
     static let homeCatalogRemoved = "nuvio.tv.settings.layout.homeCatalogRemoved"
     /// Set once the rows that were disabled before removal existed have been
     /// moved into `homeCatalogRemoved`.
     static let homeCatalogRemovedMigrated = "nuvio.tv.settings.layout.homeCatalogRemovedMigrated"
+    /// Every add-on catalog key Home has already seen. A key outside it is a
+    /// catalog the add-on has just started offering, and is held back from
+    /// Home in `homeCatalogRemoved` rather than added to it.
+    static let homeCatalogKnown = "nuvio.tv.settings.layout.homeCatalogKnown"
     /// Local derived source state used to hide stale catalog snapshot rows when
     /// an add-on is disabled before Home has rebuilt its snapshot.
     static let homeCatalogDisabledAddonIDs = "nuvio.tv.settings.layout.homeCatalogDisabledAddonIDs"
@@ -327,7 +337,6 @@ enum SettingsKey {
         accountSyncWatchState,
         theme, bodyColor, font, language, amoled, amoledSurfaces, reduceMotion,
         homeLayout, heroEnabled, homeFeature, heroCatalogs, fullscreenHeroBackdrop, posterLabels, catalogAddonNames, discoverLocation,
-        homeCatalogRemoved,
         searchStyle,
         continueWatchingSort, upNextFromFurthestEpisode, showUnairedNextUp,
         cardCornerRadius, cardSize, liquidGlassCards, blurUnwatchedArtwork,
@@ -9221,6 +9230,18 @@ private struct AddonsSettingsSection: View {
         addonID: String,
         addonName: String
     ) async -> [TVHomeCatalogOrder.SnapshotRow]? {
+        // Before the disabled read below, which includes what this holds back:
+        // a catalog new to this add-on is listed under Add Catalogs, not here
+        // as an active row.
+        TVHomeCatalogOrder.holdBackNewCatalogs(
+            (manifest.catalogs ?? []).filter(\.eligibleForHome).map {
+                TVHomeCatalogOrder.catalogSettingsKey(
+                    addonId: addonID,
+                    contentType: $0.type ?? "",
+                    catalogId: $0.id ?? ""
+                )
+            }
+        )
         let disabledKeys = TVHomeCatalogOrder.disabledCatalogKeys()
         let syncedHomeKeys = Set(TVHomeCatalogOrder.syncedCatalogOrderIndex().keys)
         let collectionSources: [CatalogHomeVisibilityResolver.Source] = CollectionsStore.collections().flatMap { collection in

@@ -524,9 +524,17 @@ final class CinemetaCatalogRepository: CatalogRepository {
             guard manifest.id != Self.cinemetaAddonId else { continue }
 
             let base = manifestURL.deletingLastPathComponent()
+            // A catalog this add-on has only just started offering waits in
+            // Add Catalogs rather than appearing on Home by itself.
+            let heldBack = TVHomeCatalogOrder.holdBackNewCatalogs(
+                (manifest.catalogs ?? []).filter(\.eligibleForHome).map {
+                    "\(manifest.id)_\($0.type)_\($0.id)"
+                }
+            )
             let eligible = (manifest.catalogs ?? []).filter { catalog in
                 guard catalog.eligibleForHome else { return false }
                 let key = "\(manifest.id)_\(catalog.type)_\(catalog.id)"
+                guard !heldBack.contains(key) else { return false }
                 guard CatalogHomeVisibilityResolver.shouldInclude(
                     addonID: manifest.id,
                     contentType: catalog.type,

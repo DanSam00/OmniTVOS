@@ -7116,6 +7116,52 @@ enum TVHomeCatalogOrder {
         }
     }
 
+    // MARK: New catalogs
+
+    private static let holdBackLock = NSLock()
+
+    /// Holds back catalogs an add-on has only just started offering.
+    ///
+    /// Home used to show every catalog it had not been told to hide, so a new
+    /// one went straight onto Home. An add-on with a large, shifting catalog
+    /// list kept surfacing rows the user had never seen — which read as
+    /// deleted rows coming back. Any key not seen before is now recorded as
+    /// removed, so it waits in Add Catalogs instead.
+    ///
+    /// The first call records everything already known — Home's rows and
+    /// everything deleted or disabled — so nothing currently on Home moves.
+    /// - Returns: the keys held back by this call.
+    @discardableResult
+    static func holdBackNewCatalogs(_ keys: [String]) -> Set<String> {
+        // Home's load and the Settings list both call this at launch, and each
+        // reads, extends and writes two lists: unserialised, one call's
+        // additions were lost to the other's write.
+        holdBackLock.lock()
+        defer { holdBackLock.unlock() }
+        let store = ProfileSettings.current
+        var known: Set<String>
+        if let data = store.data(forKey: SettingsKey.homeCatalogKnown),
+           let stored = try? JSONDecoder().decode([String].self, from: data) {
+            known = Set(stored)
+        } else {
+            known = Set(snapshotRows().compactMap(\.settingsKey))
+                .union(removedKeys())
+                .union(storedDisabledCatalogKeys())
+            persist(known, forKey: SettingsKey.homeCatalogKnown)
+        }
+        let fresh = Set(keys).subtracting(known)
+        guard !fresh.isEmpty else { return [] }
+        // Removed first: a key recorded as known but not removed is a catalog
+        // that goes straight onto Home next launch, which is the one outcome
+        // this exists to prevent.
+        persist(removedKeys().union(fresh), forKey: SettingsKey.homeCatalogRemoved)
+        persist(known.union(fresh), forKey: SettingsKey.homeCatalogKnown)
+        #if os(macOS)
+        MacDiagnostics.log("catalogs.new heldBack=" + String(fresh.count))
+        #endif
+        return fresh
+    }
+
     /// One-time move of every row that was disabled when removal arrived into
     /// the removed list, so a long list of switched-off rows stops cluttering
     /// Settings and can be added back individually.
