@@ -10170,18 +10170,60 @@ private struct HomeCatalogOrderRow: View {
 }
 
 /// Rows removed from Home, offered back one at a time.
+///
+/// Grouped by the add-on they come from, with one group open at a time: a
+/// flat list ran to every catalog ever deleted — sixty-odd rows under the
+/// Home list — when what the user is looking for is one add-on's catalogs.
 private struct HomeCatalogAddSection: View {
     let accentColor: Color
     @State private var rows: [TVHomeCatalogOrder.SnapshotRow] = []
+    @State private var expandedGroup: String?
+
+    private struct AddonGroup: Identifiable {
+        let id: String
+        let rows: [TVHomeCatalogOrder.SnapshotRow]
+    }
+
+    /// Add-ons in the order their first catalog appears; collections, which
+    /// have no add-on, share one group.
+    private var groups: [AddonGroup] {
+        var order: [String] = []
+        var byName: [String: [TVHomeCatalogOrder.SnapshotRow]] = [:]
+        for row in rows {
+            let name = Self.groupName(for: row)
+            if byName[name] == nil { order.append(name) }
+            byName[name, default: []].append(row)
+        }
+        return order.map { AddonGroup(id: $0, rows: byName[$0] ?? []) }
+    }
+
+    private static func groupName(for row: TVHomeCatalogOrder.SnapshotRow) -> String {
+        if let name = row.addonName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            return name
+        }
+        return L10n.string("tmdb_collections_title", fallback: "Collections")
+    }
+
+    private static func groupRowID(_ name: String) -> String { "layout.catalog.addgroup.\(name)" }
+    private static func catalogRowID(_ row: TVHomeCatalogOrder.SnapshotRow) -> String { "layout.catalog.add.\(row.id)" }
+
+    /// The keyboard's rows, in display order: every group, plus the open
+    /// group's catalogs beneath it.
+    private var declaredIDs: [String] {
+        groups.flatMap { group -> [String] in
+            [Self.groupRowID(group.id)]
+                + (expandedGroup == group.id ? group.rows.map(Self.catalogRowID) : [])
+        }
+    }
 
     var body: some View {
         SettingsGroup(
             title: L10n.string("omni_settings_add_catalogs", fallback: "Add Catalogs"),
             subtitle: L10n.string(
                 "omni_settings_add_catalogs_subtitle",
-                fallback: "Catalogs deleted from Home. Add one back at any time."
+                fallback: "Catalogs deleted from Home, by add-on. Add one back at any time."
             ),
-            declaredRowIDs: rows.map { "layout.catalog.add.\($0.id)" }
+            declaredRowIDs: declaredIDs
         ) {
             if rows.isEmpty {
                 SettingsInfoRow(
@@ -10192,14 +10234,29 @@ private struct HomeCatalogAddSection: View {
                     )
                 )
             } else {
-                ForEach(rows, id: \.id) { row in
-                    HomeCatalogAddRow(
-                        title: row.title,
-                        addonName: row.addonName,
+                ForEach(groups) { group in
+                    let isExpanded = expandedGroup == group.id
+                    HomeCatalogAddGroupRow(
+                        title: group.id,
+                        count: group.rows.count,
+                        isExpanded: isExpanded,
                         accentColor: accentColor,
-                        onAdd: { add(row) }
+                        onToggle: { toggle(group.id) }
                     )
-                    .macSettingsRow("layout.catalog.add.\(row.id)") { add(row) }
+                    .macSettingsRow(Self.groupRowID(group.id)) { toggle(group.id) }
+
+                    if isExpanded {
+                        ForEach(group.rows, id: \.id) { row in
+                            HomeCatalogAddRow(
+                                title: row.title,
+                                addonName: nil,
+                                accentColor: accentColor,
+                                onAdd: { add(row) }
+                            )
+                            .padding(.leading, 28)
+                            .macSettingsRow(Self.catalogRowID(row)) { add(row) }
+                        }
+                    }
                 }
             }
         }
@@ -10215,10 +10272,19 @@ private struct HomeCatalogAddSection: View {
         }
     }
 
+    private func toggle(_ group: String) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            expandedGroup = expandedGroup == group ? nil : group
+        }
+    }
+
     private func reload() {
         let removed = TVHomeCatalogOrder.removedKeys()
         rows = layoutVisibleHomeCatalogRows().filter { row in
             row.settingsKey.map(removed.contains) ?? false
+        }
+        if let expandedGroup, !groups.contains(where: { $0.id == expandedGroup }) {
+            self.expandedGroup = nil
         }
     }
 
@@ -10226,6 +10292,46 @@ private struct HomeCatalogAddSection: View {
         rows.removeAll { $0.id == row.id }
         TVHomeCatalogOrder.setRowRemoved(row, isRemoved: false)
         NuvioSyncManager.current?.noteHomeCatalogSettingsChangedLocally()
+    }
+}
+
+/// One add-on in Add Catalogs: its name, how many of its catalogs were
+/// deleted, and whether they are showing.
+private struct HomeCatalogAddGroupRow: View {
+    let title: String
+    let count: Int
+    let isExpanded: Bool
+    let accentColor: Color
+    let onToggle: () -> Void
+
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        Button(action: onToggle) {
+            SettingsRowShell(isFocused: isFocused, accentColor: accentColor) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.9))
+                        .lineLimit(1)
+                    Text(count == 1
+                        ? L10n.string("omni_settings_one_catalog", fallback: "1 catalog")
+                        : String(format: L10n.string("omni_settings_n_catalogs", fallback: "%d catalogs"), count))
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.white.opacity(0.5))
+                }
+
+                Spacer(minLength: 20)
+
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundColor(.white.opacity(0.7))
+            }
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
+        .focused($isFocused)
+        .focusEffectDisabledIfAvailable()
     }
 }
 
