@@ -3046,6 +3046,8 @@ private struct LayoutDiscoverySettingsView: View {
     @AppStorage(SettingsKey.focusedPosterBackdropEnabled) private var focusedPosterBackdropEnabled = true
     @AppStorage(SettingsKey.focusedPosterBackdropDelay) private var focusedPosterBackdropDelay = 3
     @AppStorage(SettingsKey.homeFrostedGlass) private var homeFrostedGlass = true
+    @AppStorage(SettingsKey.trailersEnabled) private var trailersEnabled = true
+    @AppStorage(SettingsKey.trailerDelay) private var trailerDelay = 7
 
     /// Classic was never a distinct layout (behaved like Modern).
     private let layouts = ["Modern", "Compact", "Grid View"]
@@ -3176,15 +3178,7 @@ private struct LayoutDiscoverySettingsView: View {
                     isOn: $catalogAddonNames,
                     accentColor: accentColor
                 )
-            }
 
-            SettingsGroup(
-                title: L10n.string("tvos_settings_focused_poster", fallback: "Focused Poster"),
-                subtitle: L10n.string(
-                    "tvos_settings_focused_poster_description",
-                    fallback: "Expand focused posters into backdrop cards"
-                )
-            ) {
                 SettingsToggleRow(
                     title: L10n.string("tvos_settings_home_frosted_glass", fallback: "Frosted Glass Behind Rows"),
                     subtitle: L10n.string(
@@ -3194,7 +3188,15 @@ private struct LayoutDiscoverySettingsView: View {
                     isOn: $homeFrostedGlass,
                     accentColor: accentColor
                 )
+            }
 
+            SettingsGroup(
+                title: L10n.string("tvos_settings_focused_poster", fallback: "Focused Poster"),
+                subtitle: L10n.string(
+                    "tvos_settings_focused_poster_description",
+                    fallback: "Expand focused posters into backdrop cards"
+                )
+            ) {
                 SettingsToggleRow(
                     title: L10n.string(
                         "tvos_settings_expand_focused_poster_to_backdrop",
@@ -3225,6 +3227,23 @@ private struct LayoutDiscoverySettingsView: View {
                 )
                 .opacity(focusedPosterBackdropEnabled ? 1 : 0.46)
                 .disabled(!focusedPosterBackdropEnabled)
+
+                // The same setting as Playback > Trailers. Kept here too,
+                // beside the expand delay it is timed against.
+                SettingsStepperRow(
+                    title: L10n.string("tvos_settings_trailer_delay", fallback: "Trailer Delay"),
+                    subtitle: L10n.string(
+                        "omni_settings_trailer_delay_subtitle",
+                        fallback: "Seconds before trailers start, on posters and behind Home"
+                    ),
+                    value: $trailerDelay,
+                    range: 0...10,
+                    step: 1,
+                    suffix: "s",
+                    accentColor: accentColor
+                )
+                .opacity(trailersEnabled ? 1 : 0.46)
+                .disabled(!trailersEnabled)
             }
 
             HomeCatalogOrderSection(accentColor: accentColor)
