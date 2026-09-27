@@ -4845,20 +4845,25 @@ struct TVHomeView: View {
               key != MacHomeFocus.gridHeroCardKey,
               let section = MacHomeFocus.sectionId(of: key) else { return }
         let isGridSection = macGridSectionIds.contains(section)
-        // A second pass once the lazy stack has measured the rows it crossed:
-        // the first lands on estimated heights and can stop short.
-        for delay in [0.0, 0.2] {
+        // The section first. A card inside a section the lazy stack has not
+        // built yet is not a scroll target at all — asking for it straight
+        // away did nothing, and Home stayed at the top — while a section is
+        // one of the stack's own children and is always known. Once that has
+        // brought the section in, its cards exist and the card can be centred;
+        // two tries, because the first can still land on estimated heights.
+        func scroll(_ id: String, _ anchor: UnitPoint, after delay: Double) {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 var transaction = Transaction()
                 transaction.animation = nil
-                withTransaction(transaction) {
-                    if isGridSection {
-                        proxy.scrollTo(key, anchor: .center)
-                    } else {
-                        proxy.scrollTo(section, anchor: .top)
-                    }
-                }
+                withTransaction(transaction) { proxy.scrollTo(id, anchor: anchor) }
             }
+        }
+        scroll(section, .top, after: 0)
+        if isGridSection {
+            scroll(key, .center, after: 0.25)
+            scroll(key, .center, after: 0.6)
+        } else {
+            scroll(section, .top, after: 0.25)
         }
         MacDiagnostics.log("homeGrid.restore key=" + key)
     }
