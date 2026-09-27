@@ -14,6 +14,17 @@ enum TVHomeLayout {
     /// Keep the first catalog heading close to the hero description.
     static let heroBottomPadding: CGFloat = 20
     static let rowsTopPadding: CGFloat = 4
+    /// Top of the first row when Home has no hero above it. macOS draws its
+    /// menu icon over the top-left corner of the canvas and has no safe-area
+    /// margin to push content clear of it, so without this the first row's
+    /// title sat above the icon. tvOS gets that margin from the safe area.
+    static var noHeroTopPadding: CGFloat {
+        #if os(macOS)
+        90
+        #else
+        rowsTopPadding
+        #endif
+    }
     /// Extra scroll room so the last row can reach the same fixed anchor as
     /// earlier rows instead of being clamped to the viewport bottom.
     static let finalRowScrollRunway: CGFloat = 24
@@ -1257,6 +1268,39 @@ extension TVCollectionFolderRow: Equatable {
     }
 }
 
+/// A folder's cover, held in the shared in-memory image cache.
+///
+/// `AsyncImage` keeps nothing: every time a row scrolled back into a lazy
+/// stack, or re-rendered with a new identity, it started the download again
+/// and drew the empty tile until it finished. These covers are 250–370 KB and
+/// take one to three seconds each, so a row that had been on screen a moment
+/// earlier could sit blank — the Sports row in Grid View did exactly that.
+struct CachedFolderCover<Content: View, Placeholder: View>: View {
+    let url: URL
+    @ViewBuilder let content: (Image) -> Content
+    @ViewBuilder let placeholder: () -> Placeholder
+
+    @State private var image: UIImage?
+    @State private var loadedURL: URL?
+
+    var body: some View {
+        Group {
+            if let image, loadedURL == url {
+                content(Image(uiImage: image))
+            } else {
+                placeholder()
+            }
+        }
+        .task(id: url) {
+            guard loadedURL != url || image == nil else { return }
+            guard let loaded = await BackdropImageCache.shared.image(for: url),
+                  !Task.isCancelled else { return }
+            image = loaded
+            loadedURL = url
+        }
+    }
+}
+
 struct TVCollectionFolderCard: View {
     let folder: TVCollectionFolderItem
     var shouldRequestInitialFocus: Bool = false
@@ -1436,23 +1480,20 @@ struct TVCollectionFolderCard: View {
                         )
                     )
             }
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let image):
-                    if usesLogoCoverPresentation {
-                        image
-                            .resizable()
-                            .scaledToFit()
-                            .padding(.horizontal, cardWidth * 0.10)
-                            .padding(.vertical, cardHeight * 0.10)
-                    } else {
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    }
-                default:
-                    emptyCoverFill
+            CachedFolderCover(url: url) { image in
+                if usesLogoCoverPresentation {
+                    image
+                        .resizable()
+                        .scaledToFit()
+                        .padding(.horizontal, cardWidth * 0.10)
+                        .padding(.vertical, cardHeight * 0.10)
+                } else {
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
                 }
+            } placeholder: {
+                emptyCoverFill
             }
             focusGifOverlay
         }

@@ -4137,7 +4137,10 @@ struct TVHomeView: View {
                                         }
                                     }
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.top, TVHomeLayout.rowsTopPadding)
+                                    .padding(
+                                        .top,
+                                        heroEnabled ? TVHomeLayout.rowsTopPadding : TVHomeLayout.noHeroTopPadding
+                                    )
                                     .padding(.bottom, 80)
                                     .onAppear {
                                         prepareInitialFocusViewport(
@@ -4813,7 +4816,7 @@ struct TVHomeView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(
                 .top,
-                heroEnabled && !gridHeroItems.isEmpty ? 0 : TVHomeLayout.rowsTopPadding
+                heroEnabled && !gridHeroItems.isEmpty ? 0 : TVHomeLayout.noHeroTopPadding
             )
             .padding(.bottom, 80)
         }
