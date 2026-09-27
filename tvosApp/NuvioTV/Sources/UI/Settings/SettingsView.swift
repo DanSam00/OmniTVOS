@@ -6594,7 +6594,7 @@ private struct PlaybackSettingsView: View {
 
                 SettingsStepperRow(
                     title: L10n.string("tvos_settings_trailer_delay", fallback: "Trailer Delay"),
-                    subtitle: L10n.string("tvos_settings_seconds_before_autoplay_starts", fallback: "Seconds before autoplay starts"),
+                    subtitle: L10n.string("omni_settings_trailer_delay_subtitle", fallback: "Seconds before trailers start, on posters and behind Home"),
                     value: $trailerDelay,
                     range: 0...10,
                     step: 1,

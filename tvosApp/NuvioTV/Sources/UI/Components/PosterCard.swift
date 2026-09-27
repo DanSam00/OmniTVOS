@@ -1108,9 +1108,14 @@ struct TrailerPreviewPlayer: View {
     var forcesMute = false
     var onPlaybackReady: () -> Void = {}
     var onPlaybackFinished: () -> Void = {}
+    /// Which surface this is in the log: the focused card or the Home hero.
+    var logLabel = "card"
 
     @State private var player = AVPlayer()
     @State private var isRenderReady = false
+    /// When this preview began resolving, so the log can say how long the
+    /// lookup and the first decoded frame each took.
+    @State private var previewStartedAt: Date?
     @AppStorage(SettingsKey.trailerPreviewSound) private var trailerPreviewSound = false
     private let resolver = YouTubeTrailerResolver.shared
 
@@ -1118,6 +1123,7 @@ struct TrailerPreviewPlayer: View {
         TrailerPlayerSurface(player: player) {
             guard !isRenderReady else { return }
             isRenderReady = true
+            logTrailer("firstFrame")
             if isActive {
                 onPlaybackReady()
             }
@@ -1132,6 +1138,7 @@ struct TrailerPreviewPlayer: View {
         }
         .onChange(of: isActive) { _, active in
             if active {
+                logTrailer("activate", "ready=" + String(isRenderReady))
                 player.play()
                 if isRenderReady { onPlaybackReady() }
             } else {
@@ -1165,14 +1172,29 @@ struct TrailerPreviewPlayer: View {
         isActive && isRenderReady
     }
 
+    private func logTrailer(_ event: String, _ detail: String = "") {
+        #if os(macOS)
+        let ms = previewStartedAt.map { String(Int(Date().timeIntervalSince($0) * 1000)) } ?? "?"
+        MacDiagnostics.log(
+            "trailer." + event + " surface=" + logLabel + " meta=" + meta.id
+                + " ms=" + ms + " active=" + String(isActive)
+                + (detail.isEmpty ? "" : " " + detail)
+        )
+        #endif
+    }
+
     private func startPreview() async {
         isRenderReady = false
+        previewStartedAt = Date()
+        logTrailer("resolve.begin")
 
         guard let playbackSource = await resolver.resolvePreview(for: meta),
               let url = URL(string: playbackSource.videoUrl),
               !Task.isCancelled else {
+            logTrailer("resolve.none", "cancelled=" + String(Task.isCancelled))
             return
         }
+        logTrailer("resolve.end", "host=" + (URL(string: playbackSource.videoUrl)?.host ?? "?"))
 
         let asset: AVURLAsset
         if let userAgent = playbackSource.requestHeaders["User-Agent"], !userAgent.isEmpty {

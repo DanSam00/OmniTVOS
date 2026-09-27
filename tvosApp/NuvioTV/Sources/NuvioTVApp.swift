@@ -2439,25 +2439,26 @@ extension CrossfadingBackdrop: Equatable {
 
 /// Plays the focused title's trailer in the Home backdrop, silently.
 ///
-/// The hero art changes with every card focus passes over, so this waits
-/// before starting: `.task(id:)` cancels the wait the moment the hero moves
-/// on, and only a title the user has settled on for the full delay ever
-/// resolves a trailer or builds a player. Titles without one simply never
-/// become visible and the artwork stays, which is also what happens while the
-/// trailer is still resolving.
+/// The hero art changes with every card focus passes over, so nothing starts
+/// until focus settles: `.task(id:)` cancels the wait the moment the hero
+/// moves on. Once it has settled briefly the player is mounted paused, so the
+/// trailer is resolved and buffered while the rest of the delay runs, and is
+/// revealed when the delay ends rather than a lookup and a buffer after it.
+/// Titles without one simply never become visible and the artwork stays.
 private struct HomeHeroTrailer: View {
     let meta: NuvioMeta?
 
     @AppStorage(SettingsKey.trailersEnabled) private var trailersEnabled = true
-    /// The title the delay has elapsed for, rather than a bare flag: it is
-    /// what stops a stale timer from starting a trailer for the title the
-    /// backdrop has already moved past.
-    @State private var startedMetaID: String?
+    /// The same Trailer Delay the focused card's preview uses.
+    @AppStorage(SettingsKey.trailerDelay) private var trailerDelay = 7
+    /// Titles rather than bare flags: they are what stop a stale timer from
+    /// starting a trailer for a title the backdrop has already moved past.
+    @State private var preparedMetaID: String?
+    @State private var shownMetaID: String?
 
-    /// Longer than a card's own preview delay. The hero follows focus across a
-    /// whole row, so a shorter wait would start resolving a trailer for every
-    /// title merely passed through.
-    private static let startDelay = Duration.seconds(6)
+    /// How long focus must rest before a trailer is resolved at all. Passing
+    /// across a row should not resolve one per title.
+    private static let settleDelay = 1.5
 
     /// Crops the black bars a scope trailer carries inside its own frame.
     ///
@@ -2475,26 +2476,38 @@ private struct HomeHeroTrailer: View {
 
     var body: some View {
         ZStack {
-            if let meta, startedMetaID == meta.id {
-                TrailerPreviewPlayer(meta: meta, isActive: true, forcesMute: true)
-                    .id(meta.id)
-                    .scaleEffect(Self.letterboxCrop)
+            if let meta, preparedMetaID == meta.id {
+                TrailerPreviewPlayer(
+                    meta: meta,
+                    isActive: shownMetaID == meta.id,
+                    forcesMute: true,
+                    logLabel: "hero"
+                )
+                .id(meta.id)
+                .scaleEffect(Self.letterboxCrop)
             }
         }
         .allowsHitTesting(false)
         .task(id: trailerIdentity) {
-            startedMetaID = nil
+            preparedMetaID = nil
+            shownMetaID = nil
             guard trailersEnabled, let id = meta?.id else { return }
-            try? await Task.sleep(for: Self.startDelay)
+            let delay = Double(max(0, trailerDelay))
+            let settle = min(delay, Self.settleDelay)
+            try? await Task.sleep(for: .seconds(settle))
             guard !Task.isCancelled else { return }
-            startedMetaID = id
+            preparedMetaID = id
+            try? await Task.sleep(for: .seconds(delay - settle))
+            guard !Task.isCancelled else { return }
+            shownMetaID = id
         }
     }
 
-    /// Restarts the wait when the hero changes title, and when trailers are
-    /// switched off mid-view so a playing one is torn down.
+    /// Restarts the wait when the hero changes title, when the delay changes,
+    /// and when trailers are switched off mid-view so a playing one is torn
+    /// down.
     private var trailerIdentity: String {
-        "\(meta?.id ?? "none")\u{1f}\(trailersEnabled)"
+        "\(meta?.id ?? "none")\u{1f}\(trailersEnabled)\u{1f}\(trailerDelay)"
     }
 }
 
@@ -3440,31 +3453,51 @@ struct TVHomeView: View {
     /// `.ultraThinMaterial` cannot be faded directly — a mask is what varies it,
     /// so the blur itself is what thins out rather than a tint drawn over it.
     /// Clear across the hero and most of the first row, then easing to full
-    /// at the bottom edge.
+    /// toward the bottom edge, where a second pass makes the blur deepest.
     ///
     /// It blurs whatever is drawn beneath it, so it has to sit directly on the
     /// artwork: placed above the readability gradients, all it had to blur was
     /// their near-opaque page colour, and it read as a flat black panel.
     private var homeFrostedPane: some View {
-        Rectangle()
-            .fill(.ultraThinMaterial)
-            // Smoked rather than milky: the app is dark, the Mac may not be.
-            .environment(\.colorScheme, .dark)
-            .mask(
-                LinearGradient(
-                    stops: [
-                        // Clear until partway through the first row's
-                        // posters, frosted fully only at the bottom edge.
-                        .init(color: .clear, location: 0),
-                        .init(color: .clear, location: 0.74),
-                        .init(color: .black.opacity(0.55), location: 0.87),
-                        .init(color: .black, location: 1)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
+        ZStack {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .mask(
+                    LinearGradient(
+                        // Clear through the hero and most of the first row,
+                        // full from a little above the bottom edge.
+                        stops: [
+                            .init(color: .clear, location: 0),
+                            .init(color: .clear, location: 0.70),
+                            .init(color: .black.opacity(0.55), location: 0.84),
+                            .init(color: .black, location: 0.94),
+                            .init(color: .black, location: 1)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
                 )
-            )
-            .ignoresSafeArea()
+            // A material's blur radius is fixed by its kind, and the thicker
+            // kinds get there by adding tint rather than blur. A second pass
+            // blurs the already blurred artwork again, so stacking one along
+            // the bottom deepens the blur there without clouding the rows.
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .mask(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: 0),
+                            .init(color: .clear, location: 0.82),
+                            .init(color: .black, location: 1)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+        }
+        // Smoked rather than milky: the app is dark, the Mac may not be.
+        .environment(\.colorScheme, .dark)
+        .ignoresSafeArea()
     }
 
     var body: some View {
@@ -3575,7 +3608,7 @@ struct TVHomeView: View {
                             stops: frosted
                                 ? [
                                     .init(color: .black, location: 0),
-                                    .init(color: .black, location: 0.74),
+                                    .init(color: .black, location: 0.70),
                                     .init(color: .black.opacity(0.30), location: 0.92),
                                     .init(color: .black.opacity(0.30), location: 1)
                                 ]
