@@ -9993,11 +9993,12 @@ private struct HomeCatalogOrderSection: View {
                         onMoveToEdge: { top in moveToEdge(index, top: top) },
                         onRemove: { remove(row) }
                     )
-                    #if os(macOS)
+                    // Return does what selecting the row does on tvOS:
+                    // shows or hides it. The row's own buttons — move, and
+                    // delete — are its columns, reached with Right.
                     .macSettingsRow("layout.catalog.\(row.id)") {
-                        presentRowActions(row, index: index)
+                        setEnabled(row, isEnabled: !(enabledByRowId[row.id] ?? true))
                     }
-                    #endif
                 }
             }
         }
@@ -10077,54 +10078,6 @@ private struct HomeCatalogOrderSection: View {
         NuvioSyncManager.current?.noteHomeCatalogSettingsChangedLocally()
     }
 
-    #if os(macOS)
-    /// Everything the row's five buttons do, as a list the keyboard can pick
-    /// from. The buttons themselves are a horizontal strip, and Left/Right
-    /// already cross between the sidebar and the pane, so Return opens this
-    /// instead of the caret trying to walk into the row.
-    private func presentRowActions(_ row: TVHomeCatalogOrder.SnapshotRow, index: Int) {
-        var options: [FilterOption] = []
-
-        if row.settingsKey != nil {
-            let isEnabled = enabledByRowId[row.id] ?? true
-            let label = isEnabled
-                ? L10n.string("tvos_settings_hide_row", fallback: "Hide")
-                : L10n.string("tvos_settings_show_row", fallback: "Show")
-            options.append(FilterOption(label, isSelected: false) {
-                setEnabled(row, isEnabled: !isEnabled)
-            })
-            options.append(FilterOption(
-                L10n.string("omni_settings_remove_catalog", fallback: "Delete from Home"),
-                isSelected: false
-            ) { remove(row) })
-        }
-
-        if index > 0 {
-            options.append(FilterOption(
-                L10n.string("tvos_settings_move_to_top", fallback: "Move to Top"),
-                isSelected: false
-            ) { moveToEdge(index, top: true) })
-            options.append(FilterOption(
-                L10n.string("tvos_settings_move_up", fallback: "Move Up"),
-                isSelected: false
-            ) { move(index, up: true) })
-        }
-
-        if index < rows.count - 1 {
-            options.append(FilterOption(
-                L10n.string("tvos_settings_move_down", fallback: "Move Down"),
-                isSelected: false
-            ) { move(index, up: false) })
-            options.append(FilterOption(
-                L10n.string("tvos_settings_move_to_bottom", fallback: "Move to Bottom"),
-                isSelected: false
-            ) { moveToEdge(index, top: false) })
-        }
-
-        guard !options.isEmpty else { return }
-        MacOptionPanel.shared.present(title: row.title, options: options)
-    }
-    #endif
 }
 
 private struct HomeCatalogOrderRow: View {
