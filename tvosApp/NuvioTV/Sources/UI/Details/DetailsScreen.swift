@@ -3349,49 +3349,7 @@ struct TvDetailsContent: View {
     }
 
     private func macStreamRow(_ stream: NuvioStream) -> MacRailRow {
-        let resolution = StreamPickerListBuilder.resolution(for: stream)
-        return MacRailRow(
-            id: stream.id,
-            leading: stream.addonName,
-            title: stream.name?.replacingOccurrences(of: "\n", with: " ") ?? "Stream",
-            subtitle: stream.filename ?? stream.description?.replacingOccurrences(of: "\n", with: " "),
-            detail: macStreamDetail(stream),
-            badge: resolution > 0 ? macResolutionLabel(resolution) : nil
-        )
-    }
-
-    /// What the row says about a stream beyond its name: how big it is, what it
-    /// is encoded as, and whether it will actually play well.
-    ///
-    /// The add-on buries all of this in a free-text description that the row
-    /// already truncates to one line, so it is parsed out and stated plainly —
-    /// size and swarm health are what decide between two otherwise identical
-    /// 2160p entries.
-    private func macStreamDetail(_ stream: NuvioStream) -> String? {
-        let tags = StreamQualityTags.parse(stream: stream)
-        var parts: [String] = []
-
-        if let size = StreamBadgeSizing.fileSizeLabel(for: stream) {
-            parts.append(size.replacingOccurrences(of: "Size ", with: ""))
-        }
-        if tags.quality != .unknown { parts.append(tags.quality.label) }
-        if tags.isAV1 { parts.append("AV1") }
-        else if tags.isHEVC { parts.append("HEVC") }
-        else if tags.isAVC { parts.append("H.264") }
-        if tags.isDolbyVision { parts.append("Dolby Vision") }
-        else if tags.isHDR { parts.append("HDR") }
-        if tags.isAtmos { parts.append("Atmos") }
-
-        let searchText = [stream.name, stream.description, stream.filename]
-            .compactMap { $0 }
-            .joined(separator: " ")
-        if let seeders = StreamQualityTags.seeders(in: searchText) {
-            parts.append("\(seeders) seeders")
-        }
-        // Cached last: it is the strongest signal, so it reads as the verdict.
-        if tags.isCached || stream.isLikelyCached { parts.append("Cached") }
-
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        MacStreamRailRow.make(stream)
     }
 
     private func macSeasonTitle(_ season: Int) -> String {
@@ -3412,13 +3370,7 @@ struct TvDetailsContent: View {
     }
 
     private func macResolutionLabel(_ height: Int) -> String {
-        switch height {
-        case 2160...: return "4K"
-        case 1440..<2160: return "2K"
-        case 1080..<1440: return "1080p"
-        case 720..<1080: return "720p"
-        default: return "SD"
-        }
+        MacStreamRailRow.resolutionLabel(height)
     }
 
     private func macReleaseLabel(_ released: String?) -> String? {
@@ -7442,6 +7394,16 @@ struct MacDetailsRail: View {
     }
 
     private func headerChip(_ item: MacRailHeaderItem, isFocused: Bool) -> some View {
+        MacRailHeaderChip(item: item, isFocused: isFocused)
+    }
+}
+
+/// A filter chip in a rail's header. Shared with the player's Sources panel.
+struct MacRailHeaderChip: View {
+    let item: MacRailHeaderItem
+    let isFocused: Bool
+
+    var body: some View {
         HStack(spacing: 8) {
             if let symbol = item.symbol {
                 Image(systemName: symbol)
@@ -7465,7 +7427,9 @@ struct MacDetailsRail: View {
         )
         .contentShape(Capsule())
     }
+}
 
+extension MacDetailsRail {
     @ViewBuilder
     private var list: some View {
         if rows.isEmpty {
@@ -7533,6 +7497,68 @@ struct MacRailHeaderEntry {
     let action: () -> Void
 }
 
+/// A stream as one rail row: provider, name, file, the facts that decide
+/// between two otherwise identical entries, and its resolution. Built here for
+/// both Details and the player's Sources panel, so the two lists match.
+enum MacStreamRailRow {
+    static func make(_ stream: NuvioStream) -> MacRailRow {
+        let resolution = StreamPickerListBuilder.resolution(for: stream)
+        return MacRailRow(
+            id: stream.id,
+            leading: stream.addonName,
+            title: stream.name?.replacingOccurrences(of: "\n", with: " ") ?? "Stream",
+            subtitle: stream.filename ?? stream.description?.replacingOccurrences(of: "\n", with: " "),
+            detail: detail(stream),
+            badge: resolution > 0 ? resolutionLabel(resolution) : nil
+        )
+    }
+
+    static func resolutionLabel(_ height: Int) -> String {
+        switch height {
+        case 2160...: return "4K"
+        case 1440..<2160: return "2K"
+        case 1080..<1440: return "1080p"
+        case 720..<1080: return "720p"
+        default: return "SD"
+        }
+    }
+
+    /// What the row says about a stream beyond its name: how big it is, what it
+    /// is encoded as, and whether it will actually play well.
+    ///
+    /// The add-on buries all of this in a free-text description that the row
+    /// already truncates to one line, so it is parsed out and stated plainly —
+    /// size and swarm health are what decide between two otherwise identical
+    /// 2160p entries.
+    static func detail(_ stream: NuvioStream) -> String? {
+        let tags = StreamQualityTags.parse(stream: stream)
+        var parts: [String] = []
+
+        if let size = StreamBadgeSizing.fileSizeLabel(for: stream) {
+            parts.append(size.replacingOccurrences(of: "Size ", with: ""))
+        }
+        if tags.quality != .unknown { parts.append(tags.quality.label) }
+        if tags.isAV1 { parts.append("AV1") }
+        else if tags.isHEVC { parts.append("HEVC") }
+        else if tags.isAVC { parts.append("H.264") }
+        if tags.isDolbyVision { parts.append("Dolby Vision") }
+        else if tags.isHDR { parts.append("HDR") }
+        if tags.isAtmos { parts.append("Atmos") }
+
+        let searchText = [stream.name, stream.description, stream.filename]
+            .compactMap { $0 }
+            .joined(separator: " ")
+        if let seeders = StreamQualityTags.seeders(in: searchText) {
+            parts.append("\(seeders) seeders")
+        }
+        // Cached last: it is the strongest signal, so it reads as the verdict.
+        if tags.isCached || stream.isLikelyCached { parts.append("Cached") }
+
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+}
+
 struct MacRailHeaderItem {
     var symbol: String?
     var label: String?
@@ -7554,7 +7580,9 @@ struct MacRailRow: Identifiable {
     var progress: Double?
 }
 
-private struct MacRailRowView: View {
+/// Shared with the player's Sources panel, so a stream reads the same way in
+/// both places.
+struct MacRailRowView: View {
     let row: MacRailRow
     let isFocused: Bool
 

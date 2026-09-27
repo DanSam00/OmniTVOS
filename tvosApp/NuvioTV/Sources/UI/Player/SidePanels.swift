@@ -299,6 +299,110 @@ struct PlayerSourcesPanel: View {
     }
 
     var body: some View {
+        #if os(macOS)
+        macBody
+        #else
+        tvBody
+        #endif
+    }
+
+    #if os(macOS)
+    /// The same rows and filter chips as the episode page's stream list, so a
+    /// stream reads the same in both places and can be narrowed the same way.
+    private var macBody: some View {
+        PlayerSidePanelChrome(title: "Sources", onExit: { viewModel.closeSidePanel() }) {
+            VStack(alignment: .leading, spacing: 12) {
+                if !viewModel.isLoadingSources, !viewModel.availableSources.isEmpty {
+                    macFilterChips
+                }
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 8) {
+                            if viewModel.isLoadingSources {
+                                HStack(spacing: 14) {
+                                    ProgressView()
+                                        .progressViewStyle(.circular)
+                                        .tint(.white)
+                                    Text(L10n.string("player_searching_sources", fallback: "Searching sources…"))
+                                        .font(.system(size: 20, weight: .medium))
+                                        .foregroundStyle(.white.opacity(0.8))
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 12)
+                            } else if viewModel.macDisplayedSources.isEmpty {
+                                MacRailRowView(
+                                    row: MacRailRow(
+                                        id: "empty",
+                                        title: viewModel.availableSources.isEmpty
+                                            ? L10n.string("player_no_sources_found", fallback: "No sources found")
+                                            : L10n.string("details_no_streams_match", fallback: "No streams match these filters"),
+                                        subtitle: viewModel.availableSources.isEmpty
+                                            ? L10n.string("player_no_sources_found_subtitle", fallback: "None of your stream add-ons returned a link.")
+                                            : nil
+                                    ),
+                                    isFocused: isRowFocused("empty")
+                                )
+                                .id("empty")
+                            } else {
+                                ForEach(viewModel.macDisplayedSources, id: \.id) { stream in
+                                    MacRailRowView(row: macRow(stream), isFocused: isRowFocused(stream.id))
+                                        .id(stream.id)
+                                        .contentShape(Rectangle())
+                                        .onTapGesture { viewModel.selectSource(stream) }
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 6)
+                    }
+                    .onChange(of: viewModel.macPanelFocusedID) { _, id in
+                        guard let id, id != PlayerViewModel.macSourceFilterRowID else { return }
+                        withAnimation(.easeOut(duration: 0.16)) { proxy.scrollTo(id, anchor: .center) }
+                    }
+                    .onChange(of: viewModel.availableSources.count) { _, _ in
+                        guard viewModel.macPanelFocusedID == nil else { return }
+                        viewModel.macSeedPanelFocus()
+                    }
+                    .onAppear {
+                        viewModel.loadSourcesIfNeeded()
+                        if let target = targetSourceId {
+                            DispatchQueue.main.async { proxy.scrollTo(target, anchor: .center) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The playing stream keeps its tick, in the badge slot's place beside it.
+    private func macRow(_ stream: NuvioStream) -> MacRailRow {
+        var row = MacStreamRailRow.make(stream)
+        if viewModel.isCurrentSource(stream) {
+            row.title = "✓ " + row.title
+        }
+        return row
+    }
+
+    private var macFilterChips: some View {
+        let onRow = viewModel.macPanelFocusedID == PlayerViewModel.macSourceFilterRowID
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(Array(viewModel.macSourceFilters.enumerated()), id: \.offset) { index, filter in
+                    let label = viewModel.macSourceFilterLabel(filter)
+                    MacRailHeaderChip(
+                        item: MacRailHeaderItem(label: label.label, isActive: label.isActive),
+                        isFocused: onRow && viewModel.macSourceFilterColumn == index
+                    )
+                    .onTapGesture { viewModel.macCycleSourceFilter(filter) }
+                }
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+        }
+    }
+    #endif
+
+    private var tvBody: some View {
         PlayerSidePanelChrome(title: "Sources", onExit: { viewModel.closeSidePanel() }) {
             ScrollViewReader { proxy in
                 ScrollView {

@@ -160,6 +160,8 @@ struct MacPlayerKeyCatcher: NSViewRepresentable {
     /// rows instead of seeking the film behind it.
     let isPanelOpen: () -> Bool
     let onPanelMove: (Int) -> Void
+    /// Left/Right inside a panel — the Sources panel's filter chips.
+    var onPanelMoveHorizontal: (Int) -> Void = { _ in }
     let onPanelActivate: () -> Void
     /// Closes whatever is on top. False when there was nothing to close, which
     /// lets Escape fall through to leaving the player.
@@ -203,6 +205,7 @@ struct MacPlayerKeyCatcher: NSViewRepresentable {
         view.onToggleHelp = onToggleHelp
         view.isPanelOpen = isPanelOpen
         view.onPanelMove = onPanelMove
+        view.onPanelMoveHorizontal = onPanelMoveHorizontal
         view.onPanelActivate = onPanelActivate
         view.onDismissTopmost = onDismissTopmost
         view.isHelpVisible = isHelpVisible
@@ -224,6 +227,7 @@ final class PlayerKeyHostView: NSView {
     var onToggleHelp: () -> Void = {}
     var isPanelOpen: () -> Bool = { false }
     var onPanelMove: (Int) -> Void = { _ in }
+    var onPanelMoveHorizontal: (Int) -> Void = { _ in }
     var onPanelActivate: () -> Void = {}
     var onDismissTopmost: () -> Bool = { false }
     var isHelpVisible: () -> Bool = { false }
@@ -318,6 +322,8 @@ final class PlayerKeyHostView: NSView {
                 switch event.keyCode {
                 case Key.upArrow: self.onPanelMove(-1)
                 case Key.downArrow: self.onPanelMove(1)
+                case Key.leftArrow: self.onPanelMoveHorizontal(-1)
+                case Key.rightArrow: self.onPanelMoveHorizontal(1)
                 case Key.returnKey, Key.keypadEnter:
                     guard !event.isARepeat else { return nil }
                     self.onPanelActivate()

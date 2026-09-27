@@ -193,6 +193,7 @@ struct PlayerView: View {
             onToggleHelp: { showKeyboardHelp.toggle() },
             isPanelOpen: { viewModel.sidePanel != nil },
             onPanelMove: { viewModel.macPanelMove($0) },
+            onPanelMoveHorizontal: { viewModel.macPanelMoveHorizontal($0) },
             onPanelActivate: { viewModel.macPanelActivate() },
             onDismissTopmost: {
                 if showKeyboardHelp { showKeyboardHelp = false; return true }

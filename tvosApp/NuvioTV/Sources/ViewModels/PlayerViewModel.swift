@@ -3175,6 +3175,133 @@ class PlayerViewModel: ObservableObject {
     }
 
     #if os(macOS)
+    // MARK: Sources filters
+
+    /// The Sources panel's caret stop for its filter chips.
+    static let macSourceFilterRowID = "filters"
+
+    /// Which add-on the Sources list is narrowed to, by name; nil for all.
+    /// Per player session, like the provider chip on the episode page.
+    @Published var macSourceProvider: String? {
+        didSet { macSourcesCache = nil }
+    }
+    /// Which chip the caret is on while it sits on the filter row.
+    @Published var macSourceFilterColumn = 0
+
+    /// Sort, resolution and cached-only are the same stored preferences the
+    /// episode page's stream list reads, so changing one here changes both.
+    var macSourceSort: StreamSortOption {
+        get { StreamSortOption(rawValue: ProfileSettings.current.string(forKey: SettingsKey.streamSortOption) ?? "") ?? .quality }
+        set { ProfileSettings.current.set(newValue.rawValue, forKey: SettingsKey.streamSortOption); macFiltersChanged() }
+    }
+    var macSourceResolution: StreamResolutionFilter {
+        get { StreamResolutionFilter(rawValue: ProfileSettings.current.string(forKey: SettingsKey.streamResolutionFilter) ?? "") ?? .any }
+        set { ProfileSettings.current.set(newValue.rawValue, forKey: SettingsKey.streamResolutionFilter); macFiltersChanged() }
+    }
+    var macSourceCachedOnly: Bool {
+        get { ProfileSettings.current.bool(forKey: SettingsKey.cachedOnlyStreams) }
+        set { ProfileSettings.current.set(newValue, forKey: SettingsKey.cachedOnlyStreams); macFiltersChanged() }
+    }
+    var macSourceIncludesDebrid: Bool { DebridResolver(store: ProfileSettings.current).isEnabled }
+
+    private func macFiltersChanged() {
+        macSourcesCache = nil
+        objectWillChange.send()
+    }
+
+    /// Add-ons that returned something, in the order they first appear.
+    var macSourceProviders: [String] {
+        var seen = Set<String>()
+        return availableSources.compactMap(\.addonName).filter { seen.insert($0).inserted }
+    }
+
+    private var macSourcesCache: (key: String, streams: [NuvioStream])?
+
+    /// The Sources list after the filters, through the same builder the
+    /// episode page uses. Memoised: the panel and the caret both ask for it on
+    /// every redraw, and it parses every stream's tags.
+    var macDisplayedSources: [NuvioStream] {
+        let key = [
+            String(availableSources.count), availableSources.first?.id ?? "", availableSources.last?.id ?? "",
+            macSourceProvider ?? "*", macSourceSort.rawValue, macSourceResolution.rawValue,
+            String(macSourceCachedOnly), String(macSourceIncludesDebrid)
+        ].joined(separator: "|")
+        if let cache = macSourcesCache, cache.key == key { return cache.streams }
+        let groups = macSourceProviders.map { name in
+            AddonStreamGroup(
+                addonId: name,
+                displayName: name,
+                streams: availableSources.filter { $0.addonName == name }
+            )
+        }
+        let streams = StreamPickerListBuilder.displayedStreams(
+            streams: availableSources,
+            groups: groups,
+            selectedAddonId: macSourceProvider,
+            sortOption: macSourceSort,
+            includeDebrid: macSourceIncludesDebrid,
+            cachedOnly: macSourceCachedOnly,
+            resolutionFilter: macSourceResolution
+        )
+        macSourcesCache = (key, streams)
+        return streams
+    }
+
+    /// The chips, in order. Cached-only is offered only with a debrid service,
+    /// as on the episode page.
+    enum MacSourceFilter: CaseIterable { case provider, resolution, sort, cache }
+
+    var macSourceFilters: [MacSourceFilter] {
+        macSourceIncludesDebrid ? MacSourceFilter.allCases : [.provider, .resolution, .sort]
+    }
+
+    func macSourceFilterLabel(_ filter: MacSourceFilter) -> (label: String, isActive: Bool) {
+        switch filter {
+        case .provider:
+            return (L10n.format("details_provider_format", fallback: "Provider: %@",
+                                macSourceProvider ?? L10n.string("action_all", fallback: "All")),
+                    macSourceProvider != nil)
+        case .resolution:
+            return (L10n.format("details_resolution_format", fallback: "Res: %@", macSourceResolution.title),
+                    macSourceResolution != .any)
+        case .sort:
+            return (L10n.format("details_sort_format", fallback: "Sort: %@", L10n.optionLabel(macSourceSort.rawValue)),
+                    macSourceSort != .quality)
+        case .cache:
+            return (macSourceCachedOnly
+                        ? L10n.string("details_cached_only", fallback: "Cached only")
+                        : L10n.string("details_all_cache", fallback: "All cache"),
+                    macSourceCachedOnly)
+        }
+    }
+
+    /// Return on a chip steps it to its next value, wrapping.
+    func macCycleSourceFilter(_ filter: MacSourceFilter) {
+        func next<T: Equatable>(_ value: T, in all: [T]) -> T {
+            guard let index = all.firstIndex(of: value) else { return all.first ?? value }
+            return all[(index + 1) % all.count]
+        }
+        switch filter {
+        case .provider:
+            let options: [String?] = [nil] + macSourceProviders.map { Optional($0) }
+            macSourceProvider = next(macSourceProvider, in: options)
+        case .resolution:
+            macSourceResolution = next(macSourceResolution, in: StreamResolutionFilter.allCases)
+        case .sort:
+            macSourceSort = next(macSourceSort, in: StreamSortOption.allCases)
+        case .cache:
+            macSourceCachedOnly.toggle()
+        }
+        MacDiagnostics.log("player.sources.filter \(filter) shown=\(macDisplayedSources.count) of=\(availableSources.count)")
+    }
+
+    /// Left/Right while the caret is on the filter row.
+    func macPanelMoveHorizontal(_ delta: Int) {
+        guard sidePanel == .sources, macPanelFocusedID == Self.macSourceFilterRowID else { return }
+        let count = macSourceFilters.count
+        macSourceFilterColumn = min(max(macSourceFilterColumn + delta, 0), max(count - 1, 0))
+    }
+
     /// Row ids in the open panel, in display order.
     var macPanelRowIDs: [String] {
         switch sidePanel {
@@ -3182,7 +3309,9 @@ class PlayerViewModel: ObservableObject {
             return panelEpisodes.isEmpty ? ["empty"] : panelEpisodes.map(\.id)
         case .sources:
             if isLoadingSources { return [] }
-            return availableSources.isEmpty ? ["empty"] : availableSources.map(\.id)
+            guard !availableSources.isEmpty else { return ["empty"] }
+            let shown = macDisplayedSources.map(\.id)
+            return [Self.macSourceFilterRowID] + (shown.isEmpty ? ["empty"] : shown)
         case nil:
             return []
         }
@@ -3219,6 +3348,12 @@ class PlayerViewModel: ObservableObject {
             guard let episode = panelEpisodes.first(where: { $0.id == id }) else { return }
             selectEpisode(episode)
         case .sources:
+            if id == Self.macSourceFilterRowID {
+                let filters = macSourceFilters
+                guard filters.indices.contains(macSourceFilterColumn) else { return }
+                macCycleSourceFilter(filters[macSourceFilterColumn])
+                return
+            }
             guard let source = availableSources.first(where: { $0.id == id }) else { return }
             selectSource(source)
         case nil:
