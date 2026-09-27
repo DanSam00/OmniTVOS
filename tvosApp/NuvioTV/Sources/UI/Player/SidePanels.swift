@@ -385,19 +385,28 @@ struct PlayerSourcesPanel: View {
 
     private var macFilterChips: some View {
         let onRow = viewModel.macPanelFocusedID == PlayerViewModel.macSourceFilterRowID
-        return ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                ForEach(Array(viewModel.macSourceFilters.enumerated()), id: \.offset) { index, filter in
-                    let label = viewModel.macSourceFilterLabel(filter)
-                    MacRailHeaderChip(
-                        item: MacRailHeaderItem(label: label.label, isActive: label.isActive),
-                        isFocused: onRow && viewModel.macSourceFilterColumn == index
-                    )
-                    .onTapGesture { viewModel.macCycleSourceFilter(filter) }
+        // Scrolls rather than overflows — a provider name makes the row wider
+        // than the panel — and follows the caret so the last chip is not
+        // reachable only off screen.
+        return ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(Array(viewModel.macSourceFilters.enumerated()), id: \.offset) { index, filter in
+                        let label = viewModel.macSourceFilterLabel(filter)
+                        MacRailHeaderChip(
+                            item: MacRailHeaderItem(label: label.label, isActive: label.isActive),
+                            isFocused: onRow && viewModel.macSourceFilterColumn == index
+                        )
+                        .id(index)
+                        .onTapGesture { viewModel.macCycleSourceFilter(filter) }
+                    }
                 }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
+            .onChange(of: viewModel.macSourceFilterColumn) { _, index in
+                withAnimation(.easeOut(duration: 0.16)) { proxy.scrollTo(index, anchor: .center) }
+            }
         }
     }
     #endif
