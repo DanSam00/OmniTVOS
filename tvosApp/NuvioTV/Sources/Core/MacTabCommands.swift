@@ -90,8 +90,12 @@ final class MacKeyRouter: ObservableObject {
 
     @Published private(set) var latest: Press?
 
-    private var stack: [UUID] = []
-    private var barriers: [(token: UUID, depth: Int)] = []
+    /// Claims in order, each with the moment it was made.
+    private var stack: [(token: UUID, order: Int)] = []
+    /// Each barrier masks every claim made before it.
+    private var barriers: [(token: UUID, order: Int)] = []
+    /// Orders claims and barriers against each other.
+    private var nextOrder = 0
     private var sequence = 0
     private var monitor: Any?
 
@@ -101,18 +105,19 @@ final class MacKeyRouter: ObservableObject {
     func claim() -> UUID {
         installMonitorIfNeeded()
         let token = UUID()
-        stack.append(token)
+        nextOrder += 1
+        stack.append((token, nextOrder))
         return token
     }
 
     func release(_ token: UUID?) {
         guard let token else { return }
-        stack.removeAll { $0 == token }
+        stack.removeAll { $0.token == token }
     }
 
     func isFront(_ token: UUID?) -> Bool {
         guard let token, isRoutable else { return false }
-        return stack.last == token
+        return stack.last?.token == token
     }
 
     /// Claims made before this point stop receiving keys until the barrier is
@@ -130,7 +135,8 @@ final class MacKeyRouter: ObservableObject {
     func pushBarrier() -> UUID {
         installMonitorIfNeeded()
         let token = UUID()
-        barriers.append((token, stack.count))
+        nextOrder += 1
+        barriers.append((token, nextOrder))
         MacDiagnostics.log("keys.barrier up depth=\(stack.count)")
         return token
     }
@@ -142,8 +148,17 @@ final class MacKeyRouter: ObservableObject {
     }
 
     /// False while every live claim sits below a barrier.
+    ///
+    /// Judged by when the front claim was made, not by how many claims there
+    /// are. The count went wrong the moment a claim beneath the barrier was
+    /// released: the player raises its barrier over Home's claim, Home then
+    /// lets go because the player covers it, and the player's own settings
+    /// panel — claimed afterwards — landed at the barrier's depth rather than
+    /// above it. It never received a key.
     private var isRoutable: Bool {
-        stack.count > (barriers.last?.depth ?? 0)
+        guard let barrier = barriers.last else { return !stack.isEmpty }
+        guard let front = stack.last else { return false }
+        return front.order > barrier.order
     }
 
     private func installMonitorIfNeeded() {
