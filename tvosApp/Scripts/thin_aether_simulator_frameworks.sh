@@ -1,9 +1,11 @@
 #!/bin/sh
 set -eu
 
-if [ "${PLATFORM_NAME:-}" != "appletvsimulator" ]; then
-    exit 0
-fi
+case "${PLATFORM_NAME:-}" in
+    appletvsimulator) slice="tvos-arm64_x86_64-simulator" ;;
+    iphonesimulator) slice="ios-arm64_x86_64-simulator" ;;
+    *) exit 0 ;;
+esac
 
 arch=""
 for candidate in "${CURRENT_ARCH:-}" ${ARCHS:-} "${NATIVE_ARCH_ACTUAL:-}"; do
@@ -16,7 +18,7 @@ for candidate in "${CURRENT_ARCH:-}" ${ARCHS:-} "${NATIVE_ARCH_ACTUAL:-}"; do
 done
 
 if [ -z "$arch" ]; then
-    echo "error: Could not determine the tvOS Simulator architecture." >&2
+    echo "error: Could not determine the Simulator architecture." >&2
     exit 1
 fi
 
@@ -32,7 +34,7 @@ fi
 
 for xcframework in "${source_root}"/AetherLib*.xcframework; do
     framework_name="$(basename "$xcframework" .xcframework)"
-    source_framework="${xcframework}/tvos-arm64_x86_64-simulator/${framework_name}.framework"
+    source_framework="${xcframework}/${slice}/${framework_name}.framework"
     source_binary="${source_framework}/${framework_name}"
 
     if [ ! -f "$source_binary" ]; then

@@ -17,6 +17,10 @@ struct PhoneMainTabView: View {
     let onSwitchProfile: () -> Void
     let onSignIn: () -> Void
     let onSignOut: () -> Void
+    let onChangeProfileName: (String, String) -> Void
+    let onChangeProfileAvatar: (String, String) -> Void
+    let onChangeProfilePin: (String, String?, String?) async -> Bool
+    let onVerifyProfilePin: (String, String) async -> Bool
 
     @StateObject private var homeLoader = PhoneHomeLoader()
     @State private var selection: TVTab = .home
@@ -48,15 +52,36 @@ struct PhoneMainTabView: View {
                     PhoneLibraryView(viewModel: libraryViewModel) { onOpenDetails($0, $1) }
                 }
             }
+            Tab(TVTab.calendar.title, systemImage: TVTab.calendar.symbol, value: TVTab.calendar) {
+                NavigationStack {
+                    PhoneCalendarView { onOpenDetails($0, $1) }
+                        .id(activeProfile?.id ?? "none")
+                }
+            }
             Tab(TVTab.settings.title, systemImage: TVTab.settings.symbol, value: TVTab.settings) {
                 NavigationStack {
-                    PhoneSettingsView(
+                    // The full settings, shared with tvOS and macOS.
+                    SettingsView(
                         activeProfile: activeProfile,
-                        authManager: authManager,
-                        onSwitchProfile: onSwitchProfile,
+                        accountEmail: authManager.currentEmail,
+                        isAuthenticated: authManager.isAuthenticated,
+                        sessionNeedsReauthentication: authManager.sessionNeedsReauthentication,
+                        onChangeProfileName: onChangeProfileName,
+                        onChangeProfileAvatar: onChangeProfileAvatar,
+                        onChangeProfilePin: onChangeProfilePin,
+                        onVerifyProfilePin: onVerifyProfilePin,
                         onSignIn: onSignIn,
                         onSignOut: onSignOut
                     )
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button(action: onSwitchProfile) {
+                                Image(systemName: "person.2.circle")
+                            }
+                            .accessibilityLabel("Switch Profile")
+                        }
+                    }
+                    .id(activeProfile?.id ?? "none")
                 }
             }
         }
@@ -203,43 +228,4 @@ struct PhoneLibraryView: View {
     }
 }
 
-// MARK: - Settings
-
-/// A deliberately small first cut: account and profile. The full tvOS settings
-/// (14k lines of focus-driven panels) still need phone versions; everything in
-/// them syncs from the account, so a signed-in phone inherits the TV's setup.
-struct PhoneSettingsView: View {
-    let activeProfile: Profile?
-    @ObservedObject var authManager: AuthManager
-    let onSwitchProfile: () -> Void
-    let onSignIn: () -> Void
-    let onSignOut: () -> Void
-
-    var body: some View {
-        List {
-            Section("Profile") {
-                LabeledContent("Watching as", value: activeProfile?.name ?? "—")
-                Button("Switch Profile", action: onSwitchProfile)
-            }
-            Section("Account") {
-                if authManager.isAuthenticated {
-                    LabeledContent("Signed in", value: authManager.currentEmail ?? "—")
-                    Button("Sign Out", role: .destructive, action: onSignOut)
-                } else {
-                    Text("Sign in to sync add-ons, profiles and progress from your other devices.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Button("Sign In", action: onSignIn)
-                }
-            }
-            Section {
-                LabeledContent(
-                    "Version",
-                    value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
-                )
-            }
-        }
-        .navigationTitle(TVTab.settings.title)
-    }
-}
 #endif

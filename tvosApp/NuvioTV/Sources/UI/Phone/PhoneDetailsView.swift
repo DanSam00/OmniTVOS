@@ -17,6 +17,8 @@ struct PhoneDetailsView: View {
     @State private var pickerEpisode: NuvioVideo?
     @State private var isSourcesPresented = false
     @State private var isResolvingDebrid = false
+    /// Side safe-area inset (the Dynamic Island in landscape), zero upright.
+    @State private var sideInset: CGFloat = 0
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -82,6 +84,7 @@ struct PhoneDetailsView: View {
             VStack(alignment: .leading, spacing: 18) {
                 header(meta)
 
+                Group {
                 VStack(alignment: .leading, spacing: 14) {
                     actions(meta)
 
@@ -106,31 +109,37 @@ struct PhoneDetailsView: View {
                 if !viewModel.uiState.moreLikeThis.isEmpty {
                     moreLikeThis
                 }
+                }
+                // Everything below the art keeps clear of the Dynamic Island
+                // in landscape; the art itself runs to the screen edges.
+                .safeAreaPadding(.horizontal, sideInset)
             }
             .padding(.bottom, 32)
         }
-        .ignoresSafeArea(edges: .top)
+        .ignoresSafeArea(edges: [.top, .horizontal])
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            max(proxy.safeAreaInsets.leading, proxy.safeAreaInsets.trailing)
+        } action: { sideInset = $0 }
     }
 
     private func header(_ meta: NuvioMeta) -> some View {
         ZStack(alignment: .bottomLeading) {
-            PhoneArtwork(url: meta.backgroundUrl ?? meta.posterUrl)
+            // Fill-mode art sized in an overlay, so its natural width can't
+            // push the card past the screen edge.
+            Color.clear
                 .frame(maxWidth: .infinity)
                 .frame(height: 320)
+                .overlay { PhoneArtwork(url: meta.backgroundUrl ?? meta.posterUrl, kind: .backdrop) }
                 .clipped()
             LinearGradient(colors: [.clear, .black], startPoint: .center, endPoint: .bottom)
             VStack(alignment: .leading, spacing: 8) {
-                if let logo = meta.logoUrl {
-                    PhoneArtwork(url: logo, contentMode: .fit)
-                        .frame(maxWidth: 240, maxHeight: 80, alignment: .leading)
-                } else {
-                    Text(meta.name).font(.largeTitle.weight(.bold))
-                }
+                PhoneTitleLogo(meta: meta, maxHeight: 80)
                 Text(metaLine(meta))
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.75))
             }
             .padding(PhoneLayout.gutter)
+            .padding(.horizontal, sideInset)
         }
     }
 

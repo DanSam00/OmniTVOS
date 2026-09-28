@@ -103,21 +103,23 @@ struct PhonePlayerControls: View {
     private var transport: some View {
         HStack(spacing: 56) {
             Button { viewModel.skipBackward(); reveal() } label: {
-                Image(systemName: "gobackward.\(viewModel.seekStepSeconds)").font(.system(size: 30))
+                Image(systemName: "gobackward.\(viewModel.seekStepSeconds)").font(.title)
             }
             Button { viewModel.togglePlayPause(); reveal() } label: {
                 Group {
                     if viewModel.status == .buffering {
-                        ProgressView().controlSize(.large).tint(.white)
+                        // The shared player draws the buffering spinner in
+                        // the centre; a second one here stacked on top of it.
+                        Color.clear
                     } else {
                         Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                     }
                 }
-                .font(.system(size: 46))
+                .font(.system(.largeTitle))
                 .frame(width: 64, height: 64)
             }
             Button { viewModel.skipForward(); reveal() } label: {
-                Image(systemName: "goforward.\(viewModel.seekStepSeconds)").font(.system(size: 30))
+                Image(systemName: "goforward.\(viewModel.seekStepSeconds)").font(.title)
             }
         }
     }

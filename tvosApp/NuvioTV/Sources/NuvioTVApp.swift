@@ -1683,12 +1683,67 @@ struct ContentView: View {
                     profileViewModel.activeProfile = nil
                     activeScreen = .login
                 }
+            },
+            onChangeProfileName: { profileId, name in
+                profileViewModel.updateProfileName(id: profileId, name: name)
+                syncManager.syncProfilesAfterLocalEdit()
+            },
+            onChangeProfileAvatar: { profileId, avatarId in
+                profileViewModel.updateProfileAvatar(id: profileId, avatarId: avatarId)
+                syncManager.syncProfilesAfterLocalEdit()
+            },
+            onChangeProfilePin: { profileId, pin, currentPin in
+                if authManager.isAuthenticated {
+                    return await syncManager.updateProfilePin(
+                        profileId: profileId,
+                        pin: pin,
+                        currentPin: currentPin
+                    )
+                }
+                return profileViewModel.updateProfilePin(id: profileId, pin: pin)
+            },
+            onVerifyProfilePin: { profileId, pin in
+                if authManager.isAuthenticated {
+                    return await syncManager.verifyProfilePin(profileId: profileId, pin: pin)
+                }
+                return profileViewModel.verifyProfilePin(id: profileId, pin: pin)
             }
         )
+        #if OMNI_DEBUG_TOOLS
+        .task {
+            // After launch has settled on a screen, or it lands back on Home.
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            playDebugLaunchURLIfRequested()
+        }
+        #endif
         #else
         mainTabView
         #endif
     }
+
+    #if os(iOS) && OMNI_DEBUG_TOOLS
+    /// `-OmniDebugPlayURL <url>` on launch opens the player on that URL once
+    /// Home is up, so the player can be exercised in the simulator without a
+    /// stream add-on installed.
+    private func playDebugLaunchURLIfRequested() {
+        // `-OmniDebugLandscape YES` turns the app sideways, since the
+        // simulator cannot be rotated from the command line.
+        if UserDefaults.standard.bool(forKey: "OmniDebugLandscape") {
+            PhoneOrientation.request(.landscapeRight)
+        }
+        guard let raw = UserDefaults.standard.string(forKey: "OmniDebugPlayURL"),
+              let url = URL(string: raw) else { return }
+        UserDefaults.standard.removeObject(forKey: "OmniDebugPlayURL")
+        let meta = NuvioMeta(
+            id: "debug-playback", name: "Debug Playback", description: nil,
+            posterUrl: nil, backgroundUrl: nil, logoUrl: nil, imdbId: nil, tmdbId: nil,
+            type: "movie", year: nil, genres: nil, rating: nil, releaseInfo: nil,
+            runtime: nil, cast: nil, director: nil, writer: nil, certification: nil,
+            country: nil, released: nil
+        )
+        presentPlayback(url: url, meta: meta, subtitle: "", externalSubtitles: [], resumeFrom: nil)
+    }
+    #endif
 
     @ViewBuilder
     private func platformDetailsScreen(contentId: String, contentType: String) -> some View {
@@ -8880,6 +8935,12 @@ struct BrandLoadingView: View {
     /// The splash sits alone on a full screen and needs a large mark; a page
     /// loader inside a populated layout wants a smaller one.
     var wordmarkWidth: CGFloat = 600
+
+    /// Callers pass TV sizes (360-600pt on a 1920pt screen); a phone gets
+    /// the same proportion of its own width instead of running off the edge.
+    private var displayWidth: CGFloat {
+        SettingsPhoneMetrics.isPhone ? min(wordmarkWidth * 0.3, 170) : wordmarkWidth
+    }
     /// -1 parks the band fully left of the mark, +1 fully right.
     @State private var phase: CGFloat = -1
 
@@ -8898,7 +8959,7 @@ struct BrandLoadingView: View {
         Image("BrandWordmark")
             .resizable()
             .scaledToFit()
-            .frame(width: wordmarkWidth)
+            .frame(width: displayWidth)
     }
 
     /// Soft-edged band: the mark fades up and back down as it passes, so the
@@ -8915,8 +8976,8 @@ struct BrandLoadingView: View {
             startPoint: .leading,
             endPoint: .trailing
         )
-        .frame(width: wordmarkWidth)
-        .offset(x: phase * wordmarkWidth)
+        .frame(width: displayWidth)
+        .offset(x: phase * displayWidth)
     }
 }
 

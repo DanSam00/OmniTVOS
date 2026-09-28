@@ -13,33 +13,126 @@ enum PhoneLayout {
     static let landscapeWidth: CGFloat = 240
 }
 
-/// Remote artwork with a quiet placeholder. `AsyncImage` goes through
-/// `URLCache.shared`, which the app sizes at launch.
+/// Which shared decoded-image cache a picture goes through. Both downsample
+/// once and keep the result in memory, so a card scrolled back into view or
+/// a carousel page swiped back to draws at once instead of fetching and
+/// decoding the full-size original again, as `AsyncImage` did.
+enum PhoneArtKind {
+    /// Posters, logos and stills, decoded at card size.
+    case poster
+    /// Hero and page backdrops, decoded at screen size.
+    case backdrop
+}
+
+enum PhoneImageLoader {
+    static func image(for urlString: String?, kind: PhoneArtKind) async -> UIImage? {
+        guard let urlString, let url = URL(string: urlString) else { return nil }
+        switch kind {
+        case .poster:
+            return await PosterArtworkCache.shared.image(for: url, maxPixelSize: 600)
+        case .backdrop:
+            return await BackdropImageCache.shared.image(for: url)
+        }
+    }
+
+    /// Warms the caches, so the next carousel page is ready before it slides in.
+    static func prefetch(_ urls: [String?], kind: PhoneArtKind) {
+        for url in urls.compactMap({ $0 }) {
+            Task.detached(priority: .utility) { _ = await image(for: url, kind: kind) }
+        }
+    }
+}
+
+/// Remote artwork with a quiet placeholder.
 struct PhoneArtwork: View {
     let url: String?
     var contentMode: ContentMode = .fill
+    var kind: PhoneArtKind = .poster
+
+    @State private var image: UIImage?
+    @State private var loadedURL: String?
 
     var body: some View {
-        AsyncImage(url: url.flatMap(URL.init(string:)), transaction: Transaction(animation: .easeOut(duration: 0.2))) { phase in
-            switch phase {
-            case .success(let image):
-                image.resizable().aspectRatio(contentMode: contentMode)
-            default:
+        ZStack {
+            if let image, loadedURL == url {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: contentMode)
+                    .transition(.opacity)
+            } else {
                 Rectangle().fill(Color.white.opacity(0.08))
             }
         }
+        .task(id: url) {
+            let loaded = await PhoneImageLoader.image(for: url, kind: kind)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                image = loaded
+                loadedURL = url
+            }
+        }
+    }
+}
+
+/// A title's logo art, or its name in type when there is no logo or the image
+/// fails — never an empty grey box where the title should be.
+struct PhoneTitleLogo: View {
+    let meta: NuvioMeta
+    var maxWidth: CGFloat = 240
+    var maxHeight: CGFloat = 90
+
+    private enum State { case loading, loaded(UIImage), failed }
+    @SwiftUI.State private var state: State = .loading
+
+    var body: some View {
+        Group {
+            switch state {
+            case .loaded(let image):
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: maxWidth, maxHeight: maxHeight, alignment: .bottomLeading)
+            case .failed:
+                name
+            case .loading:
+                Color.clear.frame(width: maxWidth, height: maxHeight * 0.6)
+            }
+        }
+        .task(id: meta.logoUrl) {
+            guard meta.logoUrl != nil else { state = .failed; return }
+            let image = await PhoneImageLoader.image(for: meta.logoUrl, kind: .poster)
+            guard !Task.isCancelled else { return }
+            state = image.map(State.loaded) ?? .failed
+        }
+    }
+
+    private var name: some View {
+        Text(meta.name)
+            .font(.largeTitle.weight(.bold))
+            .lineLimit(2)
+            .minimumScaleFactor(0.7)
     }
 }
 
 struct PhonePosterCard: View {
     let meta: NuvioMeta
     var width: CGFloat = PhoneLayout.posterWidth
+    /// Titles under posters: Settings → Layout → Poster Labels, off by default
+    /// as on the TV. Search and Library pass true, where the name is the point.
+    var showsLabel: Bool = true
+
+    @AppStorage(SettingsKey.cardCornerRadius) private var cornerRadiusRaw = CardCornerRadiusOption.subtle.rawValue
+
+    /// The TV radii are for a 210pt card; scaled to this one's width.
+    private var cornerRadius: CGFloat {
+        CardCornerRadiusOption.from(rawValue: cornerRadiusRaw).radius * width / 210
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             PhoneArtwork(url: meta.posterUrl ?? meta.backgroundUrl)
                 .frame(width: width, height: width * PhoneLayout.posterAspect)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                 .overlay {
                     if meta.posterUrl == nil {
                         Text(meta.name)
@@ -48,11 +141,13 @@ struct PhonePosterCard: View {
                             .padding(8)
                     }
                 }
-            Text(meta.name)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .frame(width: width, alignment: .leading)
+            if showsLabel {
+                Text(meta.name)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(width: width, alignment: .leading)
+            }
         }
         .contentShape(Rectangle())
     }

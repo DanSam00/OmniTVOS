@@ -1216,6 +1216,14 @@ struct SettingsView: View {
     #endif
 
     var body: some View {
+        #if os(iOS)
+        phoneBody
+        #else
+        tvBody
+        #endif
+    }
+
+    private var tvBody: some View {
         ZStack {
             HStack(spacing: 0) {
                 categoryGrid
@@ -1591,9 +1599,13 @@ struct SettingsView: View {
         )
     }
 
-    @ViewBuilder
     private var selectedCategoryContent: some View {
-        switch selectedCategory {
+        categoryContent(selectedCategory)
+    }
+
+    @ViewBuilder
+    private func categoryContent(_ category: SettingsCategory) -> some View {
+        switch category {
         case .account:
             AccountSettingsView(
                 accentColor: accentColor,
@@ -2100,7 +2112,7 @@ struct ProfilePinManagementView: View {
                 PinSheetActionButton(title: L10n.string("action_cancel", fallback: "Cancel"), action: onDismiss)
                     .padding(.top, 4)
             }
-            .frame(width: 520)
+            .settingsPanelWidth(520)
             .padding(48)
             .loginGlassPanel()
             .overlay {
@@ -2295,6 +2307,7 @@ private struct AppearanceSettingsView: View {
                     isLiquidGlass: liquidGlassCards,
                     accentColor: accentColor
                 )
+                .settingsFitWidth()
 
                 SettingsOptionRow(
                     title: L10n.string("settings_poster_card_radius", fallback: "Corner Radius"),
@@ -3095,6 +3108,7 @@ private struct LayoutDiscoverySettingsView: View {
                     catalogAddonNames: catalogAddonNames,
                     accentColor: accentColor
                 )
+                .settingsFitWidth()
 
                 SettingsOptionRow(
                     title: L10n.string("tvos_layout_layout", fallback: "Layout"),
@@ -4824,7 +4838,7 @@ private struct PremiumizeApiKeySheet: View {
                 }
             }
         }
-        .frame(width: 960)
+        .settingsPanelWidth(960)
         .padding(.horizontal, 88)
         .padding(.vertical, 64)
         .background(Color(red: 0.11, green: 0.11, blue: 0.11))
@@ -4991,7 +5005,7 @@ private struct DebridDeviceAuthorizationSheet: View {
                 }
             }
         }
-        .frame(width: 960)
+        .settingsPanelWidth(960)
         .padding(.horizontal, 88)
         .padding(.vertical, 64)
         .loginGlassPanel()
@@ -5555,7 +5569,7 @@ private struct TraktDeviceLoginSheet: View {
                 }
             }
         }
-        .frame(width: 960)
+        .settingsPanelWidth(960)
         .padding(.horizontal, 88)
         .padding(.vertical, 64)
         .loginGlassPanel()
@@ -6246,7 +6260,7 @@ private struct SimklPINLoginSheet: View {
                 }
             }
         }
-        .frame(width: 960)
+        .settingsPanelWidth(960)
         .padding(.horizontal, 88)
         .padding(.vertical, 64)
         .loginGlassPanel()
@@ -7193,22 +7207,25 @@ private struct SubtitleColorRow: View {
     let accentColor: Color
 
     var body: some View {
+        #if os(iOS)
+        // Ten swatches beside the title would leave the title no room.
+        VStack(alignment: .leading, spacing: 10) {
+            SettingsRowText(title: title, subtitle: subtitle)
+            ScrollView(.horizontal, showsIndicators: false) {
+                swatches.padding(.vertical, 6).padding(.horizontal, 4)
+            }
+        }
+        .padding(.horizontal, SettingsPhoneMetrics.rowHorizontalPadding)
+        .padding(.vertical, SettingsPhoneMetrics.rowVerticalPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .settingsGlass(shape: RoundedRectangle(cornerRadius: 18, style: .continuous), isProminent: false)
+        #else
         HStack(spacing: 20) {
             SettingsRowText(title: title, subtitle: subtitle)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            HStack(spacing: 12) {
-                ForEach(SubtitlePalette.colors, id: \.self) { hex in
-                    SubtitleColorSwatchButton(
-                        hex: hex,
-                        isSelected: selection.caseInsensitiveCompare(hex) == .orderedSame,
-                        accentColor: accentColor
-                    ) {
-                        selection = hex
-                    }
-                }
-            }
-            .fixedSize(horizontal: true, vertical: false)
+            swatches
+                .fixedSize(horizontal: true, vertical: false)
         }
         .padding(.horizontal, 20)
         .frame(minHeight: 74)
@@ -7218,6 +7235,21 @@ private struct SubtitleColorRow: View {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
         )
+        #endif
+    }
+
+    private var swatches: some View {
+        HStack(spacing: 12) {
+            ForEach(SubtitlePalette.colors, id: \.self) { hex in
+                SubtitleColorSwatchButton(
+                    hex: hex,
+                    isSelected: selection.caseInsensitiveCompare(hex) == .orderedSame,
+                    accentColor: accentColor
+                ) {
+                    selection = hex
+                }
+            }
+        }
     }
 }
 
@@ -7364,7 +7396,7 @@ private struct LanguagePickerWindow: View {
                 }
             }
             .padding(34)
-            .frame(width: 900)
+            .settingsPanelWidth(900)
             .settingsGlass(shape: RoundedRectangle(cornerRadius: 34, style: .continuous), isProminent: true)
             .overlay(
                 RoundedRectangle(cornerRadius: 34, style: .continuous)
@@ -9561,7 +9593,7 @@ private struct AddonEditorSheet: View {
             }
         }
         .padding(40)
-        .frame(width: 900, alignment: .leading)
+        .settingsPanelWidth(900, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 28, style: .continuous)
                 .fill(Color.black.opacity(0.95))
@@ -9767,7 +9799,7 @@ private struct SyncedAddonSettingsRow: View {
     }
 
     private var rowBody: some View {
-        HStack(spacing: 14) {
+        SettingsActionRowStack {
             rowButton
 
             // The row itself toggles active/inactive, so a power button beside it
@@ -9878,7 +9910,7 @@ private struct StreamBadgePackSettingsRow: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        HStack(spacing: 14) {
+        SettingsActionRowStack {
             Button(action: { onEnabledChange(!badgePack.isActive) }) {
                 SettingsRowShell(isFocused: isFocused, accentColor: accentColor) {
                     Image(systemName: "tag.fill")
@@ -9943,7 +9975,7 @@ private struct AddonReorderButton: View {
             Image(systemName: systemImage)
                 .font(.system(size: 20, weight: .bold))
                 .foregroundColor(focused ? .black : .white.opacity(0.8))
-                .frame(width: 52, height: 52)
+                .frame(width: SettingsPhoneMetrics.isPhone ? 36 : 52, height: SettingsPhoneMetrics.isPhone ? 36 : 52)
                 .background(focused ? Color.white : Color.white.opacity(0.1))
                 .clipShape(Circle())
                 .opacity(disabled ? 0.35 : 1)
@@ -10108,7 +10140,7 @@ private struct HomeCatalogOrderRow: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        HStack(spacing: 14) {
+        SettingsActionRowStack {
             Button(action: onToggle) {
                 SettingsRowShell(isFocused: isFocused, accentColor: accentColor) {
                     VStack(alignment: .leading, spacing: 4) {
@@ -10752,7 +10784,7 @@ private struct CollectionTemplatesFlowSheet: View {
                             )
                         }
                     }
-                    .frame(width: 1040)
+                    .settingsPanelWidth(1040)
                     .padding(.horizontal, 56)
                     .padding(.vertical, 46)
                     .loginGlassPanel()
@@ -11459,7 +11491,7 @@ private struct CollectionSettingsRow: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        HStack(spacing: 14) {
+        SettingsActionRowStack {
             Button(action: onEdit) {
                 SettingsRowShell(isFocused: isFocused, accentColor: accentColor) {
                     Image(systemName: "folder.fill")
@@ -11711,7 +11743,7 @@ private struct CollectionEditorSheet: View {
             // clear the rounded glass edge instead of getting clipped.
             .padding(.vertical, 34)
             .padding(.horizontal, 48)
-            .frame(width: 900)
+            .settingsPanelWidth(900)
             .settingsGlass(shape: RoundedRectangle(cornerRadius: 34, style: .continuous), isProminent: true)
             .overlay(
                 RoundedRectangle(cornerRadius: 34, style: .continuous)
@@ -12751,7 +12783,7 @@ private struct CollectionCatalogPickerSheet: View {
             }
             .padding(.vertical, 34)
             .padding(.horizontal, 48)
-            .frame(width: 900)
+            .settingsPanelWidth(900)
             .settingsGlass(shape: RoundedRectangle(cornerRadius: 34, style: .continuous), isProminent: true)
             .overlay(
                 RoundedRectangle(cornerRadius: 34, style: .continuous)
@@ -12936,7 +12968,7 @@ private func sourceSheetChrome<Content: View, Footer: View>(
         }
         .padding(.vertical, 34)
         .padding(.horizontal, 48)
-        .frame(width: 900)
+        .settingsPanelWidth(900)
         .settingsGlass(shape: RoundedRectangle(cornerRadius: 34, style: .continuous), isProminent: true)
         .overlay(
             RoundedRectangle(cornerRadius: 34, style: .continuous)
@@ -12975,7 +13007,7 @@ private struct AddonSettingsRow: View {
     }
 
     private var rowBody: some View {
-        HStack(spacing: 14) {
+        SettingsActionRowStack {
             rowButton
 
             if let onDelete {
@@ -13097,7 +13129,7 @@ private struct SettingsGroup<Content: View>: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .padding(.horizontal, 20)
+            .padding(.horizontal, SettingsPhoneMetrics.rowHorizontalPadding)
             .padding(.bottom, 4)
 
             if let declaredRowIDs {
@@ -13118,8 +13150,8 @@ private struct SettingsGroup<Content: View>: View {
             Rectangle()
                 .fill(Color.white.opacity(0.08))
                 .frame(height: 1)
-                .padding(.horizontal, 20)
-                .offset(y: -26)
+                .padding(.horizontal, SettingsPhoneMetrics.rowHorizontalPadding)
+                .offset(y: SettingsPhoneMetrics.isPhone ? -18 : -26)
         }
     }
 }
@@ -13141,7 +13173,7 @@ private struct SettingsToggleRow: View {
             SettingsRowShell(isFocused: isFocused, accentColor: accentColor) {
                 SettingsRowText(title: title, subtitle: subtitle)
 
-                Spacer(minLength: 24)
+                Spacer(minLength: SettingsPhoneMetrics.isPhone ? 8 : 24)
 
                 HStack(spacing: 10) {
                     Text(isOn ? L10n.string("subtitle_on", fallback: "On") : L10n.string("playback_afr_off", fallback: "Off"))
@@ -13190,7 +13222,7 @@ private struct SettingsOptionRow: View {
             SettingsRowShell(isFocused: isFocused, accentColor: accentColor) {
                 SettingsRowText(title: title, subtitle: subtitle)
 
-                Spacer(minLength: 24)
+                Spacer(minLength: SettingsPhoneMetrics.isPhone ? 8 : 24)
 
                 HStack(spacing: 10) {
                     Text(L10n.optionLabel(currentStored))
@@ -13203,7 +13235,7 @@ private struct SettingsOptionRow: View {
                         .font(.system(size: 17, weight: .bold))
                         .foregroundColor(accentColor)
                 }
-                .frame(maxWidth: 260, alignment: .trailing)
+                .frame(maxWidth: SettingsPhoneMetrics.trailingMaxWidth, alignment: .trailing)
             }
         }
         .buttonStyle(PosterCardButtonStyle())
@@ -13243,7 +13275,7 @@ private struct SettingsChoiceRow: View {
             SettingsRowShell(isFocused: isFocused, accentColor: accentColor) {
                 SettingsRowText(title: title, subtitle: subtitle)
 
-                Spacer(minLength: 24)
+                Spacer(minLength: SettingsPhoneMetrics.isPhone ? 8 : 24)
 
                 HStack(spacing: 10) {
                     Text(L10n.optionLabel(currentStored))
@@ -13256,7 +13288,7 @@ private struct SettingsChoiceRow: View {
                         .font(.system(size: 17, weight: .bold))
                         .foregroundColor(accentColor)
                 }
-                .frame(maxWidth: 260, alignment: .trailing)
+                .frame(maxWidth: SettingsPhoneMetrics.trailingMaxWidth, alignment: .trailing)
             }
         }
         .buttonStyle(PosterCardButtonStyle())
@@ -13312,7 +13344,7 @@ private struct SettingsStepperRow: View {
         SettingsRowShell(isFocused: isFocused, accentColor: accentColor) {
             SettingsRowText(title: title, subtitle: subtitle)
 
-            Spacer(minLength: 24)
+            Spacer(minLength: SettingsPhoneMetrics.isPhone ? 8 : 24)
 
             HStack(spacing: 12) {
                 SettingsMiniButton(
@@ -13326,7 +13358,7 @@ private struct SettingsStepperRow: View {
                 Text("\(value)\(suffix)")
                     .font(.system(size: 20, weight: .bold))
                     .foregroundColor(.white)
-                    .frame(width: 78)
+                    .frame(width: SettingsPhoneMetrics.isPhone ? 50 : 78)
 
                 SettingsMiniButton(
                     systemName: "plus",
@@ -13362,6 +13394,17 @@ private struct SettingsTextFieldRow: View {
     @State private var isEditing = false
 
     var body: some View {
+        #if os(iOS)
+        SettingsPhoneFieldRow(
+            title: title, subtitle: subtitle, placeholder: placeholder,
+            text: $text, isSecure: isSecure, onCommit: onCommit
+        )
+        #else
+        tvBody
+        #endif
+    }
+
+    private var tvBody: some View {
         // The whole row is the focusable button (not just the right-hand capsule),
         // so it matches every other settings row: full-width and left-aligned. That
         // also fixes detail-pane entry — a right-press from the sidebar lands on this
@@ -13372,7 +13415,7 @@ private struct SettingsTextFieldRow: View {
             SettingsRowShell(isFocused: isFocused, accentColor: .white) {
                 SettingsRowText(title: title, subtitle: subtitle)
 
-                Spacer(minLength: 24)
+                Spacer(minLength: SettingsPhoneMetrics.isPhone ? 8 : 24)
 
                 SettingsGlassTextField(
                     text: $text,
@@ -13408,10 +13451,21 @@ private struct SettingsNativeTextFieldRow: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
+        #if os(iOS)
+        SettingsPhoneFieldRow(
+            title: title, subtitle: subtitle, placeholder: placeholder,
+            text: $text, isSecure: isSecure, onCommit: onCommit
+        )
+        #else
+        tvBody
+        #endif
+    }
+
+    private var tvBody: some View {
         SettingsRowShell(isFocused: isFocused, accentColor: .white) {
             SettingsRowText(title: title, subtitle: subtitle)
 
-            Spacer(minLength: 24)
+            Spacer(minLength: SettingsPhoneMetrics.isPhone ? 8 : 24)
 
             ZStack(alignment: .leading) {
                 Group {
@@ -13729,7 +13783,7 @@ private struct SettingsActionRow: View {
             SettingsRowShell(isFocused: isFocused, accentColor: accentColor) {
                 SettingsRowText(title: title, subtitle: subtitle)
 
-                Spacer(minLength: 24)
+                Spacer(minLength: SettingsPhoneMetrics.isPhone ? 8 : 24)
 
                 Text(value)
                     .font(.system(size: 19, weight: .bold))
@@ -13772,9 +13826,9 @@ private struct SettingsInfoRow: View {
                 .lineLimit(isDiagnostic ? nil : 2)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
-        .frame(minHeight: 64)
+        .padding(.horizontal, SettingsPhoneMetrics.rowHorizontalPadding)
+        .padding(.vertical, SettingsPhoneMetrics.rowVerticalPadding)
+        .frame(minHeight: SettingsPhoneMetrics.rowMinHeight - 10)
     }
 }
 
@@ -13794,6 +13848,17 @@ private struct SettingsSwatchRow: View {
     var macTitle: String = ""
 
     var body: some View {
+        #if os(iOS)
+        // Twelve swatches are wider than a phone; they scroll sideways.
+        ScrollView(.horizontal, showsIndicators: false) {
+            swatchStrip.padding(.horizontal, SettingsPhoneMetrics.rowHorizontalPadding).padding(.vertical, 6)
+        }
+        #else
+        swatchStrip
+        #endif
+    }
+
+    private var swatchStrip: some View {
         HStack(spacing: 14) {
             ForEach(swatches) { swatch in
                 SettingsSwatchButton(
@@ -13969,12 +14034,12 @@ private struct SettingsRowShell<Content: View>: View {
     }
 
     var body: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: SettingsPhoneMetrics.rowSpacing) {
             content
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
-        .frame(minHeight: 74)
+        .padding(.horizontal, SettingsPhoneMetrics.rowHorizontalPadding)
+        .padding(.vertical, SettingsPhoneMetrics.rowVerticalPadding)
+        .frame(minHeight: SettingsPhoneMetrics.rowMinHeight)
         // Nothing at rest. A row used to carry a glass fill and a border of its
         // own inside a group that carried another, so every screen read as
         // cards stacked inside cards. The eye only needs to be told where the
@@ -14047,7 +14112,7 @@ private struct SettingsMiniButton: View {
             Image(systemName: systemName)
                 .font(.system(size: 18, weight: .bold))
                 .foregroundColor(isAtBound ? .white.opacity(0.32) : .white)
-                .frame(width: 44, height: 44)
+                .frame(width: SettingsPhoneMetrics.isPhone ? 32 : 44, height: SettingsPhoneMetrics.isPhone ? 32 : 44)
                 .settingsGlass(shape: Circle(), isProminent: isFocused)
                 .overlay(
                     Circle()
@@ -14110,6 +14175,289 @@ private struct SettingsSearchGlassBackground<S: InsettableShape>: ViewModifier {
             content.background(.ultraThinMaterial, in: shape)
         }
     }
+}
+
+#if os(iOS)
+// MARK: - iPhone
+
+/// The phone presents the same eight panes, with every row and sheet they
+/// contain, as a list of categories that each push a page — the iOS Settings
+/// pattern — instead of the TV's sidebar beside a detail pane. Rows adapt
+/// their own metrics (see `SettingsPhoneMetrics`), so no setting is duplicated
+/// or left out here.
+extension SettingsView {
+    var phoneBody: some View {
+        List {
+            Section {
+                ForEach(SettingsCategory.allCases) { category in
+                    NavigationLink(value: category) {
+                        HStack(spacing: 14) {
+                            Image(systemName: category.iconName)
+                                .font(.body.weight(.medium))
+                                .foregroundStyle(accentColor)
+                                .frame(width: 28)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(category.title)
+                                    .font(.body)
+                                Text(category.subtitle)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(Color.nuvioBackground(amoled: amoled, body: bodyColor).ignoresSafeArea())
+        .navigationTitle(L10n.string("nav_settings", fallback: "Settings"))
+        .navigationDestination(for: SettingsCategory.self) { category in
+            phoneCategoryPage(category)
+        }
+    }
+
+    private func phoneCategoryPage(_ category: SettingsCategory) -> some View {
+        ZStack {
+            Group {
+                if category == .subtitles {
+                    // Scrolls itself beneath a pinned live preview, as on tvOS.
+                    GeometryReader { proxy in
+                        categoryContent(category)
+                            .frame(width: max(proxy.size.width - SettingsPhoneMetrics.pageInset * 2, 0))
+                            .padding(.horizontal, SettingsPhoneMetrics.pageInset)
+                            .padding(.top, 8)
+                    }
+                } else {
+                    GeometryReader { proxy in
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 36) {
+                                categoryContent(category)
+                            }
+                            // Pinned to the screen: a child with a fixed TV
+                            // width would otherwise widen the whole column
+                            // and push its left edge off screen.
+                            .frame(width: max(proxy.size.width - SettingsPhoneMetrics.pageInset * 2, 0), alignment: .leading)
+                            .padding(.horizontal, SettingsPhoneMetrics.pageInset)
+                            .padding(.top, 28)
+                            .padding(.bottom, 32)
+                        }
+                    }
+                }
+            }
+            .disabled(presentedLanguagePicker != nil || presentedProfilePinMode != nil)
+            .modalCover(item: $addonEditor.addon) { addon in
+                AddonEditorSheet(
+                    addon: addon,
+                    accentColor: accentColor,
+                    onSave: { name, urlText in
+                        addonEditor.onSave?(name, urlText)
+                        addonEditor.dismiss()
+                    },
+                    onCancel: { addonEditor.dismiss() }
+                )
+            }
+
+            if let picker = presentedLanguagePicker {
+                LanguagePickerWindow(
+                    title: languagePickerTitle(picker),
+                    subtitle: languagePickerSubtitle(picker),
+                    systemImage: languagePickerSystemImage(picker),
+                    selection: languagePickerSelection(picker),
+                    languages: picker == .appLanguage ? appLanguagePickerOptions : pickerLanguages,
+                    allowsMultiple: picker == .subtitles,
+                    accentColor: accentColor
+                ) {
+                    dismissLanguagePicker(picker)
+                }
+                .id(picker)
+                .transition(.opacity)
+                .zIndex(1)
+            }
+
+            if let mode = presentedProfilePinMode, let profile = activeProfile {
+                ProfilePinManagementView(
+                    mode: mode,
+                    profileName: ProfileDisplayName.resolve(profile: profile, settingsName: profile.name),
+                    onVerify: { pin in await onVerifyProfilePin?(profile.id, pin) == true },
+                    onSave: { pin, currentPin in await onChangeProfilePin?(profile.id, pin, currentPin) == true },
+                    onDismiss: { presentedProfilePinMode = nil }
+                )
+                .transition(.opacity)
+                .zIndex(2)
+            }
+        }
+        .background(Color.nuvioBackground(amoled: amoled, body: bodyColor).ignoresSafeArea())
+        .navigationTitle(category.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .animation(.easeOut(duration: 0.16), value: presentedLanguagePicker != nil)
+        .animation(.easeInOut(duration: 0.18), value: presentedProfilePinMode != nil)
+        .onAppear { selectedCategory = category }
+    }
+}
+#endif
+
+#if os(iOS)
+/// Text entry on the phone: the title above a real, full-width field. The TV
+/// rows park an invisible UITextField off screen and draw the text themselves,
+/// because tvOS paints a white pill over any focused field; a touch screen
+/// wants the field itself, with its caret, selection and paste menu.
+private struct SettingsPhoneFieldRow: View {
+    let title: String
+    let subtitle: String
+    let placeholder: String
+    @Binding var text: String
+    var isSecure = false
+    var onCommit: () -> Void = {}
+
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SettingsRowText(title: title, subtitle: subtitle)
+            Group {
+                if isSecure {
+                    SecureField(placeholder, text: $text)
+                } else {
+                    TextField(placeholder, text: $text)
+                }
+            }
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .submitLabel(.done)
+            .focused($isFocused)
+            .onSubmit(onCommit)
+            .font(.body)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(Color.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .padding(.horizontal, SettingsPhoneMetrics.rowHorizontalPadding)
+        .padding(.vertical, SettingsPhoneMetrics.rowVerticalPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // Leaving the field commits, like the TV's keyboard dismissal does.
+        .onChange(of: isFocused) { _, focused in
+            if !focused { onCommit() }
+        }
+    }
+}
+#endif
+
+extension View {
+    /// A TV panel's fixed width, which on the phone is only a ceiling.
+    @ViewBuilder
+    func settingsPanelWidth(_ width: CGFloat, alignment: Alignment = .center) -> some View {
+        #if os(iOS)
+        frame(maxWidth: width, alignment: alignment)
+        #else
+        frame(width: width, alignment: alignment)
+        #endif
+    }
+
+    /// Scales a fixed-size TV composition (the live card and layout previews)
+    /// down to the width it is given. No-op off the phone.
+    @ViewBuilder
+    func settingsFitWidth() -> some View {
+        #if os(iOS)
+        modifier(SettingsFitWidth())
+        #else
+        self
+        #endif
+    }
+}
+
+#if os(iOS)
+private struct SettingsFitWidth: ViewModifier {
+    @State private var natural: CGSize = .zero
+    @State private var available: CGFloat = 0
+
+    private var scale: CGFloat {
+        guard natural.width > 0, available > 0 else { return 1 }
+        return min(1, available / natural.width)
+    }
+
+    func body(content: Content) -> some View {
+        Color.clear
+            .frame(maxWidth: .infinity)
+            .frame(height: natural.height * scale)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { available = $0 }
+            .overlay(alignment: .topLeading) {
+                content
+                    .fixedSize()
+                    .onGeometryChange(for: CGSize.self) { $0.size } action: { natural = $0 }
+                    .scaleEffect(scale, anchor: .topLeading)
+            }
+    }
+}
+#endif
+
+/// A row with trailing action buttons (reorder, edit, delete). On the TV it is
+/// the plain row of controls it always was; on a phone the buttons would
+/// squeeze the title to nothing, so the first element takes the full width
+/// and the rest line up beneath it.
+struct SettingsActionRowStack<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        #if os(iOS)
+        SettingsPhoneActionRowLayout { content }
+        #else
+        HStack(spacing: 14) { content }
+        #endif
+    }
+}
+
+#if os(iOS)
+private struct SettingsPhoneActionRowLayout: Layout {
+    var buttonSpacing: CGFloat = 8
+    var lineSpacing: CGFloat = 2
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let first = subviews.first else { return .zero }
+        let width = proposal.width ?? first.sizeThatFits(.unspecified).width
+        let head = first.sizeThatFits(ProposedViewSize(width: width, height: nil))
+        let tail = subviews.dropFirst().map { $0.sizeThatFits(.unspecified) }
+        let tailHeight = tail.map(\.height).max() ?? 0
+        return CGSize(width: width, height: head.height + (tail.isEmpty ? 0 : lineSpacing + tailHeight))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let first = subviews.first else { return }
+        let head = first.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+        first.place(at: bounds.origin, proposal: ProposedViewSize(width: bounds.width, height: head.height))
+        var x = bounds.minX + SettingsPhoneMetrics.rowHorizontalPadding
+        let y = bounds.minY + head.height + lineSpacing
+        for view in subviews.dropFirst() {
+            let size = view.sizeThatFits(.unspecified)
+            view.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + buttonSpacing
+        }
+    }
+}
+#endif
+
+/// Row metrics. The TV values suit a 1300pt pane read from across a room;
+/// the phone's are sized for a 370pt column under a thumb.
+enum SettingsPhoneMetrics {
+    #if os(iOS)
+    static let isPhone = true
+    static let pageInset: CGFloat = 8
+    static let rowHorizontalPadding: CGFloat = 12
+    static let rowVerticalPadding: CGFloat = 10
+    static let rowMinHeight: CGFloat = 52
+    static let rowSpacing: CGFloat = 10
+    static let trailingMaxWidth: CGFloat = 150
+    #else
+    static let isPhone = false
+    static let pageInset: CGFloat = 0
+    static let rowHorizontalPadding: CGFloat = 20
+    static let rowVerticalPadding: CGFloat = 14
+    static let rowMinHeight: CGFloat = 74
+    static let rowSpacing: CGFloat = 16
+    static let trailingMaxWidth: CGFloat = 260
+    #endif
 }
 
 #if DEBUG

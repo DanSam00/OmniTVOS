@@ -159,7 +159,7 @@ struct PhoneProfilePickerView: View {
                                     .frame(width: 96, height: 96)
                                     .overlay {
                                         Text(String(profile.name.prefix(1)).uppercased())
-                                            .font(.system(size: 40, weight: .bold))
+                                            .font(.largeTitle.weight(.bold))
                                     }
                                     .overlay(alignment: .bottomTrailing) {
                                         if profile.isPinProtected {
