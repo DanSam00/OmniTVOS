@@ -1411,6 +1411,20 @@ struct LiquidGlassCardModifier: ViewModifier {
                     #endif
                 }
                 .overlay {
+                    #if os(macOS)
+                    // One colour, not the gradient tvOS uses. On macOS a
+                    // gradient-stroked shape is painted by CoreGraphics into
+                    // a 16-bit backing store the size of the whole card, on
+                    // the main thread: a sample of Grid View scrolling found
+                    // that shading was the single largest cost, repeated for
+                    // every card a scroll step brought in. At 1 pt the
+                    // gradient was all but invisible anyway.
+                    shape
+                        .strokeBorder(
+                            Color.white.opacity(isFocused ? 0.40 : 0.16),
+                            lineWidth: isFocused ? 1.5 : 1.0
+                        )
+                    #else
                     // Apple TV liquid glass specular reflection border
                     shape
                         .strokeBorder(
@@ -1425,6 +1439,7 @@ struct LiquidGlassCardModifier: ViewModifier {
                             ),
                             lineWidth: isFocused ? 1.5 : 1.0
                         )
+                    #endif
                 }
         } else {
             content
