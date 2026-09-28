@@ -254,7 +254,7 @@ struct ContentView: View {
                 // bootstrap and raised the "Syncing your account" gate on every
                 // single relaunch, not just on a real sign-in.
                 if resolvedInitialScreen {
-                    LoginView(auth: authManager) {
+                    PlatformLoginView(auth: authManager) {
                         // Successful authentication owns the initial account pull.
                         // Profile selection remains a later, deliberate switch and
                         // is no longer needed to kick-start a missed bootstrap.
@@ -279,6 +279,29 @@ struct ContentView: View {
                     AccountSyncWaitView()
                         .transition(.opacity)
                 } else {
+                    #if os(iOS)
+                    PhoneProfilePickerView(
+                        viewModel: profileViewModel,
+                        accountSyncError: syncManager.profileSyncError,
+                        onRetryAccountSync: {
+                            syncManager.retryInitialAccountPull()
+                            awaitingPostLoginSync = syncManager.isPullingAccountProfiles
+                        }
+                    )
+                        .transition(.opacity)
+                        .onAppear {
+                            if syncManager.profileSyncError == nil {
+                                syncManager.refreshProfilesForSelectionIfNeeded()
+                            }
+                        }
+                        .onReceive(profileViewModel.profileChosen) { _ in
+                            selectedTab = .home
+                            withAnimation(.easeInOut(duration: 0.28)) {
+                                activeScreen = .main
+                            }
+                            resumePendingDeepLinkIfPossible()
+                        }
+                    #else
                     UserProfileView(
                         viewModel: profileViewModel,
                         accountSyncError: syncManager.profileSyncError,
@@ -310,6 +333,7 @@ struct ContentView: View {
                             }
                             resumePendingDeepLinkIfPossible()
                         }
+                    #endif
                 }
 
             case .main, .details, .player, .cloudLibrary, .collectionFolder, .productionBrowse, .personBrowse:
@@ -1376,7 +1400,7 @@ struct ContentView: View {
     @ViewBuilder
     private var appContainer: some View {
         ZStack {
-            mainTabView
+            platformMainTabView
                 .disabled(shouldDisableHomeContent)
                 // `.disabled` stops the tab *content* from taking focus, but the
                 // sidebar/tab bar itself can still attract the focus engine while
@@ -1394,7 +1418,7 @@ struct ContentView: View {
                 .opacity(fullScreenOverlayPresented ? 0 : 1)
 
             if case .details(let contentId, let contentType) = activeScreen {
-                detailsScreen(contentId: contentId, contentType: contentType)
+                platformDetailsScreen(contentId: contentId, contentType: contentType)
                     .id("\(contentType):\(contentId)")
                     .transition(.opacity)
                     .onDisappear {
@@ -1612,6 +1636,91 @@ struct ContentView: View {
             width: MacTVCanvas<EmptyView>.canvasSize.width,
             height: MacTVCanvas<EmptyView>.canvasSize.height
         )
+        #endif
+    }
+
+    @ViewBuilder
+    private var platformMainTabView: some View {
+        #if os(iOS)
+        PhoneMainTabView(
+            activeProfile: profileViewModel.activeProfile,
+            searchViewModel: searchViewModel,
+            libraryViewModel: libraryViewModel,
+            authManager: authManager,
+            homeCatalogRevision: syncManager.homeCatalogRevision,
+            onOpenDetails: { contentId, contentType in
+                withAnimation(.easeInOut(duration: 0.28)) {
+                    openDetailsRoot(id: contentId, type: contentType)
+                }
+            },
+            onResume: { resumePlayback($0) },
+            onStartOver: { resumePlayback($0, startFromBeginning: true) },
+            onRemoveContinueWatching: { removeFromContinueWatching($0) },
+            onSwitchProfile: {
+                homeStore.reset()
+                withAnimation(.easeInOut(duration: 0.28)) {
+                    profileViewModel.activeProfile = nil
+                    activeScreen = .profileSelection
+                }
+            },
+            onSignIn: {
+                authManager.requireLogin()
+                homeStore.reset()
+                withAnimation(.easeInOut(duration: 0.28)) {
+                    selectedTab = .home
+                    profileViewModel.activeProfile = nil
+                    activeScreen = .login
+                }
+            },
+            onSignOut: {
+                authManager.signOut()
+                profileViewModel.resetForSignedOut()
+                homeStore.reset()
+                searchViewModel.clear()
+                searchViewModel.clearRecent()
+                withAnimation(.easeInOut(duration: 0.28)) {
+                    selectedTab = .home
+                    profileViewModel.activeProfile = nil
+                    activeScreen = .login
+                }
+            }
+        )
+        #else
+        mainTabView
+        #endif
+    }
+
+    @ViewBuilder
+    private func platformDetailsScreen(contentId: String, contentType: String) -> some View {
+        #if os(iOS)
+        PhoneDetailsView(
+            id: contentId,
+            type: contentType,
+            onPlayClick: { streamUrlString, httpHeaders, meta, subtitle, externalSubtitles, currentEpisode, episodes, player in
+                guard let url = URL(string: streamUrlString) else { return }
+                playbackEpisodes = episodes
+                playbackCurrentEpisode = currentEpisode
+                presentPlayback(
+                    url: url,
+                    meta: meta,
+                    subtitle: subtitle,
+                    externalSubtitles: externalSubtitles,
+                    resumeFrom: Self.resumePosition(for: meta, episode: currentEpisode),
+                    httpHeaders: httpHeaders,
+                    origin: .details,
+                    customPlayer: player
+                )
+            },
+            onBack: { leaveDetails() },
+            onOpenTitle: { nextId, nextType in
+                detailsBackStack.append((id: contentId, type: contentType))
+                withAnimation(.easeInOut(duration: 0.28)) {
+                    activeScreen = .details(id: nextId, type: nextType)
+                }
+            }
+        )
+        #else
+        detailsScreen(contentId: contentId, contentType: contentType)
         #endif
     }
 
@@ -2437,7 +2546,8 @@ extension CrossfadingBackdrop: Equatable {
     }
 }
 
-/// Plays the focused title's trailer in the Home backdrop, silently.
+/// Plays the focused title's trailer in the Home backdrop, with sound when
+/// Trailer Preview Sound is on.
 ///
 /// The hero art changes with every card focus passes over, so nothing starts
 /// until focus settles: `.task(id:)` cancels the wait the moment the hero
@@ -2455,6 +2565,12 @@ private struct HomeHeroTrailer: View {
     /// starting a trailer for a title the backdrop has already moved past.
     @State private var preparedMetaID: String?
     @State private var shownMetaID: String?
+    #if os(macOS)
+    /// Whether Omni is the active app. With sound on, a trailer that kept
+    /// playing while another app is in front would talk over whatever is
+    /// being done there, so it stops and restarts on return.
+    @State private var appIsActive = NSApp?.isActive ?? true
+    #endif
 
     /// How long focus must rest before a trailer is resolved at all. Passing
     /// across a row should not resolve one per title.
@@ -2480,7 +2596,6 @@ private struct HomeHeroTrailer: View {
                 TrailerPreviewPlayer(
                     meta: meta,
                     isActive: shownMetaID == meta.id,
-                    forcesMute: true,
                     logLabel: "hero"
                 )
                 .id(meta.id)
@@ -2488,10 +2603,18 @@ private struct HomeHeroTrailer: View {
             }
         }
         .allowsHitTesting(false)
+        #if os(macOS)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            appIsActive = false
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            appIsActive = true
+        }
+        #endif
         .task(id: trailerIdentity) {
             preparedMetaID = nil
             shownMetaID = nil
-            guard trailersEnabled, let id = meta?.id else { return }
+            guard trailersEnabled, appIsFrontmost, let id = meta?.id else { return }
             let delay = Double(max(0, trailerDelay))
             let settle = min(delay, Self.settleDelay)
             try? await Task.sleep(for: .seconds(settle))
@@ -2506,8 +2629,16 @@ private struct HomeHeroTrailer: View {
     /// Restarts the wait when the hero changes title, when the delay changes,
     /// and when trailers are switched off mid-view so a playing one is torn
     /// down.
+    private var appIsFrontmost: Bool {
+        #if os(macOS)
+        appIsActive
+        #else
+        true
+        #endif
+    }
+
     private var trailerIdentity: String {
-        "\(meta?.id ?? "none")\u{1f}\(trailersEnabled)\u{1f}\(trailerDelay)"
+        "\(meta?.id ?? "none")\u{1f}\(trailersEnabled)\u{1f}\(trailerDelay)\u{1f}\(appIsFrontmost)"
     }
 }
 
@@ -3564,10 +3695,10 @@ struct TVHomeView: View {
                     .overlay {
                         // Grid View's backdrop is empty, but the focused title
                         // still reached here and played its trailer behind the
-                        // grids.
-                        HomeHeroTrailer(
-                            meta: showsLoading || homeLayout == "Grid View" ? nil : homeBackdropMeta
-                        )
+                        // grids. And Home stays mounted, only hidden, under
+                        // Details and the player: with sound, a trailer left
+                        // running there would play over them.
+                        HomeHeroTrailer(meta: heroTrailerMeta)
                     }
                     .clipped()
                 } else {
@@ -3587,9 +3718,7 @@ struct TVHomeView: View {
                         // Inside the masks, so the trailer dissolves into the
                         // page on exactly the same edges the artwork does.
                         .overlay {
-                            HomeHeroTrailer(
-                                meta: showsLoading || homeLayout == "Grid View" ? nil : homeBackdropMeta
-                            )
+                            HomeHeroTrailer(meta: heroTrailerMeta)
                         }
                         .mask(
                             LinearGradient(
@@ -4877,6 +5006,14 @@ struct TVHomeView: View {
         #else
         "grid.hero"
         #endif
+    }
+
+    /// The title whose trailer plays behind Home, or nil for none: not while
+    /// loading, not in Grid View (no backdrop), and not while anything covers
+    /// Home, which stays mounted beneath Details and the player.
+    private var heroTrailerMeta: NuvioMeta? {
+        guard !showsLoading, homeLayout != "Grid View", !isFullScreenOverlayPresented else { return nil }
+        return homeBackdropMeta
     }
 
     private var macGridHeroFocused: Bool {

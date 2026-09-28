@@ -14,7 +14,7 @@ import SwiftUI
 import UIKit
 #endif
 
-#if os(tvOS) || os(macOS)
+#if os(tvOS) || os(iOS) || os(macOS)
 /// Plays a remote animated image (GIF) when `isActive` is true.
 struct AnimatedRemoteGIFView: View {
     let urlString: String

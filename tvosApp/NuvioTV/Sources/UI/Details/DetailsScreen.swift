@@ -106,7 +106,7 @@ struct DetailsScreen: View {
                     onBack: handleBack
                 )
             } else if viewModel.uiState.meta != nil {
-                #if os(tvOS) || os(macOS)
+                #if os(tvOS) || os(iOS) || os(macOS)
                 TvDetailsContent(
                     uiState: viewModel.uiState,
                     onPlayClick: {
@@ -198,7 +198,7 @@ struct DetailsScreen: View {
                 #endif
             }
 
-            #if os(tvOS) || os(macOS)
+            #if os(tvOS) || os(iOS) || os(macOS)
             if let expandedComment {
                 CommentDetailOverlay(
                     comment: expandedComment,
@@ -222,7 +222,7 @@ struct DetailsScreen: View {
             #endif
         }
         .animation(.easeInOut(duration: 0.18), value: isStreamPickerPresented)
-        #if os(tvOS)
+        #if os(tvOS) || os(iOS)
         // Present sources in an isolated full-screen focus hierarchy. Keeping
         // this overlay inside the details screen's vertical ScrollView ancestry
         // lets tvOS apply focus-visibility corrections to the shared host,
@@ -5608,7 +5608,7 @@ private struct TvEpisodeCard: View {
                 .frame(width: cardWidth, height: cardHeight)
                 .background {
                     if liquidGlassCards {
-                        #if os(tvOS) || os(macOS)
+                        #if os(tvOS) || os(iOS) || os(macOS)
                         if #available(tvOS 26.0, macOS 26.0, *) {
                             shape
                                 .fill(isFocused ? Color.white.opacity(0.18) : Color.white.opacity(0.08))
@@ -5892,7 +5892,7 @@ private struct TvStreamGlass<S: InsettableShape>: ViewModifier {
 
 // The stream picker is a tvOS-only screen: macOS lists the same streams in
 // the details rail, so nothing here is reachable there.
-#if os(tvOS)
+#if os(tvOS) || os(iOS)
 private struct TvStreamPickerOverlay: View {
     let meta: NuvioMeta
     let episode: NuvioVideo?

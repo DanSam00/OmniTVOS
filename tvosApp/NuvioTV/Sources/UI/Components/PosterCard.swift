@@ -8,7 +8,7 @@
 import CryptoKit
 import ImageIO
 import SwiftUI
-#if os(tvOS) || os(macOS)
+#if os(tvOS) || os(iOS) || os(macOS)
 import AVFoundation
 import AVKit
 import CoreMedia
@@ -207,7 +207,7 @@ struct PosterCard: View {
 
     private let landscapeTransitionDuration: TimeInterval = 0.3
 
-    #if os(tvOS) || os(macOS)
+    #if os(tvOS) || os(iOS) || os(macOS)
     @FocusState private var isFocused: Bool
     @State private var didRequestInitialFocus = false
     @State private var landscapeArtworkPrepared = false
@@ -223,7 +223,7 @@ struct PosterCard: View {
     #endif
 
     var body: some View {
-        #if os(tvOS) || os(macOS)
+        #if os(tvOS) || os(iOS) || os(macOS)
         Button {
             #if os(macOS)
             // A click on macOS activates the card but does not focus it, so
@@ -578,7 +578,7 @@ struct PosterCard: View {
 
     // MARK: - Computed Properties
 
-    #if os(tvOS) || os(macOS)
+    #if os(tvOS) || os(iOS) || os(macOS)
     private var effectiveHomeLayout: String {
         layoutMode
     }
@@ -876,7 +876,7 @@ extension PosterCard: Equatable {
     }
 }
 
-#if os(tvOS) || os(macOS)
+#if os(tvOS) || os(iOS) || os(macOS)
 #if os(macOS)
 final class TrailerPlayerLayerView: NSView {
     // AppKit has no `layerClass`; a layer-backed view names its backing layer
@@ -1032,9 +1032,7 @@ struct TrailerPreviewPlayer: View {
     /// Resolution begins as soon as the card gains focus; playback waits for
     /// Home's configured delay to promote the card to landscape.
     let isActive: Bool
-    /// Ignores the trailer-sound preference and stays silent. The hero plays
-    /// behind the whole screen rather than on a card the user has picked out,
-    /// so it is never allowed to make noise.
+    /// Ignores the trailer-sound preference and stays silent.
     var forcesMute = false
     var onPlaybackReady: () -> Void = {}
     var onPlaybackFinished: () -> Void = {}
@@ -1346,7 +1344,7 @@ struct LiquidGlassSurface: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        #if os(tvOS) || os(macOS)
+        #if os(tvOS) || os(iOS) || os(macOS)
         if #available(tvOS 26.0, macOS 26.0, *) {
             content
                 .background(
@@ -1387,7 +1385,7 @@ struct LiquidGlassCardModifier: ViewModifier {
         if isEnabled {
             content
                 .background {
-                    #if os(tvOS)
+                    #if os(tvOS) || os(iOS)
                     if isFocused {
                         if #available(tvOS 26.0, macOS 26.0, *) {
                             shape
@@ -1446,7 +1444,7 @@ struct LiquidGlassBadgeModifier: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
         if isFocused {
-            #if os(tvOS)
+            #if os(tvOS) || os(iOS)
             if #available(tvOS 26.0, macOS 26.0, *) {
                 content
                     .glassEffect(.regular, in: shape)
@@ -2262,7 +2260,7 @@ struct PosterCardButtonStyle: ButtonStyle {
     }
 }
 
-#if os(tvOS) || os(macOS)
+#if os(tvOS) || os(iOS) || os(macOS)
 private extension View {
     @ViewBuilder
     func nuvioFocusEffectDisabledIfAvailable() -> some View {

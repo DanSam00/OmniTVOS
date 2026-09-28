@@ -562,3 +562,11 @@ extension View {
         }
     }
 }
+
+/// The sign-in screen `ContentView` shows. The QR-first TV layout makes no
+/// sense on the phone that would scan the code, so iOS has its own.
+#if os(iOS)
+typealias PlatformLoginView = PhoneLoginView
+#else
+typealias PlatformLoginView = LoginView
+#endif

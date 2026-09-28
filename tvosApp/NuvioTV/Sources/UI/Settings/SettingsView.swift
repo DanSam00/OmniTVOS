@@ -6677,7 +6677,7 @@ private struct PlaybackSettingsView: View {
 
                 SettingsToggleRow(
                     title: L10n.string("tvos_settings_trailer_preview_sound", fallback: "Trailer Preview Sound"),
-                    subtitle: L10n.string("omni_settings_trailer_sound_subtitle", fallback: "Play sound for trailers in the recommendations after an episode. Home's background trailer is always silent."),
+                    subtitle: L10n.string("omni_settings_trailer_sound_subtitle_v2", fallback: "Play sound for the trailer behind Home and in the recommendations after an episode."),
                     isOn: $trailerPreviewSound,
                     accentColor: accentColor
                 )

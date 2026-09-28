@@ -220,6 +220,7 @@ struct PlayerView: View {
 
             postPlayOverlay
 
+            #if !os(iOS)
             // Window-level trackpad capture for Infuse-style scrubbing / peek.
             RemoteTouchCatcher(
                 isActive: {
@@ -252,6 +253,7 @@ struct PlayerView: View {
             )
             .frame(width: 1, height: 1)
             .accessibilityHidden(true)
+            #endif
 
             playerStatusOverlay
 
@@ -286,6 +288,7 @@ struct PlayerView: View {
             // to the timeline, focusable again the instant they hide. `up`/`down`
             // reveal via the PlayerView `onMoveCommand`; the select click reveals via
             // the tap gesture.
+            #if !os(iOS)
             Color.clear
                 .ignoresSafeArea()
                 .contentShape(Rectangle())
@@ -311,6 +314,7 @@ struct PlayerView: View {
                     }
                 }
                 .accessibilityHidden(true)
+            #endif
 
             // Light-tap peek timeline (no full chrome).
             if viewModel.peekVisible, !viewModel.showControls, !viewModel.isScrubbing {
@@ -423,6 +427,14 @@ struct PlayerView: View {
             // animate. Animating opacity/scale on a mounted view sidesteps that —
             // focusability is gated inside PlayerControls so focus still hands off
             // cleanly to the remote-input overlay when hidden.
+            #if os(iOS)
+            PhonePlayerControls(
+                viewModel: viewModel,
+                isReady: didReportPlaybackStarted && !viewModel.isSwitchingSource,
+                onClose: onBack
+            )
+            .zIndex(5)
+            #else
             PlayerControls(
                 viewModel: viewModel,
                 isSkipSegmentFocused: skipSegmentFocused,
@@ -462,6 +474,7 @@ struct PlayerView: View {
                 .animation(.playerControls, value: viewModel.showSettingsPanel)
                 .animation(.playerControls, value: viewModel.isScrubbing)
                 .animation(.playerControls, value: viewModel.showPauseOverlay)
+            #endif
 
             // Settings panel (subtitles / audio / speed), over the dimmed video.
             if viewModel.showSettingsPanel {
