@@ -3609,7 +3609,9 @@ struct TVHomeView: View {
     @available(tvOS 26.0, macOS 26.0, *)
     private var homeLiquidGlassPane: some View {
         GeometryReader { proxy in
-            let top = proxy.size.height * 0.543
+            // Follows the rows when they are lowered, so it keeps running
+            // between the focused row's title and its cards.
+            let top = proxy.size.height * 0.543 + liquidGlassRowsDrop
             Rectangle()
                 .fill(Color.clear)
                 .glassEffect(.regular, in: Rectangle())
@@ -3767,6 +3769,7 @@ struct TVHomeView: View {
                     // the sheet aside while the carousel has focus.
                     .opacity(homeFrostedGlassLiquid && featureFocused ? 0 : 1)
                     .animation(.easeInOut(duration: 0.35), value: featureFocused)
+                    .animation(.easeInOut(duration: 0.3), value: liquidGlassRowsDrop)
                     .allowsHitTesting(false)
             }
 
@@ -4298,6 +4301,10 @@ struct TVHomeView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    // Lowered under Liquid Glass so the focused row shows whole
+                    // and the next one's title is pushed off the screen.
+                    .padding(.top, liquidGlassRowsDrop)
+                    .animation(.easeInOut(duration: 0.3), value: liquidGlassRowsDrop)
                     // Treat the rows as a focus section so focus can jump in/out
                     // cleanly. The default focus is only armed after Home loses
                     // focus, so the first Menu press can still reach the sidebar,
@@ -5006,6 +5013,22 @@ struct TVHomeView: View {
         #else
         "grid.hero"
         #endif
+    }
+
+    /// How far the rows drop in Modern with Liquid Glass on: enough that the
+    /// focused row — title and posters — is the only one on screen, the
+    /// glass beneath it reading as a single shelf. Not while the featured
+    /// carousel has focus, where the glass steps aside and the rows under the
+    /// carousel would be pushed off the screen.
+    static let liquidGlassRowsDropAmount: CGFloat = 100
+
+    private var liquidGlassRowsDrop: CGFloat {
+        guard homeLayout == "Modern",
+              homeFrostedGlass,
+              homeFrostedGlassLiquid,
+              fullscreenHeroBackdrop,
+              !featureFocused else { return 0 }
+        return Self.liquidGlassRowsDropAmount
     }
 
     /// The title whose trailer plays behind Home, or nil for none: not while
