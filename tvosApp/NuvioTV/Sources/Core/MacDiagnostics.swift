@@ -100,6 +100,30 @@ enum MacDiagnostics {
         RunLoop.main.add(timer, forMode: .common)
     }
 
+    /// Watches the main thread for `duration` after a keypress and logs the
+    /// longest gap between run-loop turns and how many exceeded a frame and a
+    /// half. The hitch watchdog only reports stalls of 200 ms and more; the
+    /// stutter a scroll animation shows is tens of milliseconds, which that
+    /// never sees.
+    static func measureFrames(_ label: String, duration: TimeInterval = 0.6) {
+        guard NSApplication.shared.isActive else { return }
+        let start = CFAbsoluteTimeGetCurrent()
+        var last = start
+        var worst = 0.0
+        var dropped = 0
+        let timer = Timer(timeInterval: 1.0 / 120.0, repeats: true) { timer in
+            let now = CFAbsoluteTimeGetCurrent()
+            let gap = (now - last) * 1000
+            last = now
+            worst = max(worst, gap)
+            if gap > 25 { dropped += 1 }
+            guard now - start >= duration else { return }
+            timer.invalidate()
+            log(String(format: "frames %@ worst=%.0fms over25ms=%d", label, worst, dropped))
+        }
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
     private static func observe(_ name: Notification.Name, as label: String) {
         NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
             log(label)

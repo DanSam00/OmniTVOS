@@ -2557,6 +2557,9 @@ extension CrossfadingBackdrop: Equatable {
 /// Titles without one simply never become visible and the artwork stays.
 private struct HomeHeroTrailer: View {
     let meta: NuvioMeta?
+    /// True while a trailer is drawing, false once it ends or is torn down —
+    /// Grid View's slideshow holds its slide for the length of the trailer.
+    var onPlayingChange: (Bool) -> Void = { _ in }
 
     @AppStorage(SettingsKey.trailersEnabled) private var trailersEnabled = true
     /// The Trailer Delay setting, in Layout and Playback.
@@ -2596,10 +2599,13 @@ private struct HomeHeroTrailer: View {
                 TrailerPreviewPlayer(
                     meta: meta,
                     isActive: shownMetaID == meta.id,
+                    onPlaybackReady: { onPlayingChange(true) },
+                    onPlaybackFinished: { onPlayingChange(false) },
                     logLabel: "hero"
                 )
                 .id(meta.id)
                 .scaleEffect(Self.letterboxCrop)
+                .onDisappear { onPlayingChange(false) }
             }
         }
         .allowsHitTesting(false)
@@ -4652,14 +4658,18 @@ struct TVHomeView: View {
         // callback, which macOS never fires: `home.focus.end` has not been
         // logged once, against 2364 `homeFocus.move`. The caret is the macOS
         // equivalent of landing on a card, so it schedules the expansion.
+        // Grid View draws neither the expanded poster nor the backdrop hero,
+        // but both still ran on every move, and each is a state change that
+        // redraws the whole grid — one mid-scroll (clearing the old landscape
+        // card), one when the delay fired. That was the stutter.
         .onChange(of: macFocusedCardID) { _, newValue in
-            guard let newValue else { return }
+            guard let newValue, homeLayout != "Grid View" else { return }
             scheduleLandscapeFocus(cardKey: newValue)
         }
         .onChange(of: macFocusedCardID) { oldValue, newValue in
             MacDiagnostics.log("homeFocus.state \(oldValue ?? "none") -> \(newValue ?? "none")")
             guard let newValue else { return }
-            macPublishHero(for: newValue)
+            if homeLayout != "Grid View" { macPublishHero(for: newValue) }
             guard isActive else { return }
             // The tvOS path persists this from the focus state's own observer,
             // which no longer fires here — but the seed on the next appearance
@@ -4825,6 +4835,7 @@ struct TVHomeView: View {
                         },
                         backdropBleed: heroBleed,
                         macIsFocused: macGridHeroFocused,
+                        allowsTrailer: !isFullScreenOverlayPresented,
                         onFocusChange: { isGridHeroFocused = $0 }
                     ) { selectedMeta in
                         navigateToDetailsFromHome(id: selectedMeta.id, type: selectedMeta.type)
@@ -5010,11 +5021,20 @@ struct TVHomeView: View {
             scroll(key, .center, after: 0.25)
             scroll(key, .center, after: 0.6)
         } else {
-            scroll(section, .top, after: 0.25)
+            scroll(section, Self.gridRowAnchor, after: 0.25)
         }
         MacDiagnostics.log("homeGrid.restore key=" + key)
     }
     #endif
+
+    /// Where a row (Continue Watching, a collection) stops in Grid View.
+    ///
+    /// Pinned to the very top, its title sat under the menu icon. An anchor
+    /// of y lines up the point y down the row with the point y down the
+    /// viewport, which leaves the row's top at y × (viewport − row). Rows are
+    /// a uniform ~465 pt in a 1,080 pt canvas, so 0.15 puts the top about
+    /// 90 pt down — clear of the icon, as with no hero in the row layouts.
+    static let gridRowAnchor = UnitPoint(x: 0, y: 0.15)
 
     /// Scroll target for the grid hero; matches the stand-in section id the
     /// macOS caret uses for it, so the move handler scrolls to it by name.
@@ -6050,6 +6070,7 @@ struct TVHomeView: View {
         MacDiagnostics.log(
             "homeFocus.move dir=\(direction) from=\(current ?? "none") to=\(next ?? "none")"
         )
+        MacDiagnostics.measureFrames("home.\(homeLayout == "Grid View" ? "grid" : "rows") \(direction)")
         guard let next else {
             if direction == .left { menu.open() }
             return
@@ -6074,8 +6095,10 @@ struct TVHomeView: View {
             withAnimation(TVHomeLayout.verticalScrollAnimation) {
                 if let toSection, gridIds.contains(toSection) {
                     scrollProxy?.scrollTo(next, anchor: .center)
+                } else if toSection == MacHomeFocus.gridHeroSectionId {
+                    scrollProxy?.scrollTo(MacHomeFocus.gridHeroSectionId, anchor: .top)
                 } else if let toSection {
-                    scrollProxy?.scrollTo(toSection, anchor: .top)
+                    scrollProxy?.scrollTo(toSection, anchor: Self.gridRowAnchor)
                 }
             }
             return
@@ -8453,8 +8476,14 @@ private struct TVGridHeroSlideshowView: View {
     /// Home's macOS caret is on the hero. There is no focus engine there to
     /// set `focusState`, so this stands in for it.
     var macIsFocused = false
+    /// False while something full-screen covers Home, which stays mounted
+    /// beneath it: the trailer must not play on under Details or the player.
+    var allowsTrailer = true
     var onFocusChange: ((Bool) -> Void)? = nil
     let onSelect: (NuvioMeta) -> Void
+
+    /// A trailer is playing for the current slide; auto-advance waits for it.
+    @State private var isTrailerPlaying = false
 
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
@@ -8483,6 +8512,15 @@ private struct TVGridHeroSlideshowView: View {
                 placeholder: background,
                 alignment: .top
             )
+            .overlay {
+                // The same trailer, rules and settings as the background one in
+                // the other layouts; nil stops it (Home covered, or off).
+                HomeHeroTrailer(
+                    meta: allowsTrailer ? item : nil,
+                    onPlayingChange: { isTrailerPlaying = $0 }
+                )
+            }
+            .clipped()
 
             LinearGradient(
                 stops: [
@@ -8583,7 +8621,7 @@ private struct TVGridHeroSlideshowView: View {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
                 guard !Task.isCancelled else { return }
-                if !isFocused { setIndex((index + 1) % items.count) }
+                if !isFocused, !isTrailerPlaying { setIndex((index + 1) % items.count) }
             }
         }
         .onChange(of: items.count) { _, count in
