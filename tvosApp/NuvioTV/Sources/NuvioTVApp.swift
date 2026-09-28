@@ -4835,7 +4835,14 @@ struct TVHomeView: View {
                         },
                         backdropBleed: heroBleed,
                         macIsFocused: macGridHeroFocused,
-                        allowsTrailer: !isFullScreenOverlayPresented,
+                        // Only while the hero holds the caret: it is the only
+                        // time it is on screen, and scroll clipping is off in
+                        // the grid, so a trailer left playing kept decoding
+                        // and compositing behind every row scrolled past —
+                        // 9 to 17 late frames a keypress from the moment it
+                        // started.
+                        allowsTrailer: !isFullScreenOverlayPresented
+                            && (macGridHeroFocused || isGridHeroFocused),
                         onFocusChange: { isGridHeroFocused = $0 }
                     ) { selectedMeta in
                         navigateToDetailsFromHome(id: selectedMeta.id, type: selectedMeta.type)
@@ -6393,6 +6400,11 @@ struct TVHomeView: View {
 
     private func scheduleHeroSettle() {
         focusWork.focusSettleTask?.cancel()
+        // Grid View draws its own hero and no backdrop, so publishing one
+        // only redrew the whole grid a moment after each move. The rows reach
+        // this through their own focus callbacks, not just the macOS caret,
+        // which is why gating the caret's path alone left the stutter in.
+        guard homeLayout != "Grid View" else { return }
 
         let targetMetaId = focusWork.pendingFocusedMeta?.id
         let targetFolderId = focusWork.pendingFocusedFolder?.id
@@ -6710,6 +6722,8 @@ struct TVHomeView: View {
     }
 
     private func scheduleLandscapeFocus(cardKey: String) {
+        // Grid cards never expand to landscape.
+        guard homeLayout != "Grid View" else { return }
         // TVHomeDebugTrace is compiled out (`enabled = false`) and prints to
         // stdout even when it is not, so it says nothing about this path. This
         // goes to the app log, where it can actually be read.
