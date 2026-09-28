@@ -211,13 +211,8 @@ struct PosterCard: View {
     @FocusState private var isFocused: Bool
     @State private var didRequestInitialFocus = false
     @State private var landscapeArtworkPrepared = false
-    @AppStorage(SettingsKey.trailersEnabled) private var trailersEnabled = true
-    @AppStorage(SettingsKey.trailerDelay) private var trailerDelay = 7
     @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
     @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
-    @State private var isTrailerPreviewActive = false
-    @State private var isTrailerPreviewReady = false
-    @State private var didFinishTrailerPreview = false
     /// Rapid navigation should not start a separate backdrop/episode-art decode
     /// for every card passed over. Arm that preload only after focus has settled,
     /// matching Home's hero debounce.
@@ -267,20 +262,11 @@ struct PosterCard: View {
             .onChange(of: isFocused) { _, focused in
                 if focused {
                     onFocus?(meta)
-                    didFinishTrailerPreview = false
                 } else {
                     landscapePreloadArmed = false
-                    cancelTrailerPreview()
                     onBlur?(meta)
                 }
             }
-            // A task keyed to the real rendered state cannot miss the landscape
-            // transition. It is cancelled automatically if focus/landscape or
-            // the setting changes before the full delay has elapsed.
-            .task(id: trailerActivationIdentity) {
-                await activateTrailerPreviewAfterDelay()
-            }
-            .onDisappear(perform: cancelTrailerPreview)
             .task(id: isFocused) {
                 guard isFocused else { return }
                 do {
@@ -356,33 +342,12 @@ struct PosterCard: View {
                 placeholderView
             }
             .frame(width: cardWidth, height: cardHeight)
-            #if os(tvOS)
-            // Cross-fade the landscape artwork away only once the resolved
-            // trailer is ready to draw, avoiding a black frame on slow links.
-            .opacity(isTrailerPreviewVisible ? 0 : 1)
-            .overlay {
-                if isFocused && trailersEnabled && !isContinueOrUpcomingCard && !didFinishTrailerPreview {
-                    TrailerPreviewPlayer(
-                        meta: meta,
-                        isActive: isTrailerPreviewActive,
-                        onPlaybackReady: {
-                            guard isTrailerPreviewActive else { return }
-                            isTrailerPreviewReady = true
-                        },
-                        onPlaybackFinished: finishTrailerPreview
-                    )
-                    .transition(.opacity)
-                }
-            }
-            .animation(.easeInOut(duration: 0.32), value: isTrailerPreviewVisible)
-            .animation(.easeInOut(duration: 0.32), value: didFinishTrailerPreview)
-            #endif
+            // No trailer of its own: Home plays the focused title's trailer
+            // behind the page, and a second copy inside the card played the
+            // same film twice at once on tvOS. macOS never had one.
             .overlay(alignment: .bottomLeading) {
                 if effectiveLandscape {
                     landscapeOverlay
-                        #if os(tvOS)
-                        .opacity(isTrailerPreviewVisible ? 0 : 1)
-                        #endif
                 }
             }
             .overlay(alignment: .bottomLeading) {
@@ -785,41 +750,6 @@ struct PosterCard: View {
         continueProgress != nil || continueIsUpNext || continueRemainingText != nil || continueEpisodeText != nil || continueUpNextBadgeText != nil
     }
 
-    private var trailerActivationIdentity: String {
-        "\(isFocused)\u{1f}\(effectiveLandscape)\u{1f}\(trailersEnabled)\u{1f}\(trailerDelay)\u{1f}\(isContinueOrUpcomingCard)"
-    }
-
-    private var isTrailerPreviewVisible: Bool {
-        !isContinueOrUpcomingCard && isTrailerPreviewActive && isTrailerPreviewReady && !didFinishTrailerPreview
-    }
-
-    @MainActor
-    private func activateTrailerPreviewAfterDelay() async {
-        isTrailerPreviewActive = false
-        isTrailerPreviewReady = false
-        didFinishTrailerPreview = false
-        guard isFocused, effectiveLandscape, trailersEnabled, !isContinueOrUpcomingCard else { return }
-
-        let delay = max(0, trailerDelay)
-        do {
-            try await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
-        } catch {
-            return
-        }
-        guard !Task.isCancelled, isFocused, effectiveLandscape, trailersEnabled, !isContinueOrUpcomingCard else { return }
-        isTrailerPreviewActive = true
-    }
-
-    private func cancelTrailerPreview() {
-        isTrailerPreviewActive = false
-        isTrailerPreviewReady = false
-    }
-
-    private func finishTrailerPreview() {
-        isTrailerPreviewActive = false
-        isTrailerPreviewReady = false
-        didFinishTrailerPreview = true
-    }
     #else
     private var cardWidth: CGFloat {
         150

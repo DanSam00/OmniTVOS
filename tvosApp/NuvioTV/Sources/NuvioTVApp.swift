@@ -2449,7 +2449,7 @@ private struct HomeHeroTrailer: View {
     let meta: NuvioMeta?
 
     @AppStorage(SettingsKey.trailersEnabled) private var trailersEnabled = true
-    /// The same Trailer Delay the focused card's preview uses.
+    /// The Trailer Delay setting, in Layout and Playback.
     @AppStorage(SettingsKey.trailerDelay) private var trailerDelay = 7
     /// Titles rather than bare flags: they are what stop a stale timer from
     /// starting a trailer for a title the backdrop has already moved past.

@@ -3265,7 +3265,7 @@ private struct LayoutDiscoverySettingsView: View {
                     title: L10n.string("tvos_settings_trailer_delay", fallback: "Trailer Delay"),
                     subtitle: L10n.string(
                         "omni_settings_trailer_delay_subtitle",
-                        fallback: "Seconds before trailers start, on posters and behind Home"
+                        fallback: "Seconds before the trailer starts behind Home"
                     ),
                     value: $trailerDelay,
                     range: 0...10,
@@ -6677,7 +6677,7 @@ private struct PlaybackSettingsView: View {
 
                 SettingsToggleRow(
                     title: L10n.string("tvos_settings_trailer_preview_sound", fallback: "Trailer Preview Sound"),
-                    subtitle: L10n.string("tvos_settings_play_sound_for_focused_card_trailers", fallback: "Play sound for focused-card trailers"),
+                    subtitle: L10n.string("omni_settings_trailer_sound_subtitle", fallback: "Play sound for trailers in the recommendations after an episode. Home's background trailer is always silent."),
                     isOn: $trailerPreviewSound,
                     accentColor: accentColor
                 )
@@ -6686,7 +6686,7 @@ private struct PlaybackSettingsView: View {
 
                 SettingsStepperRow(
                     title: L10n.string("tvos_settings_trailer_delay", fallback: "Trailer Delay"),
-                    subtitle: L10n.string("omni_settings_trailer_delay_subtitle", fallback: "Seconds before trailers start, on posters and behind Home"),
+                    subtitle: L10n.string("omni_settings_trailer_delay_subtitle", fallback: "Seconds before the trailer starts behind Home"),
                     value: $trailerDelay,
                     range: 0...10,
                     step: 1,
