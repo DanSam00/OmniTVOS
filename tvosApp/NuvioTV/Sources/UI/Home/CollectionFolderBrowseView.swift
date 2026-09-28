@@ -81,7 +81,7 @@ struct CollectionFolderBrowseView: View {
     /// macOS has no focus engine, so the screen carries its own caret. Without
     /// one nothing here was reachable from the keyboard at all.
     @StateObject private var macFocus = MacScreenFocus("collections")
-    @ObservedObject private var macKeyRouter = MacKeyRouter.shared
+    private let macKeyRouter = MacKeyRouter.shared
     /// Captured from whichever scroll view this folder is showing, so a move
     /// can bring an off-screen row in rather than leaving the caret on a strip
     /// the viewer cannot see.
@@ -192,7 +192,7 @@ struct CollectionFolderBrowseView: View {
         .onChange(of: macBandSignature, initial: true) { _, _ in
             macFocus.update(macBands)
         }
-        .onChange(of: macKeyRouter.latest) { _, press in
+        .onReceive(macKeyRouter.presses.map(Optional.some)) { press in
             guard let press else { return }
             // `onExitCommand` needs SwiftUI focus, which a screen driving its
             // own caret never has, so Escape arrives here instead.

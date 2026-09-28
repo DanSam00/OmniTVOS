@@ -859,7 +859,7 @@ struct PlayerSettingsPanel: View {
     /// The caret. macOS has no focus engine to drive `focus`, so the panel
     /// keeps its own and every control reads it through `isFocused(_:)`.
     @State private var macFocus: Focus?
-    @ObservedObject private var keyRouter = MacKeyRouter.shared
+    private let keyRouter = MacKeyRouter.shared
     @State private var macKeyToken: UUID?
     #endif
 
@@ -1107,7 +1107,7 @@ struct PlayerSettingsPanel: View {
             #endif
         }
         #if os(macOS)
-        .onChange(of: keyRouter.latest) { _, press in
+        .onReceive(keyRouter.presses.map(Optional.some)) { press in
             guard let press, MacKeyRouter.shared.isFront(macKeyToken) else { return }
             // Escape closes the panel, and it has to be done here: claiming the
             // router is what routes these presses, and the router consumes

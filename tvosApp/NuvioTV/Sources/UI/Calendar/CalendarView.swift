@@ -29,7 +29,7 @@ struct CalendarView: View {
     /// macOS has no focus engine: each day is a band of entries. See
     /// `MacScreenFocus`.
     @StateObject private var macFocus = MacScreenFocus("calendar")
-    @ObservedObject private var keyRouter = MacKeyRouter.shared
+    private let keyRouter = MacKeyRouter.shared
     @ObservedObject private var macTabState = MacTabState.shared
     /// Day the caret goes back to when the slide-out panel closes, so backing
     /// out of a day does not reseed the grid to the filters.
@@ -173,7 +173,7 @@ struct CalendarView: View {
             macFocus.focus(band: week.id, item: day)
             macReturnDayKey = nil
         }
-        .onChange(of: keyRouter.latest) { _, press in
+        .onReceive(keyRouter.presses.map(Optional.some)) { press in
             guard let press else { return }
             // The panel slid in from the right, so Left is how it goes back.
             // Its band is one column wide, so the caret has nowhere to move

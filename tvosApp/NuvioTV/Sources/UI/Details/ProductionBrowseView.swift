@@ -103,7 +103,7 @@ private struct CompanyBrowseContent: View {
     /// macOS has no focus engine, so this page carries its own caret — without
     /// one nothing on it was reachable from the keyboard.
     @StateObject private var macFocus = MacScreenFocus("companyBrowse")
-    @ObservedObject private var macKeyRouter = MacKeyRouter.shared
+    private let macKeyRouter = MacKeyRouter.shared
     @State private var macScrollProxy: ScrollViewProxy?
     #endif
     @AppStorage(SettingsKey.amoled) private var amoled = false
@@ -219,7 +219,7 @@ private struct CompanyBrowseContent: View {
         .onChange(of: macBandSignature, initial: true) { _, _ in
             macFocus.update(macBands)
         }
-        .onChange(of: macKeyRouter.latest) { _, press in
+        .onReceive(macKeyRouter.presses.map(Optional.some)) { press in
             guard let press else { return }
             // `onExitCommand` needs SwiftUI focus, which a screen driving its
             // own caret never has, so Escape arrives here instead.
@@ -503,7 +503,7 @@ struct PersonBrowseView: View {
     #if os(macOS)
     /// macOS has no focus engine, so the grid keeps its own caret.
     @StateObject private var macFocus = MacScreenFocus("personBrowse")
-    @ObservedObject private var macKeyRouter = MacKeyRouter.shared
+    private let macKeyRouter = MacKeyRouter.shared
     @State private var macScrollProxy: ScrollViewProxy?
     #endif
     @AppStorage(SettingsKey.amoled) private var amoled = false
@@ -616,7 +616,7 @@ struct PersonBrowseView: View {
         .onChange(of: titles.map(\.id), initial: true) { _, _ in
             macFocus.update(macBands)
         }
-        .onChange(of: macKeyRouter.latest) { _, press in
+        .onReceive(macKeyRouter.presses.map(Optional.some)) { press in
             guard let press else { return }
             guard press.key != .back else { onBack(); return }
             let previous = macFocus.itemID

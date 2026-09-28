@@ -1088,7 +1088,7 @@ struct SettingsView: View {
 
     /// Row to return to when the caret comes back from the sidebar.
     @State private var macLastDetailRow: String?
-    @ObservedObject private var keyRouter = MacKeyRouter.shared
+    private let keyRouter = MacKeyRouter.shared
     @ObservedObject private var macTabState = MacTabState.shared
     #endif
     @FocusState private var focusedCategory: SettingsCategory?
@@ -1378,7 +1378,7 @@ struct SettingsView: View {
             macFocus.syncClaim(isCurrent: tab == .settings)
             if tab != .settings { MacSettingsRowFocus.shared.focusedRowID = nil }
         }
-        .onChange(of: keyRouter.latest) { _, press in
+        .onReceive(keyRouter.presses.map(Optional.some)) { press in
             guard let press else { return }
             // A sheet or picker owns the keyboard while it is up.
             guard presentedLanguagePicker == nil, presentedProfilePinMode == nil else { return }

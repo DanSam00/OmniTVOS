@@ -141,7 +141,7 @@ struct MacHomeMenu: View {
     var isShowingTabPage: Bool = true
     @ObservedObject private var state = MacMenuState.shared
     @Namespace private var glassNamespace
-    @ObservedObject private var keyRouter = MacKeyRouter.shared
+    private let keyRouter = MacKeyRouter.shared
     /// Held only while the menu is open: it floats above every screen, so
     /// while it has focus it is the front key handler regardless of which
     /// screen is underneath.
@@ -170,7 +170,7 @@ struct MacHomeMenu: View {
                     keyToken = nil
                 }
             }
-            .onChange(of: keyRouter.latest) { _, press in
+            .onReceive(keyRouter.presses.map(Optional.some)) { press in
                 guard let press, keyRouter.isFront(keyToken) else { return }
                 // Escape closes the menu without switching tab. It is not a
                 // direction, so it would otherwise reach the Return branch and

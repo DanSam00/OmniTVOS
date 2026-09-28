@@ -56,7 +56,7 @@ public struct LibraryView: View {
     /// macOS has no focus engine: each group is a band of items. See
     /// `MacScreenFocus`.
     @StateObject private var macFocus = MacScreenFocus("library")
-    @ObservedObject private var keyRouter = MacKeyRouter.shared
+    private let keyRouter = MacKeyRouter.shared
     @ObservedObject private var macTabState = MacTabState.shared
     #endif
     /// Raised to open a filter menu from the keyboard; each is consumed by the
@@ -291,7 +291,7 @@ public struct LibraryView: View {
         .onChange(of: sourceMode) { _, _ in macFocus.update(macBands) }
         .onChange(of: viewModel.groupOption) { _, _ in macFocus.update(macBands) }
         .onChange(of: viewModel.sortOption) { _, _ in macFocus.update(macBands) }
-        .onChange(of: keyRouter.latest) { _, press in
+        .onReceive(keyRouter.presses.map(Optional.some)) { press in
             guard let press else { return }
             macFocus.handle(press.key, activate: macActivate)
         }

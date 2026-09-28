@@ -46,7 +46,7 @@ struct SearchView: View {
     /// macOS has no focus engine; the results grid keeps its own highlight.
     /// See `MacGridFocus`.
     @StateObject private var macFocus = MacScreenFocus("search")
-    @ObservedObject private var keyRouter = MacKeyRouter.shared
+    private let keyRouter = MacKeyRouter.shared
     @ObservedObject private var macTabState = MacTabState.shared
     #endif
     @FocusState private var focusedResultID: String?
@@ -243,7 +243,7 @@ struct SearchView: View {
         .onChange(of: visibleResults.map(\.id)) { _, _ in macFocus.update(macBands) }
         .onChange(of: viewModel.hasQuery) { _, _ in macFocus.update(macBands) }
         .onChange(of: viewModel.recentSearches) { _, _ in macFocus.update(macBands) }
-        .onChange(of: keyRouter.latest) { _, press in
+        .onReceive(keyRouter.presses.map(Optional.some)) { press in
             guard let press else { return }
             macFocus.handle(press.key, activate: macActivate)
         }

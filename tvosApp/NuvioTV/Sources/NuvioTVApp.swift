@@ -3636,7 +3636,7 @@ struct TVHomeView: View {
     /// Captured from the rows' ScrollViewReader so the move handler can scroll
     /// an off-screen row in before focusing it.
     @State private var macScrollProxy: ScrollViewProxy?
-    @ObservedObject private var keyRouter = MacKeyRouter.shared
+    private let keyRouter = MacKeyRouter.shared
     /// This screen's place in the router's stack.
     @State private var macKeyToken: UUID?
     #endif
@@ -4395,7 +4395,7 @@ struct TVHomeView: View {
                     // The keys arrive from `MacKeyRouter` rather than
                     // `onMoveCommand`, which only fires while something holds
                     // SwiftUI focus — and nothing reliably does.
-                    .onChange(of: keyRouter.latest) { _, press in
+                    .onReceive(keyRouter.presses.map(Optional.some)) { press in
                         guard let press, keyRouter.isFront(macKeyToken) else { return }
                         // Escape is not a direction, and must not fall through
                         // to the activate branch — that opened whatever the

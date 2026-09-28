@@ -2477,7 +2477,7 @@ struct TvDetailsContent: View {
     /// Memo for `macDisplayedStreams`. See the note there on why it is a
     /// reference type rather than `@State`.
     @State private var macStreamsCache = MacStreamListCache()
-    @ObservedObject private var keyRouter = MacKeyRouter.shared
+    private let keyRouter = MacKeyRouter.shared
     /// This page's place in the router's stack.
     @State private var macKeyToken: UUID?
     #endif
@@ -2842,7 +2842,7 @@ struct TvDetailsContent: View {
                     macCatchUpEpisodes = []
                 }
             }
-            .onChange(of: keyRouter.latest) { _, press in
+            .onReceive(keyRouter.presses.map(Optional.some)) { press in
                 guard let press, keyRouter.isFront(macKeyToken) else { return }
                 handleMacKey(press.key)
             }

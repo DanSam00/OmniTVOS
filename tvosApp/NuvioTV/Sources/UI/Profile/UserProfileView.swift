@@ -15,7 +15,7 @@ public struct UserProfileView: View {
     /// macOS has no focus engine, so the cards were unreachable: the profile
     /// screen could only be used with the mouse. One band, left to right.
     @StateObject private var macFocus = MacScreenFocus("profiles")
-    @ObservedObject private var keyRouter = MacKeyRouter.shared
+    private let keyRouter = MacKeyRouter.shared
     #endif
 
     private static let addProfileFocusId = "add_profile"
@@ -206,7 +206,7 @@ public struct UserProfileView: View {
         .onChange(of: viewModel.profiles.map(\.id)) { _, _ in macFocus.update(macBands) }
         .onChange(of: accountSyncError) { _, _ in macFocus.update(macBands) }
         .onChange(of: macOwnsKeyboard) { _, owns in macFocus.syncClaim(isCurrent: owns) }
-        .onChange(of: keyRouter.latest) { _, press in
+        .onReceive(keyRouter.presses.map(Optional.some)) { press in
             guard let press else { return }
             macFocus.handle(press.key, activate: macActivate)
         }

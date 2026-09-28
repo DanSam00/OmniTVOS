@@ -1,5 +1,6 @@
 #if os(macOS)
 import SwiftUI
+import Combine
 
 /// Tab switching from the menu bar.
 ///
@@ -89,6 +90,12 @@ final class MacKeyRouter: ObservableObject {
     }
 
     @Published private(set) var latest: Press?
+    /// Each press as an event. Screens listen here rather than observing the
+    /// router: every tab stays mounted, and observing made every screen —
+    /// hidden Library and Calendar included — rebuild its body on every key
+    /// press anywhere, only to find the key was not theirs. A Grid View
+    /// sample put most of the main thread in that graph churn.
+    let presses = PassthroughSubject<Press, Never>()
 
     /// Claims in order, each with the moment it was made.
     private var stack: [(token: UUID, order: Int)] = []
@@ -182,7 +189,9 @@ final class MacKeyRouter: ObservableObject {
         }
         guard !stack.isEmpty, isRoutable else { return event }
         sequence &+= 1
-        latest = Press(key: key, sequence: sequence)
+        let press = Press(key: key, sequence: sequence)
+        latest = press
+        presses.send(press)
         return nil
     }
 
@@ -868,7 +877,7 @@ final class MacOptionPanel: ObservableObject {
 /// with the rest of the app rather than against the window.
 struct MacOptionPanelHost: View {
     @ObservedObject private var panel = MacOptionPanel.shared
-    @ObservedObject private var keyRouter = MacKeyRouter.shared
+    private let keyRouter = MacKeyRouter.shared
 
     var body: some View {
         ZStack {
@@ -897,7 +906,7 @@ struct MacOptionPanelHost: View {
             }
         }
         .animation(.easeOut(duration: 0.14), value: panel.isPresented)
-        .onChange(of: keyRouter.latest) { _, press in
+        .onReceive(keyRouter.presses.map(Optional.some)) { press in
             guard let press else { return }
             panel.handle(press.key)
         }
