@@ -4270,7 +4270,12 @@ struct TVHomeView: View {
                                             }
                                         }  // end catalog vs collection branch
                                         }
-                                        .padding(.top, index == 0 ? 0 : TVHomeLayout.sectionSpacing)
+                                        // Every row, the first included. The gap belongs to
+                                        // the row that the caret pins, so a first row without
+                                        // it sat 28 pt higher than every other focused row —
+                                        // its title and cards off the line the rest share, and
+                                        // the Liquid Glass edge cutting into its tiles.
+                                        .padding(.top, TVHomeLayout.sectionSpacing)
                                         .id(section.id)
                                         }
                                     }
