@@ -1020,13 +1020,20 @@ struct TVCollectionFolderRow: View {
         TVCollectionFolderCardLayout.cardHeight(layoutMode: homeLayout)
     }
 
+    /// Matches a catalog row exactly — header, spacing and strip — whether or
+    /// not these folders show their titles. Reserving the label space only
+    /// when some folder had a title made Sports and Discover, whose tiles hide
+    /// theirs, 48 pt shorter than every row around them; with the caret
+    /// pinning each row to the same place, the glass edge and the next row
+    /// then landed somewhere else for those rows alone.
     private var stripHeight: CGFloat {
-        imageHeight + (showsAnyLabels ? 48 : 0) + TVHomeLayout.stripVerticalPadding * 2
+        imageHeight + (posterLabels ? 48 : 0) + TVHomeLayout.stripVerticalPadding * 2
     }
 
-    private var showsAnyLabels: Bool {
-        posterLabels && folders.contains { !$0.hideTitle }
-    }
+    private static let headerHeight: CGFloat = 44
+
+    private var rowHeight: CGFloat { Self.headerHeight + 10 + stripHeight }
+
 
     #if os(macOS)
     /// Folder-row counterpart of the meta row's follower: moves this row's
@@ -1125,12 +1132,14 @@ struct TVCollectionFolderRow: View {
                 .padding(.leading, TVLayout.rowLeading)
                 .offset(y: 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: Self.headerHeight, alignment: .leading)
                 .zIndex(2)
 
             cardStrip
                 .zIndex(0)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: rowHeight, alignment: .topLeading)
         #if !os(macOS)
         // On macOS a focus section swallows the arrow keys trying to move focus
         // within it, and Home never sees the command. Focus is driven here, so

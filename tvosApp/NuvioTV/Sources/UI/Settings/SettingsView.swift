@@ -3066,6 +3066,7 @@ private struct LayoutDiscoverySettingsView: View {
     @AppStorage(SettingsKey.homeFrostedGlass) private var homeFrostedGlass = true
     @AppStorage(SettingsKey.homeFrostedGlassLiquid) private var homeFrostedGlassLiquid = false
     @AppStorage(SettingsKey.trailersEnabled) private var trailersEnabled = true
+    @AppStorage(SettingsKey.trailerPreviewSound) private var trailerPreviewSound = false
     @AppStorage(SettingsKey.trailerDelay) private var trailerDelay = 7
 
     /// Classic was never a distinct layout (behaved like Modern).
@@ -3258,15 +3259,34 @@ private struct LayoutDiscoverySettingsView: View {
                 )
                 .opacity(focusedPosterBackdropEnabled ? 1 : 0.46)
                 .disabled(!focusedPosterBackdropEnabled)
+            }
 
-                // The same setting as Playback > Trailers. Kept here too,
-                // beside the expand delay it is timed against.
+            SettingsGroup(
+                title: L10n.string("tmdb_trailers_title", fallback: "Trailers"),
+                subtitle: L10n.string(
+                    "omni_settings_trailers_subtitle",
+                    fallback: "The trailer behind Home, and those in the recommendations after an episode"
+                )
+            ) {
+                SettingsToggleRow(
+                    title: L10n.string("tvos_settings_autoplay_trailers", fallback: "Autoplay Trailers"),
+                    subtitle: L10n.string("tvos_settings_start_previews_after_focus_settles", fallback: "Start previews after focus settles"),
+                    isOn: $trailersEnabled,
+                    accentColor: accentColor
+                )
+
+                SettingsToggleRow(
+                    title: L10n.string("tvos_settings_trailer_preview_sound", fallback: "Trailer Preview Sound"),
+                    subtitle: L10n.string("omni_settings_trailer_sound_subtitle_v2", fallback: "Play sound for the trailer behind Home and in the recommendations after an episode."),
+                    isOn: $trailerPreviewSound,
+                    accentColor: accentColor
+                )
+                .opacity(trailersEnabled ? 1 : 0.46)
+                .disabled(!trailersEnabled)
+
                 SettingsStepperRow(
                     title: L10n.string("tvos_settings_trailer_delay", fallback: "Trailer Delay"),
-                    subtitle: L10n.string(
-                        "omni_settings_trailer_delay_subtitle",
-                        fallback: "Seconds before the trailer starts behind Home"
-                    ),
+                    subtitle: L10n.string("omni_settings_trailer_delay_subtitle", fallback: "Seconds before the trailer starts behind Home"),
                     value: $trailerDelay,
                     range: 0...10,
                     step: 1,
@@ -6341,9 +6361,6 @@ private struct PlaybackSettingsView: View {
     @AppStorage(SettingsKey.streamBadgePlacement) private var streamBadgePlacement = StreamBadgePlacement.bottom.rawValue
     @AppStorage(SettingsKey.autoPlayNext) private var autoPlayNext = true
     @AppStorage(SettingsKey.postPlayRecommendationsEnabled) private var postPlayRecommendationsEnabled = true
-    @AppStorage(SettingsKey.trailersEnabled) private var trailersEnabled = true
-    @AppStorage(SettingsKey.trailerPreviewSound) private var trailerPreviewSound = false
-    @AppStorage(SettingsKey.trailerDelay) private var trailerDelay = 7
     @AppStorage(SettingsKey.audioLanguage) private var audioLanguage = "System"
     @AppStorage(SettingsKey.subtitleLanguages) private var subtitleLanguages = ""
     @AppStorage(SettingsKey.subtitleLanguage) private var subtitleLanguage = "System"
@@ -6665,36 +6682,6 @@ private struct PlaybackSettingsView: View {
                     options: assModes,
                     accentColor: accentColor
                 )
-            }
-
-            SettingsGroup(title: L10n.string("tmdb_trailers_title", fallback: "Trailers"), subtitle: L10n.string("tvos_settings_preview_playback_on_details_and_focused_posters", fallback: "Preview playback on details and focused posters")) {
-                SettingsToggleRow(
-                    title: L10n.string("tvos_settings_autoplay_trailers", fallback: "Autoplay Trailers"),
-                    subtitle: L10n.string("tvos_settings_start_previews_after_focus_settles", fallback: "Start previews after focus settles"),
-                    isOn: $trailersEnabled,
-                    accentColor: accentColor
-                )
-
-                SettingsToggleRow(
-                    title: L10n.string("tvos_settings_trailer_preview_sound", fallback: "Trailer Preview Sound"),
-                    subtitle: L10n.string("omni_settings_trailer_sound_subtitle_v2", fallback: "Play sound for the trailer behind Home and in the recommendations after an episode."),
-                    isOn: $trailerPreviewSound,
-                    accentColor: accentColor
-                )
-                .opacity(trailersEnabled ? 1 : 0.46)
-                .disabled(!trailersEnabled)
-
-                SettingsStepperRow(
-                    title: L10n.string("tvos_settings_trailer_delay", fallback: "Trailer Delay"),
-                    subtitle: L10n.string("omni_settings_trailer_delay_subtitle", fallback: "Seconds before the trailer starts behind Home"),
-                    value: $trailerDelay,
-                    range: 0...10,
-                    step: 1,
-                    suffix: "s",
-                    accentColor: accentColor
-                )
-                .opacity(trailersEnabled ? 1 : 0.46)
-                .disabled(!trailersEnabled)
             }
 
         }

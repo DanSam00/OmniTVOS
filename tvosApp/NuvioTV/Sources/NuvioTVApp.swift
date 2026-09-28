@@ -3904,13 +3904,19 @@ struct TVHomeView: View {
                                     navigateToDetailsFromHome(id: meta.id, type: meta.type)
                                 }
                             )
+                            // Zero while the carousel itself has focus.
+                            .offset(y: liquidGlassRowsDrop)
                         } else if let folder = focusedCollectionFolder {
                             TVCollectionFolderHeroView(folder: folder)
+                                .offset(y: liquidGlassRowsDrop)
                         } else if let heroMeta = visibleFocusedMeta ?? visibleHero {
                             TVHeroView(meta: heroMeta, continueItem: heroContinueItem(for: heroMeta)) {
                                 navigateToDetailsFromHome(id: heroMeta.id, type: heroMeta.type)
                             }
                             .equatable()
+                            // Follows the rows down, so the title and details
+                            // keep their place just above the focused row.
+                            .offset(y: liquidGlassRowsDrop)
                         }
                     }
                     
@@ -5329,11 +5335,11 @@ struct TVHomeView: View {
 
     /// Collection folder row estimate. Curated templates may hide every folder
     /// label even when poster labels are enabled globally.
+    /// A collection row is exactly as tall as a catalog row now — it keeps the
+    /// label space even when its folders hide their titles — so the estimate
+    /// is the same.
     private func estimatedCollectionRowHeight(for section: TVHomeSection) -> CGFloat {
-        let imageHeight: CGFloat = homeLayout == "Compact" ? 255 : 315
-        let showsLabels = posterLabels && section.collectionFolders.contains { !$0.hideTitle }
-        let stripHeight = imageHeight + (showsLabels ? 48 : 0) + TVHomeLayout.stripVerticalPadding * 2
-        return stripHeight + TVHomeLayout.rowTitleBlock
+        estimatedCatalogRowHeight
     }
 
     private func estimatedHeight(for section: TVHomeSection) -> CGFloat {
