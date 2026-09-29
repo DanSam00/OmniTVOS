@@ -2990,6 +2990,19 @@ private struct TVMainTabView: View {
     /// Search screen chosen in Settings → Layout & Discovery → Search Style.
     @ViewBuilder
     private var searchTab: some View {
+        #if os(macOS)
+        // Classic on the Mac whatever the style setting says. Netflix-style
+        // is built around an on-screen A-Z grid driven by a remote and never
+        // got keyboard support here — it claims no keys, so Search went dead
+        // when the setting (synced across devices through iCloud) arrived as
+        // "Netflix" from the Apple TV. A real keyboard types into the field.
+        SearchView(
+            viewModel: searchViewModel,
+            showDiscover: discoverLocation == "Search",
+            onContentClick: onNavigateToDetails,
+            onLongPress: onLongPressCard
+        )
+        #else
         if searchStyle == "System" {
             // tvOS's own search UI: system keyboard and dictation, no inline
             // A-Z row of our own.
@@ -3013,6 +3026,7 @@ private struct TVMainTabView: View {
                 onLongPress: onLongPressCard
             )
         }
+        #endif
     }
 
     /// The Home tab's content, shared by the tvOS `TabView` and the
