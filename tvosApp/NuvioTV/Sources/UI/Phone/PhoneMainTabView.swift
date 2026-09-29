@@ -98,6 +98,9 @@ struct PhoneSearchView: View {
     @ObservedObject var viewModel: SearchViewModel
     let onSelect: (NuvioMeta) -> Void
 
+    /// Held here so its filters and loaded pages survive leaving the tab.
+    @StateObject private var discover = DiscoverViewModel()
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -114,6 +117,7 @@ struct PhoneSearchView: View {
 
                 if viewModel.searchText.isEmpty {
                     recent
+                    PhoneDiscoverSection(viewModel: discover, onSelect: onSelect)
                 } else if viewModel.isLoading && viewModel.results.isEmpty {
                     ProgressView().frame(maxWidth: .infinity).padding(.top, 60)
                 } else if viewModel.results.isEmpty {
