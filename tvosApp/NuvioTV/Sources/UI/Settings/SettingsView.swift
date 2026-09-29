@@ -1923,6 +1923,7 @@ private struct AccountSettingsView: View {
                     accentColor: accentColor
                 )
 
+                #if !os(iOS) // TV-only
                 SettingsToggleRow(
                     title: L10n.string(
                         "tvos_account_icloud_sync",
@@ -1935,6 +1936,7 @@ private struct AccountSettingsView: View {
                     isOn: $iCloudSyncEnabled,
                     accentColor: accentColor
                 )
+                #endif
 
                 if isAuthenticated {
                     if sessionNeedsReauthentication {
@@ -2325,6 +2327,7 @@ private struct AppearanceSettingsView: View {
                     }
                 }
 
+                #if !os(iOS) // TV-only
                 SettingsToggleRow(
                     title: L10n.string("tvos_liquid_glass_cards", fallback: "Liquid Glass Cards"),
                     subtitle: L10n.string(
@@ -2334,8 +2337,10 @@ private struct AppearanceSettingsView: View {
                     isOn: $liquidGlassCards,
                     accentColor: accentColor
                 )
+                #endif
             }
 
+            #if !os(iOS) // TV-only
             SettingsGroup(
                 title: L10n.string("tvos_appearance_focus_outline", fallback: "Focus Outline"),
                 subtitle: L10n.string(
@@ -2352,6 +2357,7 @@ private struct AppearanceSettingsView: View {
                 )
                 .settingsEntryAnchor()
             }
+            #endif
 
             SettingsGroup(
                 title: L10n.string("tvos_appearance_app_background", fallback: "App Background"),
@@ -3156,6 +3162,7 @@ private struct LayoutDiscoverySettingsView: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
 
+                #if !os(iOS) // TV-only
                 SettingsToggleRow(
                     title: L10n.string("tvos_layout_blur_unwatched", fallback: "Blur Unwatched Artwork"),
                     subtitle: L10n.string(
@@ -3165,6 +3172,7 @@ private struct LayoutDiscoverySettingsView: View {
                     isOn: $blurUnwatchedArtwork,
                     accentColor: accentColor
                 )
+                #endif
 
                 SettingsToggleRow(
                     title: L10n.string(
@@ -3213,6 +3221,7 @@ private struct LayoutDiscoverySettingsView: View {
                     accentColor: accentColor
                 )
 
+                #if !os(iOS) // TV-only
                 SettingsToggleRow(
                     title: L10n.string("tvos_settings_home_frosted_glass", fallback: "Frosted Glass Behind Rows"),
                     subtitle: L10n.string(
@@ -3222,7 +3231,9 @@ private struct LayoutDiscoverySettingsView: View {
                     isOn: $homeFrostedGlass,
                     accentColor: accentColor
                 )
+                #endif
 
+                #if !os(iOS) // TV-only
                 SettingsToggleRow(
                     title: L10n.string("omni_settings_home_frosted_glass_liquid", fallback: "Liquid Glass Style"),
                     subtitle: L10n.string(
@@ -3234,8 +3245,10 @@ private struct LayoutDiscoverySettingsView: View {
                 )
                 .opacity(homeFrostedGlass ? 1 : 0.46)
                 .disabled(!homeFrostedGlass)
+                #endif
             }
 
+            #if !os(iOS) // TV-only
             SettingsGroup(
                 title: L10n.string("tvos_settings_focused_poster", fallback: "Focused Poster"),
                 subtitle: L10n.string(
@@ -3274,6 +3287,7 @@ private struct LayoutDiscoverySettingsView: View {
                 .opacity(focusedPosterBackdropEnabled ? 1 : 0.46)
                 .disabled(!focusedPosterBackdropEnabled)
             }
+            #endif
 
             SettingsGroup(
                 title: L10n.string("tmdb_trailers_title", fallback: "Trailers"),
@@ -3298,6 +3312,7 @@ private struct LayoutDiscoverySettingsView: View {
                 .opacity(trailersEnabled ? 1 : 0.46)
                 .disabled(!trailersEnabled)
 
+                #if !os(iOS) // TV-only
                 SettingsStepperRow(
                     title: L10n.string("tvos_settings_trailer_delay", fallback: "Trailer Delay"),
                     subtitle: L10n.string("omni_settings_trailer_delay_subtitle", fallback: "Seconds before the trailer starts behind Home"),
@@ -3309,6 +3324,7 @@ private struct LayoutDiscoverySettingsView: View {
                 )
                 .opacity(trailersEnabled ? 1 : 0.46)
                 .disabled(!trailersEnabled)
+                #endif
             }
 
             HomeCatalogOrderSection(accentColor: accentColor)
@@ -3324,6 +3340,7 @@ private struct LayoutDiscoverySettingsView: View {
                     fallback: "Visibility rules for discovery and continue watching"
                 )
             ) {
+                #if !os(iOS) // TV-only
                 SettingsOptionRow(
                     title: L10n.string("tvos_layout_search_style", fallback: "Search Style"),
                     subtitle: L10n.string(
@@ -3339,7 +3356,9 @@ private struct LayoutDiscoverySettingsView: View {
                         searchStyle = "Netflix"
                     }
                 }
+                #endif
 
+                #if !os(iOS) // TV-only
                 SettingsOptionRow(
                     title: L10n.string("tvos_layout_discover_entry", fallback: "Discover Entry"),
                     subtitle: L10n.string(
@@ -3355,6 +3374,7 @@ private struct LayoutDiscoverySettingsView: View {
                         discoverLocation = "Search"
                     }
                 }
+                #endif
 
                 SettingsOptionRow(
                     title: L10n.string("layout_cw_sort_mode", fallback: "Sort Order"),
@@ -6483,6 +6503,7 @@ private struct PlaybackSettingsView: View {
                     accentColor: accentColor
                 )
 
+                #if !os(iOS) // TV-only
                 SettingsOptionRow(
                     title: L10n.string("tvos_settings_frame_rate_matching", fallback: "Frame Rate Matching"),
                     subtitle: L10n.string("tvos_settings_match_display_refresh_to_video_apple_tv__eb667d81", fallback: "Match display refresh to video; Apple TV Match Content must also be enabled"),
@@ -6490,6 +6511,7 @@ private struct PlaybackSettingsView: View {
                     options: frameRateModes,
                     accentColor: accentColor
                 )
+                #endif
 
                 SettingsOptionRow(
                     title: L10n.string("tvos_settings_buffer_profile", fallback: "Buffer Profile"),
@@ -6541,6 +6563,7 @@ private struct PlaybackSettingsView: View {
                 )
             }
 
+            #if !os(iOS) // TV-only
             SettingsGroup(
                 title: L10n.string("tvos_playback_player_buttons", fallback: "Player Buttons"),
                 subtitle: L10n.string(
@@ -6579,6 +6602,7 @@ private struct PlaybackSettingsView: View {
                 )
 
             }
+            #endif
 
             SettingsGroup(title: L10n.string("tvos_settings_smart_playback", fallback: "Smart Playback"), subtitle: L10n.string("tvos_settings_automatically_choose_streams_and_matchin_9ca69e9f", fallback: "Automatically choose streams and matching subtitles")) {
                 SettingsToggleRow(
@@ -6639,7 +6663,9 @@ private struct PlaybackSettingsView: View {
                 )
             }
 
+            #if !os(iOS) // TV-only
             streamBadgesSettings
+            #endif
 
             SettingsGroup(
                 title: L10n.string("tvos_playback_audio_subtitles", fallback: "Audio & Subtitles"),
@@ -7535,6 +7561,7 @@ private struct AdvancedSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
+            #if !os(iOS) // TV-only
             SettingsGroup(
                 title: L10n.string("advanced_section_performance", fallback: "Navigation"),
                 subtitle: L10n.string(
@@ -7557,6 +7584,7 @@ private struct AdvancedSettingsView: View {
                     accentColor: accentColor
                 )
             }
+            #endif
 
             SettingsGroup(
                 title: L10n.string("advanced_section_diagnostics", fallback: "Diagnostics"),
@@ -7579,12 +7607,14 @@ private struct AdvancedSettingsView: View {
                     accentColor: accentColor
                 )
 
+                #if !os(iOS) // TV-only
                 SettingsToggleRow(
                     title: L10n.string("tvos_settings_focus_highlighter", fallback: "Focus Highlighter"),
                     subtitle: L10n.string("tvos_settings_draw_extra_focus_outlines_for_layout_debugging", fallback: "Draw extra focus outlines for layout debugging"),
                     isOn: $focusHighlighter,
                     accentColor: accentColor
                 )
+                #endif
 
                 // The pull either ran or it did not. Without this, a session the
                 // server rejects looks identical to an account with no history:
