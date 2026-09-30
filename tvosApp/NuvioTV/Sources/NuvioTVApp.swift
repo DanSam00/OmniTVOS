@@ -3516,6 +3516,9 @@ struct TVHomeView: View {
     @AppStorage(SettingsKey.homeFeature) private var homeFeature = true
     /// Page shown by the featured carousel.
     @State private var featureIndex = 0
+    /// A trailer is drawing behind Home. The featured carousel holds its slide
+    /// for the length of it when auto-scroll is on.
+    @State private var isHeroTrailerPlaying = false
     /// True while the featured block itself holds focus, which is what switches
     /// it between carousel mode and ordinary focus-following hero mode.
     @State private var isFeatureFocused = false
@@ -3775,7 +3778,10 @@ struct TVHomeView: View {
                         // grids. And Home stays mounted, only hidden, under
                         // Details and the player: with sound, a trailer left
                         // running there would play over them.
-                        HomeHeroTrailer(meta: heroTrailerMeta)
+                        HomeHeroTrailer(
+                            meta: heroTrailerMeta,
+                            onPlayingChange: { isHeroTrailerPlaying = $0 }
+                        )
                     }
                     .clipped()
                 } else {
@@ -3795,7 +3801,10 @@ struct TVHomeView: View {
                         // Inside the masks, so the trailer dissolves into the
                         // page on exactly the same edges the artwork does.
                         .overlay {
-                            HomeHeroTrailer(meta: heroTrailerMeta)
+                            HomeHeroTrailer(
+                                meta: heroTrailerMeta,
+                                onPlayingChange: { isHeroTrailerPlaying = $0 }
+                            )
                         }
                         .mask(
                             LinearGradient(
@@ -3950,6 +3959,7 @@ struct TVHomeView: View {
                                 overrideContinueItem: metaOverride.flatMap { heroContinueItem(for: $0) },
                                 overrideFolder: folderOverride,
                                 macIsFocused: featureFocused,
+                                isTrailerPlaying: isHeroTrailerPlaying,
                                 // Only latches on. Clearing it when the block
                                 // merely loses focus would flip to row-hero mode
                                 // the moment the sidebar opens, which reads as
@@ -8111,6 +8121,8 @@ private struct TVFeatureHeroView: View {
     /// The highlight, on macOS. There is no focus engine there, so Home owns
     /// the highlight as a plain value and `isFocused` below is never set.
     var macIsFocused: Bool = false
+    /// The Home backdrop is playing this slide's trailer; auto-scroll waits.
+    var isTrailerPlaying: Bool = false
     var backdropBleed: CGFloat = 0
     var onFocusChange: ((Bool) -> Void)? = nil
     let onSelect: (ContinueWatchingItem) -> Void
@@ -8126,6 +8138,9 @@ private struct TVFeatureHeroView: View {
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
     @AppStorage(SettingsKey.theme) private var theme = SettingsAccent.white.rawValue
+    @AppStorage(SettingsKey.heroAutoScroll) private var autoScroll = false
+    @AppStorage(SettingsKey.trailersEnabled) private var trailersEnabled = true
+    @AppStorage(SettingsKey.trailerDelay) private var trailerDelay = 7
     @FocusState private var isFocused: Bool
     /// See `leftPagingGuard`.
     @FocusState private var isLeftGuardFocused: Bool
@@ -8345,20 +8360,29 @@ private struct TVFeatureHeroView: View {
             }
             onFocusChange?(focused)
         }
-        .task(id: "\(items.map(\.meta.id).joined(separator: "|"))|\(overrideMeta?.id ?? "")") {
-            guard items.count > 1, isCarouselMode else { return }
+        .task(id: autoAdvanceIdentity) {
+            // Off unless Auto-Scroll Carousel is on, and never under a trailer:
+            // the task restarts when one ends, so the slide moves on then.
+            guard autoScroll, !isTrailerPlaying, items.count > 1, isCarouselMode else { return }
             // Advances whether or not the block holds focus, the way Prime's
             // feature row does — but hand paging pauses it, and it resumes once
             // navigation has been idle for the same interval. Ticking every
             // second rather than every five keeps that resumption prompt; a
             // five-second tick could leave it idle for nearly ten.
-            let interval: TimeInterval = 5
+            //
+            // A slide has to outlast the Trailer Delay, with room for the
+            // trailer to load, or no trailer would ever get to start.
+            let interval: TimeInterval = trailersEnabled ? max(5, Double(trailerDelay) + 4) : 5
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard !Task.isCancelled, isCarouselMode else { return }
                 guard Date().timeIntervalSince(lastInteraction) >= interval else { continue }
                 isAutoAdvancing = true
-                setIndex((index + 1) % items.count)
+                let next = (index + 1) % items.count
+                #if os(macOS)
+                MacDiagnostics.log("home.feature autoAdvance slide=\(next) of=\(items.count)")
+                #endif
+                setIndex(next)
                 isAutoAdvancing = false
                 // Counts as the new baseline, so the next slide is a full
                 // interval away rather than one second later.
@@ -8389,6 +8413,17 @@ private struct TVFeatureHeroView: View {
 
     private func setIndex(_ next: Int) {
         withAnimation(.easeInOut(duration: 0.35)) { selectedIndex = next }
+    }
+
+    /// Everything the auto-advance loop reads that is not live state, so a
+    /// change to any of it restarts the loop rather than running on stale.
+    ///
+    /// Carousel mode itself, not just the focused title: arriving from a
+    /// collection folder changes the mode without changing `overrideMeta`,
+    /// and keyed on the title alone the loop stayed ended.
+    private var autoAdvanceIdentity: String {
+        "\(items.map(\.meta.id).joined(separator: "|"))|\(isCarouselMode)"
+            + "|\(autoScroll)|\(isTrailerPlaying)|\(trailersEnabled)|\(trailerDelay)"
     }
 
     /// Paging driven by the remote, which also holds off the timer.
@@ -8567,6 +8602,7 @@ private struct TVGridHeroSlideshowView: View {
 
     /// A trailer is playing for the current slide; auto-advance waits for it.
     @State private var isTrailerPlaying = false
+    @AppStorage(SettingsKey.heroAutoScroll) private var autoScroll = false
 
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
@@ -8696,8 +8732,8 @@ private struct TVGridHeroSlideshowView: View {
         .onChange(of: isFocused) { _, focused in
             onFocusChange?(focused)
         }
-        .task(id: "\(items.map(\.id).joined(separator: "|"))|\(isFocused)") {
-            guard items.count > 1 else { return }
+        .task(id: "\(items.map(\.id).joined(separator: "|"))|\(isFocused)|\(autoScroll)") {
+            guard autoScroll, items.count > 1 else { return }
             // Android lets the initial GPU/image work settle for 20 seconds,
             // then checks for the next unfocused advance every 10 seconds.
             try? await Task.sleep(nanoseconds: 20_000_000_000)

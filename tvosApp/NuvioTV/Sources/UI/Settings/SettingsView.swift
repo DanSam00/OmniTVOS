@@ -182,6 +182,8 @@ enum SettingsKey {
     static let heroEnabled = "nuvio.tv.settings.layout.heroEnabled"
     /// Prime-style featured carousel of Continue Watching in the hero slot.
     static let homeFeature = "nuvio.tv.settings.layout.homeFeature"
+    /// Whether the hero carousels move on by themselves. Off unless asked for.
+    static let heroAutoScroll = "nuvio.tv.settings.layout.heroAutoScroll"
     /// JSON `[String]` of Home section ids selected as Grid View hero sources.
     /// Empty means all available catalog rows.
     static let heroCatalogs = "nuvio.tv.settings.layout.heroCatalogs"
@@ -336,7 +338,7 @@ enum SettingsKey {
         profileName, profilePinEnabled, profileAutoSelectLast, profileRequireSelectionAfterBackground,
         accountSyncWatchState,
         theme, bodyColor, font, language, amoled, amoledSurfaces, reduceMotion,
-        homeLayout, heroEnabled, homeFeature, heroCatalogs, fullscreenHeroBackdrop, posterLabels, catalogAddonNames, discoverLocation,
+        homeLayout, heroEnabled, homeFeature, heroAutoScroll, heroCatalogs, fullscreenHeroBackdrop, posterLabels, catalogAddonNames, discoverLocation,
         searchStyle,
         continueWatchingSort, upNextFromFurthestEpisode, showUnairedNextUp,
         cardCornerRadius, cardSize, liquidGlassCards, blurUnwatchedArtwork,
@@ -3067,6 +3069,7 @@ private struct LayoutDiscoverySettingsView: View {
     @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
     @AppStorage(SettingsKey.heroEnabled) private var heroEnabled = true
     @AppStorage(SettingsKey.homeFeature) private var homeFeature = true
+    @AppStorage(SettingsKey.heroAutoScroll) private var heroAutoScroll = false
     @AppStorage(SettingsKey.blurUnwatchedArtwork) private var blurUnwatchedArtwork = false
     @AppStorage(SettingsKey.heroCatalogs) private var heroCatalogsData = Data()
     @AppStorage(SettingsKey.fullscreenHeroBackdrop) private var fullscreenHeroBackdrop = true
@@ -3157,6 +3160,19 @@ private struct LayoutDiscoverySettingsView: View {
                 if homeLayout == "Grid View" {
                     HeroCatalogSelectionRow(
                         selectionData: $heroCatalogsData,
+                        accentColor: accentColor
+                    )
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+
+                if heroEnabled {
+                    SettingsToggleRow(
+                        title: L10n.string("omni_layout_hero_auto_scroll", fallback: "Auto-Scroll Carousel"),
+                        subtitle: L10n.string(
+                            "omni_layout_hero_auto_scroll_subtitle",
+                            fallback: "Move the hero carousel on to the next title by itself. A playing trailer finishes first."
+                        ),
+                        isOn: $heroAutoScroll,
                         accentColor: accentColor
                     )
                     .transition(.opacity.combined(with: .move(edge: .top)))

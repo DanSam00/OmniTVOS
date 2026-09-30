@@ -236,6 +236,7 @@ struct PhoneHomeView: View {
     // The same Layout settings the TV Home reads, from the profile's suite.
     @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
     @AppStorage(SettingsKey.heroEnabled) private var heroEnabled = true
+    @AppStorage(SettingsKey.heroAutoScroll) private var heroAutoScroll = false
     @AppStorage(SettingsKey.homeFeature) private var homeFeature = true
     @AppStorage(SettingsKey.heroCatalogs) private var heroCatalogsData = Data()
     @AppStorage(SettingsKey.fullscreenHeroBackdrop) private var fullscreenHeroBackdrop = true
@@ -350,9 +351,10 @@ struct PhoneHomeView: View {
         .onChange(of: heroSlides.map(\.id)) { _, ids in
             if heroIndex >= ids.count { heroIndex = 0 }
         }
-        // Auto-advance, restarted whenever the page changes by hand too.
-        .task(id: "\(heroIndex)|\(heroSlides.count)") {
-            guard heroSlides.count > 1 else { return }
+        // Auto-advance, restarted whenever the page changes by hand too. Only
+        // with Auto-Scroll Carousel on.
+        .task(id: "\(heroIndex)|\(heroSlides.count)|\(heroAutoScroll)") {
+            guard heroAutoScroll, heroSlides.count > 1 else { return }
             try? await Task.sleep(nanoseconds: 8_000_000_000)
             guard !Task.isCancelled else { return }
             withAnimation(.easeInOut(duration: 0.5)) {
