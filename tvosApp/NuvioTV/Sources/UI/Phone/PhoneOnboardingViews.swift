@@ -125,6 +125,28 @@ private extension View {
     }
 }
 
+/// "Syncing your account" for the phone: the Omni wordmark loader at phone
+/// size, in place of the TV's 44pt text and system spinner.
+struct PhoneAccountSyncWaitView: View {
+    var body: some View {
+        VStack(spacing: 28) {
+            BrandLoadingView(wordmarkWidth: 600)
+            VStack(spacing: 6) {
+                Text("Syncing your account")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                Text("Importing your profiles and watch history.")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.55))
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .padding(.horizontal, 32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black.ignoresSafeArea())
+    }
+}
+
 /// "Who's watching?" for the phone. Selection goes through the same
 /// `ProfileViewModel.requestSwitch`, which handles PIN-protected profiles.
 struct PhoneProfilePickerView: View {
@@ -154,13 +176,9 @@ struct PhoneProfilePickerView: View {
                     ForEach(viewModel.profiles) { profile in
                         Button { viewModel.requestSwitch(to: profile) } label: {
                             VStack(spacing: 10) {
-                                Circle()
-                                    .fill(avatarColor(for: profile))
+                                // The account's own avatar art, as on the TV.
+                                ProfileAvatarView(avatarId: profile.avatarId, size: 96)
                                     .frame(width: 96, height: 96)
-                                    .overlay {
-                                        Text(String(profile.name.prefix(1)).uppercased())
-                                            .font(.largeTitle.weight(.bold))
-                                    }
                                     .overlay(alignment: .bottomTrailing) {
                                         if profile.isPinProtected {
                                             Image(systemName: "lock.fill")
@@ -195,13 +213,6 @@ struct PhoneProfilePickerView: View {
         } message: {
             Text(viewModel.pinError ?? "This profile is locked.")
         }
-    }
-
-    private func avatarColor(for profile: Profile) -> Color {
-        let palette: [Color] = [.blue, .purple, .pink, .orange, .teal, .indigo, .green]
-        // `hashValue` is reseeded every launch; this stays put.
-        let index = profile.id.unicodeScalars.reduce(0) { $0 + Int($1.value) } % palette.count
-        return palette[index].opacity(0.8)
     }
 }
 #endif

@@ -413,7 +413,9 @@ struct PhoneHomeView: View {
             ZStack {
                 blurredBackdrop(url: url)
                 if isLandscape {
-                    PhoneArtwork(url: url, kind: .backdrop)
+                    Color.clear
+                        .overlay { PhoneArtwork(url: url, kind: .backdrop) }
+                        .clipped()
                         .opacity(heroFade)
                         .animation(.easeInOut(duration: 0.6), value: url)
                 } else {
@@ -487,7 +489,11 @@ struct PhoneHomeView: View {
         ZStack {
             Color.black
             if fullscreenHeroBackdrop {
-                PhoneArtwork(url: url, kind: .backdrop)
+                // Sized by the screen, not the image: a fill image left to its
+                // own size widened the whole background past the screen edge.
+                Color.clear
+                    .overlay { PhoneArtwork(url: url, kind: .backdrop) }
+                    .clipped()
                     .blur(radius: 40)
                     .opacity(0.55)
             }

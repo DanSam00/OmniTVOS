@@ -276,7 +276,13 @@ struct ContentView: View {
 
             case .profileSelection:
                 if awaitingPostLoginSync && syncManager.isPullingAccountProfiles {
-                    AccountSyncWaitView()
+                    Group {
+                        #if os(iOS)
+                        PhoneAccountSyncWaitView()
+                        #else
+                        AccountSyncWaitView()
+                        #endif
+                    }
                         .transition(.opacity)
                 } else {
                     #if os(iOS)
