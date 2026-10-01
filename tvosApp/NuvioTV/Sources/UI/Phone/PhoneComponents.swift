@@ -203,6 +203,16 @@ struct PhoneSectionHeader: View {
     }
 }
 
+extension Array where Element == NuvioMeta {
+    /// First occurrence of each id. Search merges several add-ons' answers and
+    /// a catalog page can repeat a title; a repeated id inside one `ForEach`
+    /// breaks SwiftUI's diffing and can stall the grid.
+    func uniquedByID() -> [NuvioMeta] {
+        var seen = Set<String>()
+        return filter { seen.insert($0.id).inserted }
+    }
+}
+
 /// A two-to-four column poster grid for search and library results.
 struct PhonePosterGrid: View {
     let items: [NuvioMeta]
@@ -212,17 +222,44 @@ struct PhonePosterGrid: View {
 
     var body: some View {
         LazyVGrid(columns: columns, spacing: 16) {
-            ForEach(items, id: \.id) { meta in
+            ForEach(items.uniquedByID(), id: \.id) { meta in
                 Button { onSelect(meta) } label: {
-                    GeometryReader { proxy in
-                        PhonePosterCard(meta: meta, width: proxy.size.width)
-                    }
-                    .aspectRatio(1 / (PhoneLayout.posterAspect + 0.18), contentMode: .fit)
+                    PhoneFlexiblePoster(meta: meta)
                 }
                 .buttonStyle(.plain)
             }
         }
         .padding(.horizontal, PhoneLayout.gutter)
+    }
+}
+
+/// A poster that takes its grid column's width. Sized by aspect ratio alone:
+/// measuring each cell with a GeometryReader inside a lazy grid re-runs layout
+/// whenever the container resizes — the keyboard appearing over Search did
+/// exactly that and froze the page.
+struct PhoneFlexiblePoster: View {
+    let meta: NuvioMeta
+    var showsLabel = true
+
+    @AppStorage(SettingsKey.cardCornerRadius) private var cornerRadiusRaw = CardCornerRadiusOption.subtle.rawValue
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Color.clear
+                .aspectRatio(1 / PhoneLayout.posterAspect, contentMode: .fit)
+                .overlay { PhoneArtwork(url: meta.posterUrl ?? meta.backgroundUrl) }
+                .clipShape(RoundedRectangle(
+                    cornerRadius: CardCornerRadiusOption.from(rawValue: cornerRadiusRaw).radius / 2,
+                    style: .continuous
+                ))
+            if showsLabel {
+                Text(meta.name)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .contentShape(Rectangle())
     }
 }
 #endif

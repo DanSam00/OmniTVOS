@@ -28,12 +28,9 @@ struct PhoneDiscoverSection: View {
                     .padding(.top, 40)
             } else {
                 LazyVGrid(columns: columns, spacing: 16) {
-                    ForEach(viewModel.items, id: \.id) { meta in
+                    ForEach(viewModel.items.uniquedByID(), id: \.id) { meta in
                         Button { onSelect(meta) } label: {
-                            GeometryReader { proxy in
-                                PhonePosterCard(meta: meta, width: proxy.size.width)
-                            }
-                            .aspectRatio(1 / (PhoneLayout.posterAspect + 0.18), contentMode: .fit)
+                            PhoneFlexiblePoster(meta: meta)
                         }
                         .buttonStyle(.plain)
                         .onAppear { viewModel.loadMoreIfNeeded(currentItem: meta) }

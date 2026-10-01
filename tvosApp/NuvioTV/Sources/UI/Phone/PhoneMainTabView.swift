@@ -6,7 +6,6 @@ import SwiftUI
 /// each tab keeps its scroll position while they are open.
 struct PhoneMainTabView: View {
     let activeProfile: Profile?
-    @ObservedObject var searchViewModel: SearchViewModel
     @ObservedObject var libraryViewModel: LibraryViewModel
     @ObservedObject var authManager: AuthManager
     let homeCatalogRevision: UInt
@@ -44,7 +43,7 @@ struct PhoneMainTabView: View {
             }
             Tab(TVTab.search.title, systemImage: TVTab.search.symbol, value: TVTab.search, role: .search) {
                 NavigationStack {
-                    PhoneSearchView(viewModel: searchViewModel) { onOpenDetails($0.id, $0.type) }
+                    PhoneSearchView { onOpenDetails($0.id, $0.type) }
                 }
             }
             Tab(TVTab.library.title, systemImage: TVTab.library.symbol, value: TVTab.library) {
@@ -88,6 +87,17 @@ struct PhoneMainTabView: View {
         .tint(.white)
         .preferredColorScheme(.dark)
         .onAppear { homeLoader.load(key: homeKey) }
+        #if OMNI_DEBUG_TOOLS
+        // `-OmniDebugFocusSearch YES` opens Search and focuses its field, which
+        // raises the on-screen keyboard without a tap.
+        .task {
+            guard UserDefaults.standard.bool(forKey: "OmniDebugFocusSearch") else { return }
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            selection = .search
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            NotificationCenter.default.post(name: PhoneSearchView.debugFocusNotification, object: nil)
+        }
+        #endif
         .onChange(of: homeKey) { _, key in homeLoader.load(key: key) }
     }
 }
@@ -95,11 +105,21 @@ struct PhoneMainTabView: View {
 // MARK: - Search
 
 struct PhoneSearchView: View {
-    @ObservedObject var viewModel: SearchViewModel
     let onSelect: (NuvioMeta) -> Void
+
+    /// Owned here, not by `ContentView`. Every keystroke publishes a change;
+    /// held at the root, that re-rendered the whole app — all five tabs and
+    /// the full Settings tree — on each character, which on a signed-in phone
+    /// ran past the 10-second watchdog and froze Search. Only this page
+    /// depends on it now. Recent searches live in UserDefaults, so they are
+    /// shared with the root instance that sign-out clears.
+    @StateObject private var viewModel = SearchViewModel()
 
     /// Held here so its filters and loaded pages survive leaving the tab.
     @StateObject private var discover = DiscoverViewModel()
+    @FocusState private var isSearchFocused: Bool
+
+    static let debugFocusNotification = Notification.Name("omni.debug.focusSearch")
 
     var body: some View {
         ScrollView {
@@ -133,6 +153,10 @@ struct PhoneSearchView: View {
         }
         .navigationTitle(TVTab.search.title)
         .searchable(text: $viewModel.searchText, prompt: "Movies and shows")
+        .searchFocused($isSearchFocused)
+        .onReceive(NotificationCenter.default.publisher(for: Self.debugFocusNotification)) { _ in
+            isSearchFocused = true
+        }
         .onSubmit(of: .search) { viewModel.performSearch(query: viewModel.searchText) }
     }
 
@@ -186,10 +210,7 @@ struct PhoneLibraryView: View {
                         LazyVGrid(columns: columns, spacing: 16) {
                             ForEach(groups[key] ?? [], id: \.id) { item in
                                 Button { onSelect(item.id, item.contentType) } label: {
-                                    GeometryReader { proxy in
-                                        libraryCard(item, width: proxy.size.width)
-                                    }
-                                    .aspectRatio(1 / (PhoneLayout.posterAspect + 0.18), contentMode: .fit)
+                                    libraryCard(item)
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -219,16 +240,19 @@ struct PhoneLibraryView: View {
         .refreshable { await viewModel.refreshSelectedLibrary() }
     }
 
-    private func libraryCard(_ item: StremioMeta, width: CGFloat) -> some View {
+    private func libraryCard(_ item: StremioMeta) -> some View {
+        // Sized by aspect ratio, not measured: see `PhoneFlexiblePoster`.
         VStack(alignment: .leading, spacing: 6) {
-            PhoneArtwork(url: item.poster ?? item.background)
-                .frame(width: width, height: width * PhoneLayout.posterAspect)
+            Color.clear
+                .aspectRatio(1 / PhoneLayout.posterAspect, contentMode: .fit)
+                .overlay { PhoneArtwork(url: item.poster ?? item.background) }
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             Text(item.name)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
+        .contentShape(Rectangle())
     }
 }
 

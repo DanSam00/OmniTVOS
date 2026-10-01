@@ -1644,7 +1644,6 @@ struct ContentView: View {
         #if os(iOS)
         PhoneMainTabView(
             activeProfile: profileViewModel.activeProfile,
-            searchViewModel: searchViewModel,
             libraryViewModel: libraryViewModel,
             authManager: authManager,
             homeCatalogRevision: syncManager.homeCatalogRevision,
