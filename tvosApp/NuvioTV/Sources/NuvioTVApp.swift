@@ -187,7 +187,18 @@ struct ContentView: View {
     private static let profileGateMinimumDuration: TimeInterval = 1.8
     /// Ceiling on the profile-switch cover, whatever Home ends up publishing.
     private static let profileGateTimeout: TimeInterval = 5
-    @State private var selectedTab: TVTab = .home
+    @State private var selectedTab: TVTab = Self.debugStartTab ?? .home
+    /// The tab to open on when launched with `-OmniDebugTab <tab>` (a `TVTab`
+    /// raw value such as "Search"), so a simulator can be put on a page
+    /// without a remote: `xcrun simctl launch <device> <bundle id>
+    /// -OmniDebugTab Search`. Read from the arguments alone, so it never
+    /// persists into a normal launch.
+    private static var debugStartTab: TVTab? {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let flag = arguments.firstIndex(of: "-OmniDebugTab"),
+              arguments.indices.contains(flag + 1) else { return nil }
+        return TVTab(rawValue: arguments[flag + 1])
+    }
     #if os(macOS)
     @ObservedObject private var tabCommands = MacTabCommandBus.shared
     #endif
@@ -309,7 +320,7 @@ struct ContentView: View {
                             }
                         }
                         .onReceive(profileViewModel.profileChosen) { _ in
-                            selectedTab = .home
+                            selectedTab = Self.debugStartTab ?? .home
                             withAnimation(.easeInOut(duration: 0.28)) {
                                 activeScreen = .main
                             }
@@ -340,7 +351,7 @@ struct ContentView: View {
                         // $activeProfile here would auto-enter a profile the
                         // moment the sync refreshes it mid-selection.
                         .onReceive(profileViewModel.profileChosen) { _ in
-                            selectedTab = .home
+                            selectedTab = Self.debugStartTab ?? .home
                             beginProfileGate()
                             withAnimation(.easeInOut(duration: 0.28)) {
                                 activeScreen = .main
@@ -2921,6 +2932,16 @@ private struct TVMainTabView: View {
     @AppStorage(SettingsKey.profileName) private var settingsProfileName = "Omni User"
     @StateObject private var profileTabAvatar = ProfileTabAvatarRenderer()
     @State private var showingReauthSheet = false
+    #if os(tvOS)
+    @ObservedObject private var sideMenu = TVSideMenuState.shared
+    /// Tabs opened at least once. A tab is built the first time it is chosen
+    /// and then kept, as `TabView` did, rather than every tab loading at launch.
+    @State private var visitedTabs: Set<TVTab> = []
+    /// True from launch until Home has its rows. While the menu is the only
+    /// thing on screen that can take focus it would keep it, and the app
+    /// would open with the menu out instead of on Home.
+    @State private var isSideMenuParked = true
+    #endif
 
     private var displayedProfile: Profile? {
         if isAuthenticated { return activeProfile }
@@ -2951,6 +2972,8 @@ private struct TVMainTabView: View {
         // stacked by hand instead, all mounted as `TabView` kept them, with the
         // selected one in front.
         withTabChrome(macTabs)
+        #elseif os(tvOS)
+        withTabChrome(tvTabs)
         #else
         if #available(tvOS 18.0, macOS 15.0, *) {
             withTabChrome(tabs.tabViewStyle(.sidebarAdaptable))
@@ -3121,7 +3144,7 @@ private struct TVMainTabView: View {
     /// macOS stack below.
     @ViewBuilder
     private var calendarTabContent: some View {
-        CalendarView(onContentClick: onNavigateToDetails)
+        CalendarView(onContentClick: onNavigateToDetails, isActive: selectedTab == .calendar)
             .id(activeProfile?.id ?? "none")
     }
 
@@ -3177,6 +3200,71 @@ private struct TVMainTabView: View {
             .allowsHitTesting(isCurrent)
             .accessibilityHidden(!isCurrent)
             .zIndex(isCurrent ? 1 : 0)
+    }
+    #endif
+
+    #if os(tvOS)
+    /// The tabs without the system sidebar `TabView`, under the app's own menu.
+    ///
+    /// The system sidebar collapses to a pill carrying the tab's name as well
+    /// as its icon, and has no option to show the icon alone, which is how
+    /// the menu reads on the Mac. So the Apple TV draws its own, as the Mac
+    /// does. Hidden tabs are faded out, which also takes them out of the focus
+    /// engine, and are kept mounted once visited so switching back to one
+    /// does not rebuild it.
+    @ViewBuilder
+    private var tvTabs: some View {
+        ZStack(alignment: .topLeading) {
+            tvTab(.home) { homeTabContent }
+            tvTab(.search) { searchTabContent }
+            tvTab(.library) { libraryTabContent }
+            tvTab(.calendar) { calendarTabContent }
+            tvTab(.settings) { settingsTabContent }
+
+            TVSideMenu(
+                selectedTab: $selectedTab,
+                profileName: profileTabTitle,
+                profileAvatar: profileTabAvatar.image,
+                profileSymbol: sessionNeedsReauthentication
+                    ? "person.crop.circle.badge.exclamationmark"
+                    : ProfileAvatarCatalog.symbolName(for: displayedProfile?.avatarId),
+                settingsSymbol: sessionNeedsReauthentication
+                    ? "exclamationmark.circle"
+                    : TVTab.settings.symbol,
+                isParked: isSideMenuParked
+            )
+            .zIndex(2)
+        }
+        .task {
+            // Until Home has loaded and taken focus, or six seconds at most so
+            // a launch on another tab is not left without a menu.
+            for _ in 0..<60 where !homeStore.hasLoaded {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            isSideMenuParked = false
+        }
+        // Back from a screen that does not handle it opens the menu, as it did
+        // with the system sidebar; Back on the menu itself is left unhandled,
+        // so it leaves the app the same way.
+        .onExitCommand(perform: sideMenu.isFocused ? nil : { sideMenu.requestFocus() })
+        .onChange(of: selectedTab, initial: true) { _, tab in
+            visitedTabs.insert(tab)
+        }
+    }
+
+    @ViewBuilder
+    private func tvTab<Content: View>(
+        _ tab: TVTab,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        if visitedTabs.contains(tab) || selectedTab == tab {
+            let isCurrent = selectedTab == tab
+            content()
+                .opacity(isCurrent ? 1 : 0)
+                .accessibilityHidden(!isCurrent)
+                .zIndex(isCurrent ? 1 : 0)
+        }
     }
     #endif
 
@@ -3248,6 +3336,176 @@ private struct TVMainTabView: View {
         }
     }
 }
+
+#if os(tvOS)
+/// Lets a screen hand focus to the menu — Back does, as the system sidebar
+/// did — and lets the screens tell whether the menu holds it.
+@MainActor
+final class TVSideMenuState: ObservableObject {
+    static let shared = TVSideMenuState()
+
+    /// True while a menu row has focus, which is also when it is open.
+    @Published fileprivate(set) var isFocused = false
+    /// Bumped to ask the menu to take focus.
+    @Published fileprivate(set) var focusRequest = 0
+
+    private init() {}
+
+    func requestFocus() {
+        focusRequest &+= 1
+    }
+}
+
+/// The Apple TV menu, drawn by the app as the Mac's is: the current tab's
+/// icon alone in the top-left corner while closed, and a glass column of
+/// every tab, icons and names, while it has focus.
+///
+/// It sits in a full-height focus section along the left edge, so Left off
+/// the edge of any screen reaches it from whatever height it was pressed at.
+/// Up and Down move along it, Select switches tab, Right goes back to the
+/// screen.
+private struct TVSideMenu: View {
+    @Binding var selectedTab: TVTab
+    let profileName: String
+    let profileAvatar: UIImage?
+    let profileSymbol: String
+    let settingsSymbol: String
+    /// Out of the focus engine's reach entirely; see
+    /// `TVMainTabView.isSideMenuParked`.
+    var isParked = false
+
+    @ObservedObject private var state = TVSideMenuState.shared
+    @FocusState private var focusedTab: TVTab?
+    /// Set for a moment after a tab is chosen, so the rows give up focus and
+    /// the focus engine places it on the new screen, as the system sidebar
+    /// did. Cleared once focus has gone.
+    @State private var isHandingOff = false
+
+    private static let tabs: [TVTab] = [.profile, .home, .search, .library, .calendar, .settings]
+
+    private var isOpen: Bool { focusedTab != nil }
+
+    private var panelShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 30, style: .continuous)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            column
+                .fixedSize()
+                .background { panel }
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 40)
+        .padding(.top, 44)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .focusSection()
+        .ignoresSafeArea()
+        .disabled(isHandingOff || isParked)
+        .animation(.easeOut(duration: 0.2), value: isOpen)
+        .onChange(of: focusedTab) { _, tab in
+            TVHomeDebugTrace.log("sideMenu.focus \(tab?.rawValue ?? "nil") selected=\(selectedTab.rawValue)")
+            state.isFocused = tab != nil
+            if tab == nil, isHandingOff { isHandingOff = false }
+        }
+        .onChange(of: state.focusRequest) { _, _ in
+            TVHomeDebugTrace.log("sideMenu.request parked=\(isParked)")
+            focusedTab = selectedTab
+        }
+    }
+
+    @ViewBuilder
+    private var column: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(Self.tabs) { tab in
+                // Closed, only the current tab's row is drawn, icon alone.
+                // The same row stays when the menu opens, so focus is not
+                // moved off it as the others appear.
+                if isOpen || tab == selectedTab {
+                    row(for: tab)
+                }
+            }
+        }
+        .padding(isOpen ? 14 : 0)
+    }
+
+    @ViewBuilder
+    private var panel: some View {
+        if isOpen {
+            if #available(tvOS 26.0, *) {
+                panelShape
+                    .fill(Color.black.opacity(0.22))
+                    .glassEffect(.regular, in: panelShape)
+            } else {
+                panelShape.fill(.ultraThinMaterial)
+            }
+        }
+    }
+
+    private func row(for tab: TVTab) -> some View {
+        let isFocused = focusedTab == tab
+        let isCurrent = selectedTab == tab
+        return Button {
+            choose(tab)
+        } label: {
+            HStack(spacing: 18) {
+                icon(for: tab)
+                    .frame(width: 38, height: 38)
+                if isOpen {
+                    Text(tab == .profile ? profileName : tab.title)
+                        .font(.system(size: 28, weight: isCurrent ? .semibold : .regular))
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+            }
+            .foregroundColor(isFocused ? .black : (isCurrent || !isOpen ? .white : .white.opacity(0.6)))
+            .padding(.vertical, 14)
+            .padding(.horizontal, 18)
+            .frame(maxWidth: isOpen ? .infinity : nil, alignment: .leading)
+            .background {
+                Capsule(style: .continuous)
+                    .fill(isFocused ? Color.white : (isOpen ? Color.clear : Color.black.opacity(0.35)))
+            }
+            .scaleEffect(isFocused ? 1.04 : 1)
+            .animation(.easeOut(duration: 0.15), value: isFocused)
+        }
+        .buttonStyle(TVSideMenuRowStyle())
+        .focused($focusedTab, equals: tab)
+        .focusEffectDisabledIfAvailable()
+    }
+
+    @ViewBuilder
+    private func icon(for tab: TVTab) -> some View {
+        if tab == .profile, let profileAvatar {
+            Image(uiImage: profileAvatar)
+                .renderingMode(.original)
+                .resizable()
+                .scaledToFit()
+                .clipShape(Circle())
+        } else {
+            Image(systemName: tab == .profile ? profileSymbol : (tab == .settings ? settingsSymbol : tab.symbol))
+                .font(.system(size: 28, weight: .medium))
+        }
+    }
+
+    private func choose(_ tab: TVTab) {
+        TVHomeDebugTrace.log("sideMenu.choose \(tab.rawValue)")
+        selectedTab = tab
+        // Hand focus to the screen: with the rows briefly disabled the focus
+        // engine has to look for it there.
+        isHandingOff = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { isHandingOff = false }
+    }
+}
+
+/// No system lift or highlight: the row draws its own focus.
+private struct TVSideMenuRowStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.85 : 1)
+    }
+}
+#endif
 
 @available(tvOS 27.0, *)
 private struct TVSidebarProfileHeader: View {

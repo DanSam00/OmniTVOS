@@ -23,6 +23,9 @@ private enum CalendarMetrics {
 /// matches Home rather than carrying its own toggle.
 struct CalendarView: View {
     let onContentClick: (String, String) -> Void
+    /// Whether Calendar is the tab on screen. tvOS keeps it mounted behind the
+    /// others, so a day panel left open would keep catching Back there.
+    var isActive = true
 
     @StateObject private var viewModel = CalendarViewModel()
     #if os(macOS)
@@ -110,6 +113,15 @@ struct CalendarView: View {
         }
         // Menu backs out of whatever is on top rather than leaving the tab.
         .onExitCommand(perform: exitCommand)
+        #if os(tvOS)
+        // Leaving the tab with a day open closes it, as macOS does: the panel
+        // would otherwise stay open behind the next tab and take its Back.
+        .onChange(of: isActive) { _, active in
+            guard !active, panelDayKey != nil else { return }
+            TVHomeDebugTrace.log("calendar.panel.close reason=tabHidden")
+            panelDayKey = nil
+        }
+        #endif
         .onChange(of: focusedPanelEntryID) { _, id in
             TVHomeDebugTrace.log("calendar.focus panelEntry=\(id ?? "nil") panel=\(panelDayKey ?? "nil")")
             guard let id, let key = panelDayKey,
