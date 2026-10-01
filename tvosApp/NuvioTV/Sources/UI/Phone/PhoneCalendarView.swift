@@ -10,6 +10,8 @@ struct PhoneCalendarView: View {
     @StateObject private var viewModel = CalendarViewModel()
     @AppStorage(SettingsKey.calendarViewMode) private var viewModeRaw = CalendarViewMode.list.rawValue
     @State private var monthAnchor = Date()
+    /// Direction of the last month change, for the slide-in transition.
+    @State private var monthSwipeForward = true
     @State private var selectedDayKey = CalendarDayKey.dayKey(from: Date())
     /// Landscape month view: the tapped day's entries beside the grid.
     @State private var isDayPanelOpen = false
@@ -230,17 +232,12 @@ struct PhoneCalendarView: View {
         let symbols = Self.weekdaySymbols(calendar)
 
         return VStack(spacing: 6) {
-            HStack {
-                Button { shiftMonth(-1) } label: { Image(systemName: "chevron.left") }
-                Spacer()
-                Text(monthStart.formatted(.dateTime.month(.wide).year()))
-                    .font(.headline)
-                Spacer()
-                Button { shiftMonth(1) } label: { Image(systemName: "chevron.right") }
-            }
-            .font(.headline)
-            .buttonStyle(.plain)
-            .padding(.bottom, 4)
+            // No arrows: swipe the grid left or right to change month.
+            Text(monthStart.formatted(.dateTime.month(.wide).year()))
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .contentTransition(.numericText())
+                .padding(.bottom, 4)
 
             HStack(spacing: 4) {
                 ForEach(Array(symbols.enumerated()), id: \.offset) { _, symbol in
@@ -251,21 +248,39 @@ struct PhoneCalendarView: View {
                 }
             }
 
-            ForEach(Array(weeks.enumerated()), id: \.offset) { _, week in
-                HStack(spacing: 4) {
-                    ForEach(Array(week.enumerated()), id: \.offset) { _, day in
-                        if let day {
-                            let date = calendar.date(byAdding: .day, value: day - 1, to: monthStart) ?? monthStart
-                            let key = CalendarDayKey.dayKey(from: date)
-                            dayCell(day: day, key: key, count: viewModel.entries(on: key).count)
-                        } else {
-                            Color.clear.frame(maxWidth: .infinity, minHeight: 44)
+            // One view per month, so a change slides the new month in from
+            // the side the swipe came from.
+            VStack(spacing: 6) {
+                ForEach(Array(weeks.enumerated()), id: \.offset) { _, week in
+                    HStack(spacing: 4) {
+                        ForEach(Array(week.enumerated()), id: \.offset) { _, day in
+                            if let day {
+                                let date = calendar.date(byAdding: .day, value: day - 1, to: monthStart) ?? monthStart
+                                let key = CalendarDayKey.dayKey(from: date)
+                                dayCell(day: day, key: key, count: viewModel.entries(on: key).count)
+                            } else {
+                                Color.clear.frame(maxWidth: .infinity, minHeight: 44)
+                            }
                         }
                     }
                 }
             }
+            .id(monthStart)
+            .transition(.push(from: monthSwipeForward ? .trailing : .leading))
         }
         .padding(.horizontal, PhoneLayout.gutter)
+        .clipped()
+        .contentShape(Rectangle())
+        // Horizontal swipes change month; mostly-vertical drags are left to the
+        // scroll view. Simultaneous so scrolling keeps working over the grid.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 20)
+                .onEnded { value in
+                    let dx = value.translation.width, dy = value.translation.height
+                    guard abs(dx) > 50, abs(dx) > abs(dy) * 1.5 else { return }
+                    shiftMonth(dx < 0 ? 1 : -1)
+                }
+        )
     }
 
     private func dayCell(day: Int, key: String, count: Int) -> some View {
@@ -312,7 +327,8 @@ struct PhoneCalendarView: View {
 
     private func shiftMonth(_ delta: Int) {
         guard let next = Calendar.current.date(byAdding: .month, value: delta, to: monthAnchor) else { return }
-        monthAnchor = next
+        monthSwipeForward = delta > 0
+        withAnimation(.easeInOut(duration: 0.3)) { monthAnchor = next }
     }
 
     @ViewBuilder

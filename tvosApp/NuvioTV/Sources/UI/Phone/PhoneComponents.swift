@@ -224,7 +224,8 @@ struct PhoneEdgeSwipeBack: ViewModifier {
     @State private var offset: CGFloat = 0
     @State private var width: CGFloat = 400
 
-    /// Narrow enough to stay clear of back buttons inset by the 16pt gutter.
+    /// Clear of back buttons inset by the 16pt gutter, but wide enough for a
+    /// thumb on a real phone to land in.
     private let edgeWidth: CGFloat = 16
 
     func body(content: Content) -> some View {
@@ -248,10 +249,17 @@ struct PhoneEdgeSwipeBack: ViewModifier {
                                 if goesBack {
                                     withAnimation(.easeOut(duration: 0.2)) { offset = width }
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                                        var transaction = Transaction()
-                                        transaction.disablesAnimations = true
-                                        withTransaction(transaction) { action() }
-                                        offset = 0
+                                        // The page stays off-screen while it is removed. The
+                                        // back action fades it out over ~0.25s; resetting the
+                                        // offset here drew it back in place for that fade,
+                                        // which read as the page flashing back. Reset only
+                                        // once it is long gone, in case the action kept it.
+                                        action()
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                                            var transaction = Transaction()
+                                            transaction.disablesAnimations = true
+                                            withTransaction(transaction) { offset = 0 }
+                                        }
                                     }
                                 } else {
                                     withAnimation(.spring(duration: 0.3)) { offset = 0 }
