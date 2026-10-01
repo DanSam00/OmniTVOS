@@ -214,15 +214,22 @@ struct PhoneDetailsView: View {
         Array(Set((meta.videos ?? []).map(\.season))).sorted { seasonKey($0) < seasonKey($1) }
     }
 
-    /// The episode after the one in Continue Watching, else the first episode.
+    /// What Play should start: the episode being resumed in Continue Watching,
+    /// else the one after the furthest episode marked watched, else the first.
     private func nextEpisode(_ meta: NuvioMeta) -> NuvioVideo? {
-        let episodes = orderedEpisodes(meta)
+        let episodes = orderedEpisodes(meta).filter { $0.season > 0 }
         if let item = ContinueWatchingStore.items().first(where: { $0.meta.id == meta.id }),
            let season = item.season, let number = item.episode,
            let match = episodes.first(where: { $0.season == season && $0.episode == number }) {
             return match
         }
-        return episodes.first { $0.season > 0 } ?? episodes.first
+        if let lastWatched = episodes.lastIndex(where: {
+            watchedEpisodeKeys.contains("\($0.season):\($0.episode)")
+        }) {
+            // Everything watched: offer the last episode again rather than none.
+            return episodes.indices.contains(lastWatched + 1) ? episodes[lastWatched + 1] : episodes[lastWatched]
+        }
+        return episodes.first ?? orderedEpisodes(meta).first
     }
 
     private func episodes(_ meta: NuvioMeta) -> some View {

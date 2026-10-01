@@ -1748,7 +1748,13 @@ struct SimklProgressService {
         } else {
             stage("history", "synced=false")
         }
+        // Up Next follows the furthest episode watched anywhere: Simkl's own
+        // history plus the marks made in this app. Episodes marked watched
+        // here (or by Nuvio Sync) reach Simkl late or not at all, so seeding
+        // from Simkl alone kept suggesting an episode the show page already
+        // shows as watched.
         let watchedItems = SimklSyncCache.history(in: store).flatMap(\.items)
+            + WatchedStore.visibleItems()
         let upNextSeeds = nextUpSeeds(
             from: watchedItems,
             preferFurthestEpisode: UpNextEpisodeSelectionPolicy.prefersFurthestEpisode
