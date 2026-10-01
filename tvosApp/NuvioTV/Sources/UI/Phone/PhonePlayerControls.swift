@@ -108,8 +108,12 @@ struct PhonePlayerControls: View {
         .onAppear {
             scheduleHide()
             PhoneOrientation.request(.landscape)
+            PhonePlayerPresence.shared.isVisible = true
         }
-        .onDisappear { PhoneOrientation.request(.portrait) }
+        .onDisappear {
+            PhoneOrientation.request(.portrait)
+            PhonePlayerPresence.shared.isVisible = false
+        }
         .onChange(of: viewModel.status) { _, status in
             if status == .playing { scheduleHide() } else { hideTask?.cancel() }
         }
@@ -1313,6 +1317,14 @@ private struct PhoneRoutePicker: UIViewRepresentable {
     func updateUIView(_ picker: AVRoutePickerView, context: Context) {
         picker.prioritizesVideoDevices = prioritizesVideo
     }
+}
+
+/// Whether the full-screen player is up. Pages underneath it stay mounted,
+/// so anything they play themselves (the details page trailer) pauses on it.
+@MainActor
+final class PhonePlayerPresence: ObservableObject {
+    static let shared = PhonePlayerPresence()
+    @Published var isVisible = false
 }
 
 /// Turns the phone to landscape for video and back afterwards, as video apps

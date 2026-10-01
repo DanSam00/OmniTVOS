@@ -3328,10 +3328,9 @@ private struct LayoutDiscoverySettingsView: View {
                 .opacity(trailersEnabled ? 1 : 0.46)
                 .disabled(!trailersEnabled)
 
-                #if !os(iOS) // TV-only
                 SettingsStepperRow(
                     title: L10n.string("tvos_settings_trailer_delay", fallback: "Trailer Delay"),
-                    subtitle: L10n.string("omni_settings_trailer_delay_subtitle", fallback: "Seconds before the trailer starts behind Home"),
+                    subtitle: trailerDelaySubtitle,
                     value: $trailerDelay,
                     range: 0...10,
                     step: 1,
@@ -3340,7 +3339,6 @@ private struct LayoutDiscoverySettingsView: View {
                 )
                 .opacity(trailersEnabled ? 1 : 0.46)
                 .disabled(!trailersEnabled)
-                #endif
             }
 
             HomeCatalogOrderSection(accentColor: accentColor)
@@ -14513,3 +14511,13 @@ struct SettingsView_Previews: PreviewProvider {
     }
 }
 #endif
+
+/// The phone plays the delayed trailer on show and movie pages, not behind
+/// Home, so the Trailer Delay row says so there.
+private var trailerDelaySubtitle: String {
+    #if os(iOS)
+    "Seconds before the trailer starts on a show or movie page"
+    #else
+    L10n.string("omni_settings_trailer_delay_subtitle", fallback: "Seconds before the trailer starts behind Home")
+    #endif
+}

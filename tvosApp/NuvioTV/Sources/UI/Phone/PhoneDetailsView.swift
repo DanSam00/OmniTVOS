@@ -25,6 +25,15 @@ struct PhoneDetailsView: View {
     @State private var scrollOffset: CGFloat = 0
     @State private var pageHeight: CGFloat = 0
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject private var playerPresence = PhonePlayerPresence.shared
+    @AppStorage(SettingsKey.trailersEnabled) private var trailersEnabled = true
+    @AppStorage(SettingsKey.trailerDelay) private var trailerDelay = 7
+    /// The trailer is resolved and buffered (paused) once the page settles,
+    /// then shown when the Trailer Delay runs out — as Home does on the TV.
+    @State private var trailerPreparedID: String?
+    @State private var trailerShownID: String?
+    @State private var isTrailerPlaying = false
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -161,7 +170,7 @@ struct PhoneDetailsView: View {
                 .opacity(0.55)
             if isLandscape {
                 Color.clear
-                    .overlay { PhoneArtwork(url: url, kind: .backdrop) }
+                    .overlay { artWithTrailer(meta, url: url) }
                     .clipped()
                     .opacity(artFade)
                 LinearGradient(
@@ -182,7 +191,7 @@ struct PhoneDetailsView: View {
                     Color.clear
                         .frame(maxWidth: .infinity)
                         .frame(height: 380)
-                        .overlay { PhoneArtwork(url: url, kind: .backdrop) }
+                        .overlay { artWithTrailer(meta, url: url) }
                         .clipped()
                         .mask {
                             LinearGradient(
@@ -211,6 +220,45 @@ struct PhoneDetailsView: View {
             }
         }
         .ignoresSafeArea()
+    }
+
+    /// The page art, with the title's trailer over it once it is playing.
+    /// Titles without a trailer just keep the art.
+    private func artWithTrailer(_ meta: NuvioMeta, url: String?) -> some View {
+        ZStack {
+            PhoneArtwork(url: url, kind: .backdrop)
+            if trailerPreparedID == meta.id {
+                TrailerPreviewPlayer(
+                    meta: meta,
+                    isActive: trailerShownID == meta.id
+                        && artFade > 0.05
+                        && !playerPresence.isVisible
+                        && !isSourcesPresented
+                        && scenePhase == .active,
+                    onPlaybackReady: { isTrailerPlaying = true },
+                    onPlaybackFinished: { isTrailerPlaying = false },
+                    logLabel: "phone-details"
+                )
+                .id(meta.id)
+                .opacity(isTrailerPlaying ? 1 : 0)
+                .animation(.easeInOut(duration: 0.6), value: isTrailerPlaying)
+            }
+        }
+        .allowsHitTesting(false)
+        .task(id: "\(meta.id)|\(trailersEnabled)|\(trailerDelay)") {
+            trailerPreparedID = nil
+            trailerShownID = nil
+            isTrailerPlaying = false
+            guard trailersEnabled else { return }
+            let delay = Double(max(0, trailerDelay))
+            let settle = min(delay, 1.5)
+            try? await Task.sleep(for: .seconds(settle))
+            guard !Task.isCancelled else { return }
+            trailerPreparedID = meta.id
+            try? await Task.sleep(for: .seconds(delay - settle))
+            guard !Task.isCancelled else { return }
+            trailerShownID = meta.id
+        }
     }
 
     private func header(_ meta: NuvioMeta) -> some View {
