@@ -62,7 +62,7 @@
 		<string>_CC1AD845._googlecast._tcp</string>
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Allow Omni to access your local network</string>
+	<string>Omni uses your local network to find Chromecast and other Cast devices.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>This app does not require microphone access.</string>
 	<key>PREMIUMIZE_CLIENT_ID</key>

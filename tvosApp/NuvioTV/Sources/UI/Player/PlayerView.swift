@@ -316,6 +316,10 @@ struct PlayerView: View {
                 .accessibilityHidden(true)
             #endif
 
+            // The phone draws its own skip feedback, prompts and option
+            // panels in PhonePlayerControls; these TV overlays doubled them up
+            // (a second scrubber after a double-tap skip) at TV size.
+            #if !os(iOS)
             // Light-tap peek timeline (no full chrome).
             if viewModel.peekVisible, !viewModel.showControls, !viewModel.isScrubbing {
                 PeekBar(clock: viewModel.clock)
@@ -421,6 +425,8 @@ struct PlayerView: View {
                 .zIndex(3)
             }
 
+            #endif
+
             // Kept mounted (not gated by an `if`) so the hide animates too: removing
             // a view that holds tvOS focus makes the focus engine finalize the
             // removal before the transition can play, so only the appear would
@@ -431,6 +437,7 @@ struct PlayerView: View {
             PhonePlayerControls(
                 viewModel: viewModel,
                 isReady: didReportPlaybackStarted && !viewModel.isSwitchingSource,
+                autoPlayNextEnabled: autoPlayNextEnabled,
                 onClose: onBack
             )
             .zIndex(5)
@@ -476,6 +483,7 @@ struct PlayerView: View {
                 .animation(.playerControls, value: viewModel.showPauseOverlay)
             #endif
 
+            #if !os(iOS)
             // Settings panel (subtitles / audio / speed), over the dimmed video.
             if viewModel.showSettingsPanel {
                 PlayerSettingsPanel(viewModel: viewModel) {
@@ -493,6 +501,8 @@ struct PlayerView: View {
                 PlayerSourcesPanel(viewModel: viewModel)
                     .zIndex(7)
             }
+
+            #endif
 
             debugOverlayLayer
         }
@@ -1085,11 +1095,19 @@ struct PlayerView: View {
                 .transition(.opacity)
             } else {
                 VStack(spacing: 20) {
+                    #if os(iOS)
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        .controlSize(.large)
+                        .padding(18)
+                        .glassCircle()
+                    #else
                     ProgressView()
                         .progressViewStyle(CircularProgressViewStyle(tint: .white))
                         .scaleEffect(2)
                         .padding(48)
                         .glassCircle()
+                    #endif
 
                     PlayerConnectionWarning(
                         speedMbps: viewModel.networkSpeedMbps,
@@ -1121,8 +1139,15 @@ struct PlayerView: View {
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 900)
             }
+            #if os(iOS)
+            .padding(24)
+            .frame(maxWidth: 420)
+            .glassRoundedRect(cornerRadius: 20)
+            .padding(.horizontal, 24)
+            #else
             .padding(48)
             .glassRoundedRect(cornerRadius: 32)
+            #endif
         default:
             EmptyView()
         }

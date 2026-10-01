@@ -4462,3 +4462,50 @@ enum BufferingDowngradePlanner {
         return nil
     }
 }
+
+#if os(iOS)
+/// What a Google Cast receiver needs to play the current stream itself: the
+/// receiver fetches the URL directly, so this is the source, not the engine's
+/// local loopback.
+struct CastableMedia {
+    let url: URL
+    let httpHeaders: [String: String]
+    let filename: String?
+    let title: String
+    let subtitle: String
+    let posterURL: URL?
+    let backdropURL: URL?
+    let isLive: Bool
+    let position: Double
+    let duration: Double
+    let subtitles: [NuvioSubtitle]
+    /// The add-on subtitle showing right now, if any.
+    let activeSubtitleURL: String?
+}
+
+extension PlayerViewModel {
+    var castableMedia: CastableMedia? {
+        guard let raw = activeStreamURL, let url = URL(string: raw), let meta = activeMeta else { return nil }
+        let activeExternal = subtitles.first { $0.isSelected && !$0.externalFilename.isEmpty }?.externalFilename
+        return CastableMedia(
+            url: url,
+            httpHeaders: activeHTTPHeaders,
+            filename: activeFilename,
+            title: meta.name,
+            subtitle: subtitle,
+            posterURL: meta.posterUrl.flatMap(URL.init(string:)),
+            backdropURL: meta.backgroundUrl.flatMap(URL.init(string:)),
+            isLive: isLiveStream,
+            position: playbackPosition,
+            duration: playbackDuration,
+            subtitles: availableExternalSubtitles,
+            activeSubtitleURL: activeExternal
+        )
+    }
+
+    /// Cast status messages, in the player's own toast.
+    func showCastMessage(_ message: String) {
+        showPlayerToast(message)
+    }
+}
+#endif

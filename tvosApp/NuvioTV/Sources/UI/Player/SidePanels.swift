@@ -508,7 +508,8 @@ struct PlayerSourcesPanel: View {
 
 // MARK: - Stream display helpers
 
-private extension NuvioStream {
+// Internal so the phone Sources panel can share it; no behaviour change.
+extension NuvioStream {
     var panelTitle: String {
         let raw = name?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let raw, !raw.isEmpty { return raw }

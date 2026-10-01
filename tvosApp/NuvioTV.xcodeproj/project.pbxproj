@@ -396,6 +396,7 @@
 		IOSID0000000000000000078 /* MPVKit in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4E5F6A7B8C9D0E1F2 /* MPVKit */; };
 		IOSID0000000000000000079 /* AetherEngine in Frameworks */ = {isa = PBXBuildFile; productRef = AE00PD010000000000000001 /* AetherEngine */; };
 		IOSID000000000000000007A /* AetherEngineSMB in Frameworks */ = {isa = PBXBuildFile; productRef = A21100000000000000000001 /* AetherEngineSMB */; };
+		IOSGC0000000000000000001 /* GoogleCast in Frameworks */ = {isa = PBXBuildFile; productRef = IOSGC0000000000000000002 /* GoogleCast */; };
 		IOSSH0000000000000000002 /* NuvioTV/Sources/Core/IOSPlatformShims.swift in Sources */ = {isa = PBXBuildFile; fileRef = IOSSH0000000000000000001 /* NuvioTV/Sources/Core/IOSPlatformShims.swift */; };
 		IOSUI0000000000000000002 /* NuvioTV/Sources/UI/Phone/PhoneComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = IOSUI0000000000000000001 /* NuvioTV/Sources/UI/Phone/PhoneComponents.swift */; };
 		IOSUI0000000000000000004 /* NuvioTV/Sources/UI/Phone/PhoneHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = IOSUI0000000000000000003 /* NuvioTV/Sources/UI/Phone/PhoneHomeView.swift */; };
@@ -405,6 +406,7 @@
 		IOSUI000000000000000000C /* NuvioTV/Sources/UI/Phone/PhonePlayerControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = IOSUI000000000000000000B /* NuvioTV/Sources/UI/Phone/PhonePlayerControls.swift */; };
 		IOSUI0000000000000000022 /* NuvioTV/Sources/UI/Phone/PhoneCalendarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = IOSUI0000000000000000021 /* NuvioTV/Sources/UI/Phone/PhoneCalendarView.swift */; };
 		IOSUI0000000000000000024 /* NuvioTV/Sources/UI/Phone/PhoneDiscoverSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = IOSUI0000000000000000023 /* NuvioTV/Sources/UI/Phone/PhoneDiscoverSection.swift */; };
+		IOSUI0000000000000000026 /* NuvioTV/Sources/UI/Phone/PhoneCastController.swift in Sources */ = {isa = PBXBuildFile; fileRef = IOSUI0000000000000000025 /* NuvioTV/Sources/UI/Phone/PhoneCastController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -612,6 +614,7 @@
 		IOSUI000000000000000000B /* NuvioTV/Sources/UI/Phone/PhonePlayerControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/UI/Phone/PhonePlayerControls.swift; sourceTree = "<group>"; };
 		IOSUI0000000000000000021 /* NuvioTV/Sources/UI/Phone/PhoneCalendarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/UI/Phone/PhoneCalendarView.swift; sourceTree = "<group>"; };
 		IOSUI0000000000000000023 /* NuvioTV/Sources/UI/Phone/PhoneDiscoverSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/UI/Phone/PhoneDiscoverSection.swift; sourceTree = "<group>"; };
+		IOSUI0000000000000000025 /* NuvioTV/Sources/UI/Phone/PhoneCastController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/UI/Phone/PhoneCastController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -657,6 +660,7 @@
 				IOSID0000000000000000078 /* MPVKit in Frameworks */,
 				IOSID0000000000000000079 /* AetherEngine in Frameworks */,
 				IOSID000000000000000007A /* AetherEngineSMB in Frameworks */,
+				IOSGC0000000000000000001 /* GoogleCast in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1029,6 +1033,7 @@
 				A1B2C3D4E5F6A7B8C9D0E1F2 /* MPVKit */,
 				AE00PD010000000000000001 /* AetherEngine */,
 				A21100000000000000000001 /* AetherEngineSMB */,
+				IOSGC0000000000000000002 /* GoogleCast */,
 			);
 			productName = Omni;
 			productReference = IOSID0000000000000000080 /* Omni.app */;
@@ -1066,6 +1071,7 @@
 			packageReferences = (
 				F1E2D3C4B5A6F7E8D9C0B1A2 /* XCLocalSwiftPackageReference "../MPVKit" */,
 				AE00PR010000000000000001 /* XCLocalSwiftPackageReference "../Vendor/AetherEngine" */,
+				IOSGC0000000000000000003 /* XCLocalSwiftPackageReference "../Vendor/GoogleCast" */,
 			);
 			productRefGroup = 83CBBA001A601CBA00E9B192 /* Products */;
 			projectDirPath = "";
@@ -1458,6 +1464,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				IOSUI0000000000000000024 /* NuvioTV/Sources/UI/Phone/PhoneDiscoverSection.swift in Sources */,
+				IOSUI0000000000000000026 /* NuvioTV/Sources/UI/Phone/PhoneCastController.swift in Sources */,
 				IOSUI0000000000000000022 /* NuvioTV/Sources/UI/Phone/PhoneCalendarView.swift in Sources */,
 				IOSUI0000000000000000002 /* NuvioTV/Sources/UI/Phone/PhoneComponents.swift in Sources */,
 				IOSUI0000000000000000004 /* NuvioTV/Sources/UI/Phone/PhoneHomeView.swift in Sources */,
@@ -2066,6 +2073,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../MPVKit;
 		};
+		IOSGC0000000000000000003 /* XCLocalSwiftPackageReference "../Vendor/GoogleCast" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../Vendor/GoogleCast;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -2083,6 +2094,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AE00PR010000000000000001 /* XCLocalSwiftPackageReference "../Vendor/AetherEngine" */;
 			productName = AetherEngineSMB;
+		};
+		IOSGC0000000000000000002 /* GoogleCast */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = IOSGC0000000000000000003 /* XCLocalSwiftPackageReference "../Vendor/GoogleCast" */;
+			productName = GoogleCast;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
