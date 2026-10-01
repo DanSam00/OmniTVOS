@@ -17,6 +17,8 @@ struct PhoneDetailsView: View {
     @State private var pickerEpisode: NuvioVideo?
     @State private var isSourcesPresented = false
     @State private var isResolvingDebrid = false
+    /// "season:episode" keys of watched episodes, for the eye markers.
+    @State private var watchedEpisodeKeys: Set<String> = []
     /// Side safe-area inset (the Dynamic Island in landscape), zero upright.
     @State private var sideInset: CGFloat = 0
 
@@ -43,6 +45,10 @@ struct PhoneDetailsView: View {
         .preferredColorScheme(.dark)
         .onAppear { viewModel.loadDetails(id: id, type: type) }
         .onDisappear { viewModel.cancelAllTasks() }
+        .onChange(of: viewModel.uiState.meta?.id, initial: true) { _, _ in refreshWatchedEpisodes() }
+        .onReceive(NotificationCenter.default.publisher(for: WatchedStore.changedNotification)) { _ in
+            refreshWatchedEpisodes()
+        }
         .sheet(isPresented: $isSourcesPresented) {
             if let meta = viewModel.uiState.meta {
                 PhoneSourcesSheet(
@@ -174,10 +180,16 @@ struct PhoneDetailsView: View {
             .accessibilityLabel(viewModel.uiState.isInWatchlist ? "Remove from Library" : "Add to Library")
 
             Button { viewModel.toggleWatched() } label: {
-                Image(systemName: viewModel.uiState.isWatched ? "eye.fill" : "eye")
+                // Light when watched, dark when not: an outline-vs-filled eye
+                // on the same dark button was too close to tell apart.
+                let watched = viewModel.uiState.isWatched
+                Image(systemName: watched ? "eye.fill" : "eye")
                     .font(.headline)
+                    .foregroundStyle(watched ? Color.black : Color.white)
                     .frame(width: 48, height: 46)
-                    .background(Color.white.opacity(0.15), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .background(watched ? Color.white : Color.white.opacity(0.15),
+                                in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .animation(.easeOut(duration: 0.15), value: watched)
             }
             .accessibilityLabel(viewModel.uiState.isWatched ? "Mark Unwatched" : "Mark Watched")
         }
@@ -240,14 +252,45 @@ struct PhoneDetailsView: View {
 
             LazyVStack(spacing: 14) {
                 ForEach(list, id: \.id) { episode in
-                    Button { openSources(meta: meta, episode: episode) } label: {
-                        PhoneEpisodeRow(episode: episode, fallbackArt: meta.backgroundUrl)
+                    let isWatched = watchedEpisodeKeys.contains("\(episode.season):\(episode.episode)")
+                    PhoneSwipeActionRow(
+                        isWatched: isWatched,
+                        onTap: { openSources(meta: meta, episode: episode) },
+                        onToggleWatched: { toggleEpisodeWatched(episode, meta: meta) },
+                        onMarkThroughHere: { markWatchedThrough(episode, meta: meta) }
+                    ) {
+                        PhoneEpisodeRow(episode: episode, fallbackArt: meta.backgroundUrl, isWatched: isWatched)
                     }
-                    .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, PhoneLayout.gutter)
         }
+    }
+
+    // MARK: Watched episodes
+
+    private func refreshWatchedEpisodes() {
+        guard let meta = viewModel.uiState.meta, meta.isSeries else { return }
+        watchedEpisodeKeys = WatchedStore.watchedEpisodeKeys(meta: meta)
+    }
+
+    private func toggleEpisodeWatched(_ episode: NuvioVideo, meta: NuvioMeta) {
+        _ = WatchedStore.toggleEpisode(meta: meta, season: episode.season, episode: episode.episode)
+        refreshWatchedEpisodes()
+    }
+
+    /// Marks this episode and every earlier one (all earlier seasons too,
+    /// specials aside) watched — the TV's "catch up" action.
+    private func markWatchedThrough(_ episode: NuvioVideo, meta: NuvioMeta) {
+        let upTo = orderedEpisodes(meta).filter { candidate in
+            guard candidate.season > 0 else { return false }
+            return candidate.season < episode.season
+                || (candidate.season == episode.season && candidate.episode <= episode.episode)
+        }
+        for (season, videos) in Dictionary(grouping: upTo, by: \.season) {
+            WatchedStore.setSeasonWatched(meta: meta, season: season, episodes: videos.map(\.episode), isWatched: true)
+        }
+        refreshWatchedEpisodes()
     }
 
     private var moreLikeThis: some View {
@@ -322,12 +365,25 @@ struct PhoneDetailsView: View {
 private struct PhoneEpisodeRow: View {
     let episode: NuvioVideo
     let fallbackArt: String?
+    var isWatched = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             PhoneArtwork(url: episode.thumbnail ?? fallbackArt)
                 .frame(width: 136, height: 76)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .opacity(isWatched ? 0.55 : 1)
+                .overlay(alignment: .topTrailing) {
+                    if isWatched {
+                        Image(systemName: "eye.fill")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.black)
+                            .padding(5)
+                            .background(Color.white, in: Circle())
+                            .padding(5)
+                            .accessibilityLabel("Watched")
+                    }
+                }
             VStack(alignment: .leading, spacing: 4) {
                 Text("\(episode.episode). \(episode.title)")
                     .font(.subheadline.weight(.semibold))
@@ -342,6 +398,115 @@ private struct PhoneEpisodeRow: View {
             Spacer(minLength: 0)
         }
         .contentShape(Rectangle())
+    }
+}
+
+/// A row that swipes left like Mail's. Let go past 80% of the width and it
+/// toggles watched at once; let go part-way and it stays open on two
+/// buttons — toggle watched, or mark everything up to here watched. Tap the
+/// open row (or swipe back) to close it.
+private struct PhoneSwipeActionRow<Content: View>: View {
+    let isWatched: Bool
+    let onTap: () -> Void
+    let onToggleWatched: () -> Void
+    let onMarkThroughHere: () -> Void
+    @ViewBuilder let content: Content
+
+    @State private var offset: CGFloat = 0
+    @State private var rowWidth: CGFloat = 360
+    @State private var isOpen = false
+    /// Decided on the first movement, so vertical scrolling is never taken.
+    @State private var isHorizontal: Bool?
+
+    private let buttonWidth: CGFloat = 92
+    private var openOffset: CGFloat { -buttonWidth * 2 }
+    private var fullSwipe: CGFloat { -rowWidth * 0.8 }
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                actionButton(
+                    title: "Up to here",
+                    systemImage: "checkmark.circle",
+                    color: Color(white: 0.3),
+                    action: onMarkThroughHere
+                )
+                actionButton(
+                    title: isWatched ? "Unwatched" : "Watched",
+                    systemImage: isWatched ? "eye.slash" : "eye",
+                    // Grows to fill the gap as a full swipe gets close.
+                    color: .blue,
+                    width: max(buttonWidth, -offset - buttonWidth),
+                    action: onToggleWatched
+                )
+            }
+            .opacity(offset < 0 ? 1 : 0)
+
+            content
+                .background(Color.black)
+                .offset(x: offset)
+                .onTapGesture {
+                    if isOpen { close() } else { onTap() }
+                }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { rowWidth = max($0, 1) }
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 12)
+                .onChanged { value in
+                    if isHorizontal == nil {
+                        isHorizontal = abs(value.translation.width) > abs(value.translation.height)
+                    }
+                    guard isHorizontal == true else { return }
+                    let start = isOpen ? openOffset : 0
+                    offset = min(0, start + value.translation.width)
+                }
+                .onEnded { value in
+                    defer { isHorizontal = nil }
+                    guard isHorizontal == true else { return }
+                    let start = isOpen ? openOffset : 0
+                    let end = start + value.predictedEndTranslation.width
+                    if offset <= fullSwipe || end <= fullSwipe * 1.15 {
+                        withAnimation(.easeOut(duration: 0.18)) { offset = -rowWidth }
+                        onToggleWatched()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { close() }
+                    } else if offset < openOffset / 2 {
+                        withAnimation(.spring(duration: 0.3)) { offset = openOffset }
+                        isOpen = true
+                    } else {
+                        close()
+                    }
+                }
+        )
+    }
+
+    private func actionButton(
+        title: String,
+        systemImage: String,
+        color: Color,
+        width: CGFloat? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            action()
+            close()
+        } label: {
+            VStack(spacing: 4) {
+                Image(systemName: systemImage).font(.headline)
+                Text(title).font(.caption2.weight(.semibold))
+            }
+            .foregroundStyle(.white)
+            .frame(width: width ?? buttonWidth)
+            .frame(maxHeight: .infinity)
+            .background(color)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func close() {
+        withAnimation(.spring(duration: 0.3)) { offset = 0 }
+        isOpen = false
     }
 }
 

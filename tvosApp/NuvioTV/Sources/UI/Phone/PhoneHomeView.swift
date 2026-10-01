@@ -539,6 +539,13 @@ struct PhoneHomeView: View {
                     onOpenDetails: { onOpenDetails(entry.slide.meta) },
                     onResume: onResume
                 )
+                // Long-press a Continue Watching slide for its options, as on
+                // the Continue Watching row.
+                .contextMenu {
+                    if case .resume(let item) = entry.slide {
+                        continueWatchingMenu(item)
+                    }
+                }
                 .tag(page)
             }
         }
