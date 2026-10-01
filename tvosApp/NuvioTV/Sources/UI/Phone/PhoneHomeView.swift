@@ -128,7 +128,11 @@ final class PhoneHomeLoader: ObservableObject {
                 )
                 guard !Task.isCancelled, let items else { return }
                 var seen = Set<String>()
-                continueWatching = items.filter { shouldDisplay($0) && seen.insert($0.meta.id).inserted }
+                let visible = items.filter { shouldDisplay($0) && seen.insert($0.meta.id).inserted }
+                // Same order the TV and Mac show: the profile's Continue
+                // Watching sort, not the provider's raw order.
+                let sort = ProfileSettings.current.string(forKey: SettingsKey.continueWatchingSort) ?? "Default"
+                continueWatching = ContinueWatchingSortPolicy.sorted(visible, preference: sort)
             }
             return
         }
