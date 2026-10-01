@@ -62,7 +62,13 @@ struct NuvioTVApp: App {
 /// Temporary Home performance tracing. Enabled only by DEBUG builds so the
 /// release app does not pay for the timestamps or console formatting.
 enum TVHomeDebugTrace {
-    static let enabled = false
+    /// Off unless the app is launched with `-OmniHomeTrace`, or the
+    /// `OmniHomeTrace` default is set — which survives the app being reopened
+    /// from the home screen: `xcrun simctl spawn <device> defaults write
+    /// <bundle id> OmniHomeTrace -bool YES`. Writes Home's focus and scroll
+    /// decisions to the unified log for simulator debugging.
+    static let enabled = ProcessInfo.processInfo.arguments.contains("-OmniHomeTrace")
+        || UserDefaults.standard.bool(forKey: "OmniHomeTrace")
     private static let logger = Logger(
         subsystem: "com.pyksel.nuviotvos",
         category: "TVTrace"
@@ -78,7 +84,9 @@ enum TVHomeDebugTrace {
     static func log(_ message: @autoclosure () -> String) {
         guard enabled else { return }
         let line = "[TVTrace] \(message())"
-        print(line)
+        // The unified log, not just stdout: a simulator launch pipes stdout
+        // through a block buffer, so lines arrive late or not at all.
+        logger.notice("\(line, privacy: .public)")
     }
 }
 
@@ -4121,7 +4129,7 @@ struct TVHomeView: View {
                                                 retainFocusAppearanceForCardKey: overlayRestoreCardID,
                                                 suppressFocusAnimations: suppressReturnFocusAnimations
                                                     && focusedRowIndex == index,
-                                                isRowFocused: focusedRowIndex == index,
+                                                isRowFocused: focusedRowIndex == index && !featureHoldsTVFocus,
                                                 onInitialFocusRequested: {
                                                     didRequestInitialCardFocus = true
                                                 },
@@ -4222,7 +4230,7 @@ struct TVHomeView: View {
                                                 retainFocusAppearanceForCardKey: overlayRestoreCardID,
                                                 suppressFocusAnimations: suppressReturnFocusAnimations
                                                     && focusedRowIndex == index,
-                                                isRowFocused: focusedRowIndex == index,
+                                                isRowFocused: focusedRowIndex == index && !featureHoldsTVFocus,
                                                 onInitialFocusRequested: {
                                                     didRequestInitialCardFocus = true
                                                 },
@@ -4420,13 +4428,40 @@ struct TVHomeView: View {
                                         .frame(height: proxy.size.height + TVHomeLayout.finalRowScrollRunway)
                                         .accessibilityHidden(true)
                                 }
+                                #if os(tvOS)
+                                // Liquid Glass lowers the rows as focus comes down
+                                // from the featured carousel, and the focus engine
+                                // scrolls the first row into view while that drop is
+                                // still animating. It overshoots, and the corrective
+                                // pin skips the first row, so every trip up to the
+                                // carousel and back left the rows a little higher.
+                                // Pin the first row once the drop has landed.
+                                .onChange(of: liquidGlassRowsDrop) { _, drop in
+                                    guard drop > 0, let first = sections.first else { return }
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                        guard focusedRowIndex == 0 else { return }
+                                        var transaction = Transaction()
+                                        transaction.animation = nil
+                                        withTransaction(transaction) {
+                                            verticalScrollProxy.scrollTo(first.id, anchor: .top)
+                                        }
+                                    }
+                                }
+                                #endif
                             }
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     // Lowered under Liquid Glass so the focused row shows whole
                     // and the next one's title is pushed off the screen.
+                    #if os(tvOS)
+                    // Moved, not padded: padding shrank the scroll view, so the
+                    // next row fell outside it, was never built, and the focus
+                    // engine had nothing below the first row to move Down to.
+                    .offset(y: liquidGlassRowsDrop)
+                    #else
                     .padding(.top, liquidGlassRowsDrop)
+                    #endif
                     .animation(.easeInOut(duration: 0.3), value: liquidGlassRowsDrop)
                     // Treat the rows as a focus section so focus can jump in/out
                     // cleanly. The default focus is only armed after Home loses
@@ -5165,6 +5200,19 @@ struct TVHomeView: View {
     /// carousel has focus, where the glass steps aside and the rows under the
     /// carousel would be pushed off the screen.
     static let liquidGlassRowsDropAmount: CGFloat = 100
+
+    /// tvOS: while the featured carousel holds focus no row counts as the
+    /// focused one, so the first row offers only its remembered card. Down
+    /// from the carousel then lands there, not on whichever card sits under
+    /// the carousel's centre — the third tile, or the fifth once the row had
+    /// been scrolled.
+    private var featureHoldsTVFocus: Bool {
+        #if os(tvOS)
+        isFeatureFocused && featureHeroActive
+        #else
+        false
+        #endif
+    }
 
     private var liquidGlassRowsDrop: CGFloat {
         guard homeLayout == "Modern",

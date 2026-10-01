@@ -98,6 +98,7 @@ struct CalendarView: View {
                     accentColor: accentColor,
                     macFocusedEntryID: macPanelEntryID,
                     focusedEntryID: $focusedPanelEntryID,
+                    onBack: { closeDayPanel() },
                     onSelect: { entry in
                         self.panelDayKey = nil
                         onContentClick(entry.metaId, entry.type)
@@ -110,6 +111,7 @@ struct CalendarView: View {
         // Menu backs out of whatever is on top rather than leaving the tab.
         .onExitCommand(perform: exitCommand)
         .onChange(of: focusedPanelEntryID) { _, id in
+            TVHomeDebugTrace.log("calendar.focus panelEntry=\(id ?? "nil") panel=\(panelDayKey ?? "nil")")
             guard let id, let key = panelDayKey,
                   let match = viewModel.entries(on: key).first(where: { $0.id == id }) else { return }
             withAnimation(.easeOut(duration: 0.25)) { focusedEntry = match }
@@ -141,6 +143,7 @@ struct CalendarView: View {
             withAnimation(.easeOut(duration: 0.25)) { focusedEntry = match }
         }
         .onChange(of: focusedDayKey) { _, key in
+            TVHomeDebugTrace.log("calendar.focus day=\(key ?? "nil") panel=\(panelDayKey ?? "nil")")
             guard let key else { return }
             if let first = viewModel.entries(on: key).first {
                 withAnimation(.easeOut(duration: 0.25)) { focusedEntry = first }
@@ -295,12 +298,16 @@ struct CalendarView: View {
     /// open. Returning nil hands Menu back to the tab bar — without that the
     /// app would quit from here.
     private var exitCommand: (() -> Void)? {
-        panelDayKey == nil ? nil : { closeDayPanel() }
+        panelDayKey == nil ? nil : {
+            TVHomeDebugTrace.log("calendar.back panel=\(panelDayKey ?? "nil")")
+            closeDayPanel()
+        }
     }
 
     /// Closes the day panel and puts the caret back on the day it came from.
     private func closeDayPanel() {
         guard let openDay = panelDayKey else { return }
+        TVHomeDebugTrace.log("calendar.panel.close day=\(openDay)")
         withAnimation(.easeOut(duration: 0.22)) { panelDayKey = nil }
         restoreFocus(toDay: openDay)
     }
@@ -631,6 +638,7 @@ struct CalendarView: View {
                 onOpenDay: { key in
                     guard !viewModel.entries(on: key).isEmpty else { return }
                     focusedPanelEntryID = viewModel.entries(on: key).first?.id
+                    TVHomeDebugTrace.log("calendar.panel.open day=\(key)")
                     withAnimation(.easeOut(duration: 0.22)) { panelDayKey = key }
                 }
             )
@@ -1208,6 +1216,9 @@ private struct DayEntriesPanel: View {
     /// The macOS caret, handed down for the same reason `MonthGrid` takes one.
     var macFocusedEntryID: String? = nil
     @FocusState.Binding var focusedEntryID: String?
+    /// Back, while the panel is open — from its rows, or from the menu that
+    /// Left opens beside it. Closes the panel back to its day.
+    var onBack: (() -> Void)? = nil
     let onSelect: (CalendarEntry) -> Void
 
     var body: some View {
@@ -1277,6 +1288,16 @@ private struct DayEntriesPanel: View {
                 .frame(width: 1)
             }
             .ignoresSafeArea()
+            #if os(tvOS)
+            // Not `onExitCommand`: the tab sidebar takes Menu before SwiftUI
+            // delivers it, so Back opened the menu and the panel never heard it.
+            .background(
+                MenuPressCatcher {
+                    TVHomeDebugTrace.log("calendar.panel.back day=\(dayKey)")
+                    onBack?()
+                }
+            )
+            #endif
             .defaultFocusIfAvailable($focusedEntryID, entries.first?.id)
             .task(id: dayKey) {
                 // tvOS needs a beat after the panel mounts before focus will
@@ -1604,3 +1625,81 @@ enum CalendarDateFormatting {
         ).day
     }
 }
+
+#if os(tvOS)
+/// Takes the remote's Menu press while it is mounted, ahead of the tab
+/// sidebar.
+///
+/// The sidebar `TabView` claims Menu to open itself before SwiftUI hands it to
+/// `onExitCommand`, so a layer inside a tab cannot back out with it. A tap
+/// recogniser on the window sees the press first and, by recognising it,
+/// cancels the press the sidebar would have acted on. It is removed with the
+/// view, so Menu goes back to opening the sidebar as soon as the layer closes.
+struct MenuPressCatcher: UIViewRepresentable {
+    let action: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
+
+    func makeUIView(context: Context) -> CatcherView {
+        let view = CatcherView()
+        view.coordinator = context.coordinator
+        return view
+    }
+
+    func updateUIView(_ view: CatcherView, context: Context) {
+        context.coordinator.action = action
+    }
+
+    static func dismantleUIView(_ view: CatcherView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var action: () -> Void
+        private var recognizer: UITapGestureRecognizer?
+
+        init(action: @escaping () -> Void) { self.action = action }
+
+        func attach(to window: UIWindow) {
+            guard recognizer == nil else { return }
+            let recognizer = UITapGestureRecognizer(target: self, action: #selector(fire))
+            recognizer.allowedPressTypes = [NSNumber(value: UIPress.PressType.menu.rawValue)]
+            recognizer.delegate = self
+            window.addGestureRecognizer(recognizer)
+            self.recognizer = recognizer
+            TVHomeDebugTrace.log("menuCatcher.attach")
+        }
+
+        /// Every other recogniser — the sidebar's included — waits for this
+        /// one to fail before acting on the same press.
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldBeRequiredToFailBy other: UIGestureRecognizer
+        ) -> Bool {
+            true
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive press: UIPress) -> Bool {
+            TVHomeDebugTrace.log("menuCatcher.receive type=\(press.type.rawValue)")
+            return true
+        }
+
+        func detach() {
+            if recognizer != nil { TVHomeDebugTrace.log("menuCatcher.detach") }
+            if let recognizer { recognizer.view?.removeGestureRecognizer(recognizer) }
+            recognizer = nil
+        }
+
+        @objc private func fire() { action() }
+    }
+
+    final class CatcherView: UIView {
+        weak var coordinator: Coordinator?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if let window { coordinator?.attach(to: window) } else { coordinator?.detach() }
+        }
+    }
+}
+#endif

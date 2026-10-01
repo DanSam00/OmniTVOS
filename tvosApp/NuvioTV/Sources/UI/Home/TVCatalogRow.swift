@@ -1302,8 +1302,13 @@ struct CachedFolderCover<Content: View, Placeholder: View>: View {
         }
         .task(id: url) {
             guard loadedURL != url || image == nil else { return }
+            TVHomeDebugTrace.log("folderCover.begin \(url.lastPathComponent)")
             guard let loaded = await BackdropImageCache.shared.image(for: url),
-                  !Task.isCancelled else { return }
+                  !Task.isCancelled else {
+                TVHomeDebugTrace.log("folderCover.none cancelled=\(Task.isCancelled) \(url.lastPathComponent)")
+                return
+            }
+            TVHomeDebugTrace.log("folderCover.done \(url.lastPathComponent)")
             image = loaded
             loadedURL = url
         }
