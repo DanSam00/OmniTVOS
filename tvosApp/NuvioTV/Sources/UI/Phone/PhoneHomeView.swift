@@ -265,6 +265,7 @@ struct PhoneHomeView: View {
     @State private var sideInset: CGFloat = 0
     @State private var scrollOffset: CGFloat = 0
     @State private var pageHeight: CGFloat = 0
+    @State private var pageWidth: CGFloat = 402
     @State private var browsingSection: TVHomeSection?
 
     private var style: PhoneHomeStyle { PhoneHomeStyle(layout: homeLayout) }
@@ -350,7 +351,10 @@ struct PhoneHomeView: View {
         .onGeometryChange(for: CGFloat.self) { proxy in
             max(proxy.safeAreaInsets.leading, proxy.safeAreaInsets.trailing)
         } action: { sideInset = $0 }
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { pageHeight = $0 }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: {
+            pageHeight = $0.height
+            pageWidth = $0.width
+        }
         .onScrollGeometryChange(for: CGFloat.self) { geometry in
             geometry.contentOffset.y + geometry.contentInsets.top
         } action: { _, offset in scrollOffset = offset }
@@ -399,32 +403,76 @@ struct PhoneHomeView: View {
         return Double(min(max(1 - scrollOffset / distance, 0), 1))
     }
 
-    /// Landscape: the hero's art is the whole background — edge to edge and
-    /// top to bottom, behind the rows too — and fades out as the page scrolls
-    /// up. The carousel pages above it draw only their text and buttons.
+    /// In both orientations the hero's art is the whole background — edge to
+    /// edge and top to bottom, fixed behind the rows — and fades out as the
+    /// page scrolls up. The carousel pages above it draw only their text and
+    /// buttons. Portrait uses the poster, landscape the wide backdrop.
     @ViewBuilder
     private var pageBackdrop: some View {
-        if isLandscape, let url = currentSlide?.artURL(portrait: false) {
+        if !style.isGrid || isLandscape, let url = currentSlide?.artURL(portrait: !isLandscape) {
             ZStack {
                 blurredBackdrop(url: url)
-                PhoneArtwork(url: url, kind: .backdrop)
+                if isLandscape {
+                    PhoneArtwork(url: url, kind: .backdrop)
+                        .opacity(heroFade)
+                        .animation(.easeInOut(duration: 0.6), value: url)
+                } else {
+                    // The poster at the screen's width, pinned to the top, as
+                    // the hero drew it — filling the full height instead crops
+                    // a 2:3 poster's sides, title included. It dissolves into
+                    // the frosted backdrop below.
+                    VStack(spacing: 0) {
+                        Color.clear
+                            .frame(width: pageWidth, height: pageWidth * 1.5)
+                            .overlay { PhoneArtwork(url: url, kind: .backdrop) }
+                            .clipped()
+                            .mask {
+                                LinearGradient(
+                                    stops: [
+                                        .init(color: .black, location: 0),
+                                        .init(color: .black, location: 0.7),
+                                        .init(color: .clear, location: 1)
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            }
+                        Spacer(minLength: 0)
+                    }
                     .opacity(heroFade)
                     .animation(.easeInOut(duration: 0.6), value: url)
-                // Legibility for the hero's text on the left, and a floor
-                // for the rows along the bottom.
-                LinearGradient(
-                    colors: [.black.opacity(0.75), .black.opacity(0.25), .clear],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-                LinearGradient(
-                    stops: [
-                        .init(color: .clear, location: 0.45),
-                        .init(color: .black.opacity(0.9), location: 1)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
+                }
+                if isLandscape {
+                    // Legibility for the hero's text on the left, and a floor
+                    // for the rows along the bottom.
+                    LinearGradient(
+                        colors: [.black.opacity(0.75), .black.opacity(0.25), .clear],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: 0.45),
+                            .init(color: .black.opacity(0.9), location: 1)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                } else {
+                    // The status bar at the top; then darkening towards the
+                    // hero's text, which sits around 70% down, and the rows.
+                    LinearGradient(
+                        stops: [
+                            .init(color: .black.opacity(0.4), location: 0),
+                            .init(color: .clear, location: 0.18),
+                            .init(color: .clear, location: 0.38),
+                            .init(color: .black.opacity(0.75), location: 0.68),
+                            .init(color: .black.opacity(0.92), location: 1)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
             }
             .ignoresSafeArea()
         } else {
@@ -480,7 +528,8 @@ struct PhoneHomeView: View {
                 PhoneHeroSlideView(
                     slide: entry.slide,
                     sideInset: sideInset,
-                    drawsArt: !isLandscape,
+                    // The page backdrop draws the art, fixed, in both orientations.
+                    drawsArt: false,
                     onOpenDetails: { onOpenDetails(entry.slide.meta) },
                     onResume: onResume
                 )
