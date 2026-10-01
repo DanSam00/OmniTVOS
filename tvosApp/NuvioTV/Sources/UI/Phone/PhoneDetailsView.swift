@@ -21,6 +21,10 @@ struct PhoneDetailsView: View {
     @State private var watchedEpisodeKeys: Set<String> = []
     /// Side safe-area inset (the Dynamic Island in landscape), zero upright.
     @State private var sideInset: CGFloat = 0
+    /// How far the page has scrolled, for fading the fixed art.
+    @State private var scrollOffset: CGFloat = 0
+    @State private var pageHeight: CGFloat = 0
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -127,18 +131,95 @@ struct PhoneDetailsView: View {
         .onGeometryChange(for: CGFloat.self) { proxy in
             max(proxy.safeAreaInsets.leading, proxy.safeAreaInsets.trailing)
         } action: { sideInset = $0 }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { pageHeight = $0 }
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            geometry.contentOffset.y + geometry.contentInsets.top
+        } action: { _, offset in scrollOffset = offset }
+        .background { pageBackdrop(meta) }
+    }
+
+    private var isLandscape: Bool { verticalSizeClass == .compact }
+
+    /// 1 at the top, fading to 0 as the page scrolls, leaving the blur.
+    private var artFade: Double {
+        let distance = max((isLandscape ? pageHeight : 320) * 0.8, 1)
+        return Double(min(max(1 - scrollOffset / distance, 0), 1))
+    }
+
+    /// The art stays put behind the page, as on Home: sharp at the top, and
+    /// dissolving into a frosted copy of itself as the content scrolls over.
+    private func pageBackdrop(_ meta: NuvioMeta) -> some View {
+        let url = meta.backgroundUrl ?? meta.posterUrl
+        return ZStack {
+            Color.black
+            // Sized by the screen, not the image, so a fill image can't widen
+            // the page past the screen edge.
+            Color.clear
+                .overlay { PhoneArtwork(url: url, kind: .backdrop) }
+                .clipped()
+                .blur(radius: 40)
+                .opacity(0.55)
+            if isLandscape {
+                Color.clear
+                    .overlay { PhoneArtwork(url: url, kind: .backdrop) }
+                    .clipped()
+                    .opacity(artFade)
+                LinearGradient(
+                    colors: [.black.opacity(0.7), .black.opacity(0.2), .clear],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0.4),
+                        .init(color: .black.opacity(0.85), location: 1)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            } else {
+                VStack(spacing: 0) {
+                    Color.clear
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 380)
+                        .overlay { PhoneArtwork(url: url, kind: .backdrop) }
+                        .clipped()
+                        .mask {
+                            LinearGradient(
+                                stops: [
+                                    .init(color: .black, location: 0),
+                                    .init(color: .black, location: 0.6),
+                                    .init(color: .clear, location: 1)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        }
+                    Spacer(minLength: 0)
+                }
+                .opacity(artFade)
+                LinearGradient(
+                    stops: [
+                        .init(color: .black.opacity(0.35), location: 0),
+                        .init(color: .clear, location: 0.15),
+                        .init(color: .black.opacity(0.55), location: 0.45),
+                        .init(color: .black.opacity(0.8), location: 1)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+        }
+        .ignoresSafeArea()
     }
 
     private func header(_ meta: NuvioMeta) -> some View {
         ZStack(alignment: .bottomLeading) {
-            // Fill-mode art sized in an overlay, so its natural width can't
-            // push the card past the screen edge.
+            // The art itself is the fixed page backdrop; this only reserves
+            // its space and holds the title.
             Color.clear
                 .frame(maxWidth: .infinity)
-                .frame(height: 320)
-                .overlay { PhoneArtwork(url: meta.backgroundUrl ?? meta.posterUrl, kind: .backdrop) }
-                .clipped()
-            LinearGradient(colors: [.clear, .black], startPoint: .center, endPoint: .bottom)
+                .frame(height: isLandscape ? max(pageHeight * 0.7, 240) : 320)
             VStack(alignment: .leading, spacing: 8) {
                 PhoneTitleLogo(meta: meta, maxHeight: 80)
                 Text(metaLine(meta))
@@ -381,9 +462,9 @@ private struct PhoneEpisodeRow: View {
     var isWatched = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .center, spacing: 12) {
             PhoneArtwork(url: episode.thumbnail ?? fallbackArt)
-                .frame(width: 136, height: 76)
+                .frame(width: 128, height: 72)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .opacity(isWatched ? 0.55 : 1)
                 .overlay(alignment: .topTrailing) {
@@ -410,6 +491,12 @@ private struct PhoneEpisodeRow: View {
             }
             Spacer(minLength: 0)
         }
+        // A Liquid Glass card over the page's art, lightly darkened so the
+        // text holds up on bright backdrops.
+        .padding(8)
+        .frame(minHeight: 88)
+        .glassEffect(.regular.tint(.black.opacity(0.25)), in: .rect(cornerRadius: 10))
+        .environment(\.colorScheme, .dark)
         .contentShape(Rectangle())
     }
 }
@@ -491,7 +578,6 @@ private struct PhoneSwipeActionRow<Content: View>: View {
             .opacity(offset < 0 ? 1 : 0)
 
             content
-                .background(Color.black)
                 .offset(x: offset)
                 .onTapGesture {
                     if isOpen { close() } else { onTap() }

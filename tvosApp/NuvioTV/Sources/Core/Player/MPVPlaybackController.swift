@@ -1157,17 +1157,17 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
         scheduleDisplayCriteriaProbe()
     }
 
-    /// Keep mpv in letterbox FIT. Fill/stretch are SwiftUI scaleEffect on the host.
+    /// Fit letterboxes; fill crops to the view (`panscan` 1); stretch drops
+    /// the aspect. Only the iPhone asks for anything but fit.
     func setAspectMode(_ mode: PlayerAspectMode) {
         guard mpv != nil else { return }
         setDoubleProperty("video-zoom", 0)
         setDoubleProperty("video-pan-x", 0)
         setDoubleProperty("video-pan-y", 0)
-        setDoubleProperty("panscan", 0)
-        setFlag("keepaspect", true)
+        setDoubleProperty("panscan", mode == .fill ? 1 : 0)
+        setFlag("keepaspect", mode != .stretch)
         setStringProperty("video-unscaled", "no")
         metalLayer.contentsGravity = .resize
-        _ = mode
     }
 
     func setMuted(_ muted: Bool) {

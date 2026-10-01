@@ -3640,11 +3640,18 @@ class PlayerViewModel: ObservableObject {
     }
 
     func setAspectMode(_ mode: PlayerAspectMode) {
+        #if os(iOS)
+        // The phone's Screen menu drives this; on the other platforms the
+        // modes stay off.
+        aspectMode = mode
+        engine.setAspectMode(mode)
+        #else
         // Aspect modes temporarily disabled — always FIT.
         aspectMode = .fit
         PlayerAspectMode.current = .fit
         engine.setAspectMode(.fit)
         _ = mode
+        #endif
     }
 
     /// Published accessors for the pause overlay (meta is private).

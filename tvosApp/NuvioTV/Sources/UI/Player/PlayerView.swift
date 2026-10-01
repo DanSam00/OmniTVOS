@@ -95,6 +95,9 @@ struct PlayerView: View {
     @FocusState private var cancelAutoPlayFocused: Bool
     @FocusState private var skipSegmentFocused: Bool
     @FocusState private var postPlayFocus: PostPlayFocusItem?
+    #if os(iOS)
+    @AppStorage(PhoneScreenMode.storageKey) private var phoneScreenModeRaw = PhoneScreenMode.fit.rawValue
+    #endif
     #if os(macOS)
     /// The keyboard reference, opened with ? and closed with ? or Escape.
     @State private var showKeyboardHelp = false
@@ -992,6 +995,16 @@ struct PlayerView: View {
                     MPVVideoSurface(controller: viewModel.playerController)
                 }
             }
+            #if os(iOS)
+            // Phone screen modes: a fixed ratio gives the video a box of that
+            // shape (the engine stretches into it); fit/zoom/stretch are
+            // applied by the engine itself.
+            .phoneScreenFrame(
+                ratio: viewModel.postPlayState.isVisible
+                    ? nil
+                    : (PhoneScreenMode(rawValue: phoneScreenModeRaw) ?? .fit).forcedRatio
+            )
+            #endif
 
             if viewModel.activeEngineKind == .aether {
                 PlayerSubtitleOverlay(

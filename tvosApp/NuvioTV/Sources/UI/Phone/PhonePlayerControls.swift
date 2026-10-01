@@ -20,6 +20,7 @@ struct PhonePlayerControls: View {
     @ObservedObject private var cast = PhoneCastController.shared
     /// This player's stream is on the Cast device and the phone is its remote.
     @State private var isCasting = false
+    @AppStorage(PhoneScreenMode.storageKey) private var screenModeRaw = PhoneScreenMode.fit.rawValue
 
     private var isPlaying: Bool { viewModel.status == .playing }
 
@@ -41,7 +42,12 @@ struct PhonePlayerControls: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: isCasting)
-        .onAppear { if cast.isConnected { startCastingWhenReady() } }
+        .onAppear {
+            applyScreenMode()
+            if cast.isConnected { startCastingWhenReady() }
+        }
+        .onChange(of: screenModeRaw) { _, _ in applyScreenMode() }
+        .onChange(of: viewModel.activeEngineKind) { _, _ in applyScreenMode() }
         .onChange(of: cast.isConnected) { _, connected in
             if connected {
                 startCastingWhenReady()
@@ -50,6 +56,7 @@ struct PhonePlayerControls: View {
             }
         }
         .onChange(of: isReady) { _, ready in
+            if ready { applyScreenMode() }
             if ready, cast.isConnected, !isCasting { startCastingWhenReady() }
         }
         .onChange(of: cast.hasMedia) { _, hasMedia in
@@ -274,6 +281,7 @@ struct PhonePlayerControls: View {
             }
             optionButton("Subtitles", icon: subtitlesOn ? "captions.bubble.fill" : "captions.bubble", showLabel: showLabels) { open(.subtitles) }
             optionButton("Audio", icon: "speaker.wave.2", showLabel: showLabels) { open(.audio) }
+            optionButton("Screen", icon: "aspectratio", showLabel: showLabels) { open(.screen) }
             optionButton(viewModel.playbackSpeed == .normal ? "Speed" : viewModel.playbackSpeed.label,
                          icon: "gauge.with.dots.needle.67percent", showLabel: showLabels) { open(.speed) }
             Spacer(minLength: 0)
@@ -375,7 +383,13 @@ struct PhonePlayerControls: View {
             PhoneEpisodesPanel(viewModel: viewModel, onClose: closePanel)
         case .sources:
             PhoneSourcesPanel(viewModel: viewModel, onClose: closePanel)
+        case .screen:
+            PhoneScreenPanel(onClose: closePanel)
         }
+    }
+
+    private func applyScreenMode() {
+        viewModel.setAspectMode((PhoneScreenMode(rawValue: screenModeRaw) ?? .fit).engineMode)
     }
 
     // MARK: Cast
@@ -416,7 +430,93 @@ struct PhonePlayerControls: View {
 }
 
 private enum PhonePlayerPanel: Hashable {
-    case subtitles, audio, speed, episodes, sources
+    case subtitles, audio, speed, episodes, sources, screen
+}
+
+/// How the picture fills the phone screen. Applied by `PlayerView` as a scale
+/// on the video surface, worked out from the video's own size, so it behaves
+/// the same under either engine.
+enum PhoneScreenMode: String, CaseIterable, Identifiable {
+    case fit, zoom, stretch, ratio16x9, ratio4x3, ratio21x9, ratio185
+
+    static let storageKey = "phone.player.screenMode"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .fit: return "Fit to Screen"
+        case .zoom: return "Zoom"
+        case .stretch: return "Stretch"
+        case .ratio16x9: return "16:9"
+        case .ratio4x3: return "4:3"
+        case .ratio21x9: return "21:9"
+        case .ratio185: return "1.85:1"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .fit: return "The whole picture, with black bars"
+        case .zoom: return "Fill the screen, cropping the edges"
+        case .stretch: return "Fill the screen, distorting the picture"
+        case .ratio16x9: return "Widescreen TV"
+        case .ratio4x3: return "Classic TV"
+        case .ratio21x9: return "Ultrawide cinema"
+        case .ratio185: return "Flat cinema"
+        }
+    }
+
+    /// The shape of the box the video is drawn in, for the fixed ratios.
+    var forcedRatio: CGFloat? {
+        switch self {
+        case .ratio16x9: return 16.0 / 9.0
+        case .ratio4x3: return 4.0 / 3.0
+        case .ratio21x9: return 21.0 / 9.0
+        case .ratio185: return 1.85
+        default: return nil
+        }
+    }
+
+    /// What the engine does inside that box.
+    var engineMode: PlayerAspectMode {
+        switch self {
+        case .fit: return .fit
+        case .zoom: return .fill
+        default: return .stretch
+        }
+    }
+}
+
+extension View {
+    /// Confines the video surface to `ratio`, centred, when one is set.
+    ///
+    /// Always wraps in the same layout: switching between a plain view and a
+    /// ratio-framed one would change the surface's identity, and rebuilding
+    /// the video surface mid-playback leaves it black.
+    func phoneScreenFrame(ratio: CGFloat?) -> some View {
+        PhoneRatioLayout(ratio: ratio) { self }
+    }
+}
+
+/// Lays out one child at the full proposal, or at `ratio` fitted inside it.
+private struct PhoneRatioLayout: Layout {
+    var ratio: CGFloat?
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        proposal.replacingUnspecifiedDimensions()
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let child = subviews.first else { return }
+        var size = bounds.size
+        if let ratio, size.width > 0, size.height > 0 {
+            size = size.width / size.height > ratio
+                ? CGSize(width: size.height * ratio, height: size.height)
+                : CGSize(width: size.width, height: size.width / ratio)
+        }
+        child.place(at: CGPoint(x: bounds.midX, y: bounds.midY), anchor: .center, proposal: ProposedViewSize(size))
+    }
 }
 
 // MARK: - Seek indicator
@@ -981,6 +1081,23 @@ private struct PhoneSpeedPanel: View {
                                         in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     }
                     .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Screen
+
+private struct PhoneScreenPanel: View {
+    let onClose: () -> Void
+    @AppStorage(PhoneScreenMode.storageKey) private var modeRaw = PhoneScreenMode.fit.rawValue
+
+    var body: some View {
+        PhonePanelScaffold(title: "Screen", onClose: onClose) {
+            ForEach(PhoneScreenMode.allCases) { mode in
+                PhonePanelRow(title: mode.label, subtitle: mode.detail, isSelected: modeRaw == mode.rawValue) {
+                    modeRaw = mode.rawValue
                 }
             }
         }
