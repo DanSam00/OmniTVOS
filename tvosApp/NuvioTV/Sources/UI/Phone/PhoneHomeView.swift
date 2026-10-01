@@ -249,7 +249,18 @@ struct PhoneHomeView: View {
 
     /// Compact height means landscape on a phone.
     @Environment(\.verticalSizeClass) private var verticalSizeClass
-    @State private var heroIndex = 0
+    /// Page in the padded carousel: a copy of the last slide sits at page 0
+    /// and a copy of the first at `count + 1`, so swiping past either end
+    /// carries on round instead of rewinding. Landing on a copy hops,
+    /// unanimated, to the real page it shows.
+    @State private var heroPage = 1
+
+    /// The real slide index behind `heroPage`.
+    private var heroIndex: Int {
+        let count = heroSlides.count
+        guard count > 1 else { return 0 }
+        return ((heroPage - 1) % count + count) % count
+    }
     /// Side safe-area inset (the Dynamic Island in landscape), zero upright.
     @State private var sideInset: CGFloat = 0
     @State private var scrollOffset: CGFloat = 0
@@ -353,7 +364,20 @@ struct PhoneHomeView: View {
             PhoneSectionGridView(sectionID: section.id, loader: loader, onOpenDetails: onOpenDetails)
         }
         .onChange(of: heroSlides.map(\.id)) { _, ids in
-            if heroIndex >= ids.count { heroIndex = 0 }
+            if heroIndex >= ids.count || ids.count <= 1 { heroPage = ids.count > 1 ? 1 : 0 }
+        }
+        .onChange(of: heroPage) { _, page in
+            let count = heroSlides.count
+            guard count > 1, page == 0 || page == count + 1 else { return }
+            // Let the slide onto the copy finish, then swap in the real page.
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    heroPage = page == 0 ? count : 1
+                }
+            }
         }
         // Auto-advance, restarted whenever the page changes by hand too. Only
         // with Auto-Scroll Carousel on.
@@ -362,7 +386,7 @@ struct PhoneHomeView: View {
             try? await Task.sleep(nanoseconds: 8_000_000_000)
             guard !Task.isCancelled else { return }
             withAnimation(.easeInOut(duration: 0.5)) {
-                heroIndex = (heroIndex + 1) % max(heroSlides.count, 1)
+                heroPage = heroIndex + 2
             }
         }
     }
@@ -445,19 +469,40 @@ struct PhoneHomeView: View {
     // MARK: Hero
 
     private func heroCarousel(_ slides: [PhoneHeroSlide]) -> some View {
-        TabView(selection: $heroIndex) {
-            ForEach(Array(slides.enumerated()), id: \.element.id) { index, slide in
+        // With more than one slide: last copy, the slides, first copy.
+        let pages: [(id: String, slide: PhoneHeroSlide)] = slides.count > 1
+            ? [("wrap-head", slides[slides.count - 1])]
+                + slides.map { ($0.id, $0) }
+                + [("wrap-tail", slides[0])]
+            : slides.map { ($0.id, $0) }
+        return TabView(selection: $heroPage) {
+            ForEach(Array(pages.enumerated()), id: \.element.id) { page, entry in
                 PhoneHeroSlideView(
-                    slide: slide,
+                    slide: entry.slide,
                     sideInset: sideInset,
                     drawsArt: !isLandscape,
-                    onOpenDetails: { onOpenDetails(slide.meta) },
+                    onOpenDetails: { onOpenDetails(entry.slide.meta) },
                     onResume: onResume
                 )
-                .tag(index)
+                .tag(page)
             }
         }
-        .tabViewStyle(.page(indexDisplayMode: slides.count > 1 ? .always : .never))
+        // The system dots would count the two copies; these count real slides.
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .overlay(alignment: .bottom) {
+            if slides.count > 1 {
+                HStack(spacing: 8) {
+                    ForEach(0..<slides.count, id: \.self) { index in
+                        Circle()
+                            .fill(Color.white.opacity(index == heroIndex ? 1 : 0.4))
+                            .frame(width: 7, height: 7)
+                    }
+                }
+                .padding(.bottom, 10)
+                .allowsHitTesting(false)
+                .animation(.easeInOut(duration: 0.2), value: heroIndex)
+            }
+        }
         // Landscape: nearly the whole screen, so the title sits low over the
         // art and only a sliver of the first row shows beneath it.
         .containerRelativeFrame(.vertical) { height, _ in

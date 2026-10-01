@@ -56,13 +56,8 @@ struct PhoneDetailsView: View {
                 .presentationDragIndicator(.visible)
             }
         }
-        // Swipe from the left edge, the gesture a navigation stack would give.
-        .gesture(
-            DragGesture(minimumDistance: 24)
-                .onEnded { value in
-                    if value.startLocation.x < 30, value.translation.width > 80 { onBack() }
-                }
-        )
+        // The left-edge back swipe is added where ContentView presents this
+        // page (`phoneEdgeSwipeBack`), alongside the other overlay pages.
     }
 
     private var backButton: some View {

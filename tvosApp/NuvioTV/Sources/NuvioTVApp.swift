@@ -1415,12 +1415,22 @@ struct ContentView: View {
                 // stays on screen (fading it to black would leave the glass
                 // nothing to refract) — it's only `.disabled` so its cards can't
                 // steal focus, and the menu re-grabs focus if the engine drifts.
+                #if os(iOS)
+                // Kept visible under overlays on the phone: the back swipe slides
+                // the page aside and should reveal the screen it returns to.
+                // There is no focus engine here to keep out of it.
+                .opacity(1)
+                #else
                 .opacity(fullScreenOverlayPresented ? 0 : 1)
+                #endif
 
             if case .details(let contentId, let contentType) = activeScreen {
                 platformDetailsScreen(contentId: contentId, contentType: contentType)
                     .id("\(contentType):\(contentId)")
                     .transition(.opacity)
+                    #if os(iOS)
+                    .phoneEdgeSwipeBack(dismissOverlay)
+                    #endif
                     .onDisappear {
                         detailsDidDisappearGeneration &+= 1
                     }
@@ -1465,6 +1475,9 @@ struct ContentView: View {
             if case .cloudLibrary = activeScreen {
                 cloudLibraryScreen()
                     .transition(.opacity)
+                    #if os(iOS)
+                    .phoneEdgeSwipeBack(dismissOverlay)
+                    #endif
                     .onDisappear {
                         detailsDidDisappearGeneration &+= 1
                     }
@@ -1516,6 +1529,9 @@ struct ContentView: View {
                     }
                 )
                 .disabled(!isCollectionFolderActive || cardMenuMeta != nil)
+                #if os(iOS)
+                .phoneEdgeSwipeBack(dismissOverlay)
+                #endif
                 .transition(.opacity)
                 .onDisappear {
                     detailsDidDisappearGeneration &+= 1
@@ -1552,6 +1568,9 @@ struct ContentView: View {
                     }
                 )
                 .transition(.opacity)
+                #if os(iOS)
+                .phoneEdgeSwipeBack(dismissOverlay)
+                #endif
                 .onDisappear {
                     detailsDidDisappearGeneration &+= 1
                 }
@@ -1587,6 +1606,9 @@ struct ContentView: View {
                     }
                 )
                 .transition(.opacity)
+                #if os(iOS)
+                .phoneEdgeSwipeBack(dismissOverlay)
+                #endif
                 .onDisappear {
                     detailsDidDisappearGeneration &+= 1
                 }

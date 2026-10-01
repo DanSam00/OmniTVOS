@@ -213,6 +213,62 @@ extension Array where Element == NuvioMeta {
     }
 }
 
+/// Swipe in from the left edge to go back, like a navigation stack's
+/// interactive pop. Details and the other full-screen pages are overlays
+/// drawn by `ContentView`, not pushed views, so the system gesture never
+/// applied to them. The page follows the finger and goes back once dragged
+/// past a third of the width or flicked; otherwise it springs back.
+struct PhoneEdgeSwipeBack: ViewModifier {
+    let action: () -> Void
+
+    @State private var offset: CGFloat = 0
+    @State private var width: CGFloat = 400
+
+    /// Narrow enough to stay clear of back buttons inset by the 16pt gutter.
+    private let edgeWidth: CGFloat = 16
+
+    func body(content: Content) -> some View {
+        content
+            .offset(x: offset)
+            .shadow(color: .black.opacity(offset > 0 ? 0.5 : 0), radius: 16)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = max($0, 1) }
+            .overlay(alignment: .leading) {
+                Color.clear
+                    .frame(width: edgeWidth)
+                    .frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 6, coordinateSpace: .global)
+                            .onChanged { value in
+                                offset = max(0, value.translation.width)
+                            }
+                            .onEnded { value in
+                                let goesBack = value.translation.width > width / 3
+                                    || value.predictedEndTranslation.width > width * 0.6
+                                if goesBack {
+                                    withAnimation(.easeOut(duration: 0.2)) { offset = width }
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                        var transaction = Transaction()
+                                        transaction.disablesAnimations = true
+                                        withTransaction(transaction) { action() }
+                                        offset = 0
+                                    }
+                                } else {
+                                    withAnimation(.spring(duration: 0.3)) { offset = 0 }
+                                }
+                            }
+                    )
+                    .ignoresSafeArea()
+            }
+    }
+}
+
+extension View {
+    func phoneEdgeSwipeBack(_ action: @escaping () -> Void) -> some View {
+        modifier(PhoneEdgeSwipeBack(action: action))
+    }
+}
+
 /// A two-to-four column poster grid for search and library results.
 struct PhonePosterGrid: View {
     let items: [NuvioMeta]
