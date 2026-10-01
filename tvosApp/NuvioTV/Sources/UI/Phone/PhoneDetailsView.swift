@@ -43,7 +43,13 @@ struct PhoneDetailsView: View {
         }
         .foregroundStyle(.white)
         .preferredColorScheme(.dark)
-        .onAppear { viewModel.loadDetails(id: id, type: type) }
+        .onAppear {
+            // Opened from Search, the keyboard would otherwise stay up over
+            // this page (it is an overlay, not a pushed view, so nothing ends
+            // the search field's editing).
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            viewModel.loadDetails(id: id, type: type)
+        }
         .onDisappear { viewModel.cancelAllTasks() }
         .onChange(of: viewModel.uiState.meta?.id, initial: true) { _, _ in refreshWatchedEpisodes() }
         .onReceive(NotificationCenter.default.publisher(for: WatchedStore.changedNotification)) { _ in
@@ -412,6 +418,42 @@ private struct PhoneEpisodeRow: View {
 /// toggles watched at once; let go part-way and it stays open on two
 /// buttons — toggle watched, or mark everything up to here watched. Tap the
 /// open row (or swipe back) to close it.
+/// A horizontal-only pan. `gestureRecognizerShouldBegin` refuses any touch
+/// that starts out more vertical than horizontal, so the enclosing scroll
+/// view gets those immediately and never waits on this.
+private struct PhoneHorizontalPan: UIGestureRecognizerRepresentable {
+    let onChanged: (CGFloat) -> Void
+    let onEnded: (CGFloat, CGFloat) -> Void
+
+    func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
+        let pan = UIPanGestureRecognizer()
+        pan.delegate = context.coordinator
+        return pan
+    }
+
+    func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer, context: Context) {
+        let dx = recognizer.translation(in: recognizer.view).x
+        switch recognizer.state {
+        case .changed:
+            onChanged(dx)
+        case .ended, .cancelled, .failed:
+            onEnded(dx, recognizer.velocity(in: recognizer.view).x)
+        default:
+            break
+        }
+    }
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
+            let v = pan.velocity(in: pan.view)
+            return abs(v.x) > abs(v.y) * 1.2
+        }
+    }
+}
+
 private struct PhoneSwipeActionRow<Content: View>: View {
     let isWatched: Bool
     let onTap: () -> Void
@@ -422,8 +464,6 @@ private struct PhoneSwipeActionRow<Content: View>: View {
     @State private var offset: CGFloat = 0
     @State private var rowWidth: CGFloat = 360
     @State private var isOpen = false
-    /// Decided on the first movement, so vertical scrolling is never taken.
-    @State private var isHorizontal: Bool?
 
     private let buttonWidth: CGFloat = 92
     private var openOffset: CGFloat { -buttonWidth * 2 }
@@ -459,33 +499,29 @@ private struct PhoneSwipeActionRow<Content: View>: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { rowWidth = max($0, 1) }
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 12)
-                .onChanged { value in
-                    if isHorizontal == nil {
-                        isHorizontal = abs(value.translation.width) > abs(value.translation.height)
-                    }
-                    guard isHorizontal == true else { return }
-                    let start = isOpen ? openOffset : 0
-                    offset = min(0, start + value.translation.width)
+        // A UIKit pan that only begins on a sideways movement: a SwiftUI drag
+        // on every row competed with the scroll view for each touch, and
+        // made scrolling the episode list stick.
+        .gesture(PhoneHorizontalPan(
+            onChanged: { dx in
+                let start = isOpen ? openOffset : 0
+                offset = min(0, start + dx)
+            },
+            onEnded: { dx, velocity in
+                let start = isOpen ? openOffset : 0
+                let end = start + dx + velocity * 0.15
+                if offset <= fullSwipe || end <= fullSwipe * 1.15 {
+                    withAnimation(.easeOut(duration: 0.18)) { offset = -rowWidth }
+                    onToggleWatched()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { close() }
+                } else if offset < openOffset / 2 {
+                    withAnimation(.spring(duration: 0.3)) { offset = openOffset }
+                    isOpen = true
+                } else {
+                    close()
                 }
-                .onEnded { value in
-                    defer { isHorizontal = nil }
-                    guard isHorizontal == true else { return }
-                    let start = isOpen ? openOffset : 0
-                    let end = start + value.predictedEndTranslation.width
-                    if offset <= fullSwipe || end <= fullSwipe * 1.15 {
-                        withAnimation(.easeOut(duration: 0.18)) { offset = -rowWidth }
-                        onToggleWatched()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { close() }
-                    } else if offset < openOffset / 2 {
-                        withAnimation(.spring(duration: 0.3)) { offset = openOffset }
-                        isOpen = true
-                    } else {
-                        close()
-                    }
-                }
-        )
+            }
+        ))
     }
 
     private func actionButton(

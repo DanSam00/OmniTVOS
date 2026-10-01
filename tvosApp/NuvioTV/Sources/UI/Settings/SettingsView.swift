@@ -4747,7 +4747,7 @@ private struct AISubtitleOptionsSheet: View {
                         }
                     }
                 }
-                .frame(width: 1_000, alignment: .leading)
+                .settingsPanelWidth(1_000, alignment: .leading)
                 .padding(.horizontal, 52)
                 .padding(.vertical, 38)
             }
@@ -5317,9 +5317,9 @@ private struct TraktConnectedSettingsSheet: View {
                     }
 
                     }
-                    .frame(width: 1_000, alignment: .leading)
-                    .padding(.horizontal, 52)
-                    .padding(.vertical, 38)
+                    .settingsPanelWidth(1_000, alignment: .leading)
+                    .padding(.horizontal, SettingsPhoneMetrics.isPhone ? 16 : 52)
+                    .padding(.vertical, SettingsPhoneMetrics.isPhone ? 20 : 38)
                 }
                 .focusSection()
             }
@@ -6010,9 +6010,9 @@ private struct SimklConnectedSettingsSheet: View {
                             SimklLoadingDebugReport(report: report)
                         }
                     }
-                    .frame(width: 1_000, alignment: .leading)
-                    .padding(.horizontal, 52)
-                    .padding(.vertical, 38)
+                    .settingsPanelWidth(1_000, alignment: .leading)
+                    .padding(.horizontal, SettingsPhoneMetrics.isPhone ? 16 : 52)
+                    .padding(.vertical, SettingsPhoneMetrics.isPhone ? 20 : 38)
                 }
                 .focusSection()
             }

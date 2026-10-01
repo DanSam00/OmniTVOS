@@ -580,7 +580,14 @@ struct PhoneHomeView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: style.cardSpacing) {
                     ForEach(loader.continueWatching, id: \.meta.id) { item in
-                        Button { onResume(item) } label: { PhoneContinueCard(item: item) }
+                        Button {
+                            // Unaired Up Next has nothing to play yet: open it.
+                            if item.isUpNextEntry && !item.hasAired && !item.isAiringToday {
+                                onOpenDetails(item.meta)
+                            } else {
+                                onResume(item)
+                            }
+                        } label: { PhoneContinueCard(item: item) }
                             .buttonStyle(.plain)
                             .contextMenu { continueWatchingMenu(item) }
                     }
@@ -870,9 +877,9 @@ private struct PhoneHeroSlideView: View {
     private var actions: some View {
         HStack(spacing: 10) {
             Button {
-                if case .resume(let item) = slide { onResume(item) } else { onOpenDetails() }
+                if case .resume(let item) = slide, !isUnaired { onResume(item) } else { onOpenDetails() }
             } label: {
-                Label(playTitle, systemImage: "play.fill")
+                Label(playTitle, systemImage: playIcon)
                     .font(.subheadline.weight(.bold))
                     .padding(.horizontal, 18)
                     .padding(.vertical, 10)
@@ -891,9 +898,21 @@ private struct PhoneHeroSlideView: View {
         .padding(.top, 4)
     }
 
+    /// An Up Next episode that has not aired yet: nothing to play, so the
+    /// button opens the title instead.
+    private var isUnaired: Bool {
+        guard case .resume(let item) = slide else { return false }
+        return item.isUpNextEntry && !item.hasAired && !item.isAiringToday
+    }
+
     private var playTitle: String {
+        if isUnaired { return "Details" }
         if case .resume = slide { return "Resume" }
         return "Play"
+    }
+
+    private var playIcon: String {
+        isUnaired ? "info.circle" : "play.fill"
     }
 }
 #endif
