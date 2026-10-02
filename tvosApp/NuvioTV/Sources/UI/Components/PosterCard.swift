@@ -2308,6 +2308,19 @@ struct DefaultFocusBindingModifier<V: Hashable>: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
+        #if os(tvOS)
+        // One shape whatever the value: a row's default card comes and goes
+        // as focus enters and leaves it, and branching on that swapped the
+        // row's view identity, rebuilding it under the card that had just
+        // taken focus. Down from Sports then lost its target and the engine
+        // put focus back in the row above. A nil value simply states no
+        // preference.
+        if let binding {
+            content.defaultFocus(binding, value)
+        } else {
+            content
+        }
+        #else
         if let binding, let value {
             if #available(tvOS 17.0, macOS 14.0, *) {
                 content.defaultFocus(binding, value)
@@ -2317,6 +2330,7 @@ struct DefaultFocusBindingModifier<V: Hashable>: ViewModifier {
         } else {
             content
         }
+        #endif
     }
 }
 

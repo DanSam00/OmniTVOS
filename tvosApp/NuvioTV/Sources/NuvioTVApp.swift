@@ -62,6 +62,34 @@ struct NuvioTVApp: App {
 /// Temporary Home performance tracing. Enabled only by DEBUG builds so the
 /// release app does not pay for the timestamps or console formatting.
 enum TVHomeDebugTrace {
+    #if os(tvOS)
+    private static var focusObserver: NSObjectProtocol?
+
+    /// Logs every move the focus engine makes and its heading: a direction
+    /// for a press, empty when code or a default-focus rule moved it. That
+    /// tells a press the app mishandled from focus pulled back programmatically.
+    static func observeFocusEngine() {
+        guard enabled, focusObserver == nil else { return }
+        focusObserver = NotificationCenter.default.addObserver(
+            forName: UIFocusSystem.didUpdateNotification,
+            object: nil,
+            queue: .main
+        ) { note in
+            guard let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext
+            else { return }
+            func describe(_ item: UIFocusItem?) -> String {
+                guard let view = item as? UIView else { return item.map { "\(type(of: $0))" } ?? "nil" }
+                let frame = view.convert(view.bounds, to: nil)
+                return "\(type(of: view))@\(Int(frame.minX)),\(Int(frame.minY))"
+            }
+            log(
+                "focusEngine heading=\(context.focusHeading.rawValue) "
+                    + "from=\(describe(context.previouslyFocusedItem)) to=\(describe(context.nextFocusedItem))"
+            )
+        }
+    }
+    #endif
+
     /// Off unless the app is launched with `-OmniHomeTrace`, or the
     /// `OmniHomeTrace` default is set — which survives the app being reopened
     /// from the home screen: `xcrun simctl spawn <device> defaults write
@@ -461,6 +489,9 @@ struct ContentView: View {
         .onAppear {
             syncManager.attach(authManager: authManager, profileViewModel: profileViewModel)
             ICloudSettingsSyncManager.shared.start()
+            #if os(tvOS)
+            TVHomeDebugTrace.observeFocusEngine()
+            #endif
             setupPictureInPicture()
             guard !resolvedInitialScreen else { return }
             resolvedInitialScreen = true
@@ -3248,6 +3279,7 @@ private struct TVMainTabView: View {
         // with the system sidebar; Back on the menu itself is left unhandled,
         // so it leaves the app the same way.
         .onExitCommand(perform: sideMenu.isFocused ? nil : { sideMenu.requestFocus() })
+        .onMoveCommand { direction in sideMenu.handleMove(direction) }
         .onChange(of: selectedTab, initial: true) { _, tab in
             visitedTabs.insert(tab)
         }
@@ -3348,11 +3380,49 @@ final class TVSideMenuState: ObservableObject {
     @Published fileprivate(set) var isFocused = false
     /// Bumped to ask the menu to take focus.
     @Published fileprivate(set) var focusRequest = 0
+    /// Set by Home while its carousel is past the first slide: Left there
+    /// pages back, so the menu must not be the thing to its left.
+    @Published var carouselOwnsLeft = false
+    /// When the focus engine last moved focus, for telling a Left press that
+    /// went somewhere from one that ran into the edge of the screen.
+    private var lastFocusMove = Date.distantPast
+    private var focusObserver: NSObjectProtocol?
+    /// When focus last left the menu for the screen beside it.
+    fileprivate var lastClose = Date.distantPast
 
-    private init() {}
+    /// Focus left the menu a moment ago, so the screen can tell an arrival
+    /// from the menu from one of its own moves.
+    var justClosed: Bool { Date().timeIntervalSince(lastClose) < 0.5 }
+
+    private init() {
+        focusObserver = NotificationCenter.default.addObserver(
+            forName: UIFocusSystem.didUpdateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.lastFocusMove = Date() }
+        }
+    }
 
     func requestFocus() {
         focusRequest &+= 1
+    }
+
+    /// Left that found nothing to move to opens the menu, from any row and at
+    /// any height. The menu's focus section only catches Left from about the
+    /// height of its icon, so off a lower row the press was simply dropped.
+    ///
+    /// `onMoveCommand` also hears presses the focus engine did act on, so a
+    /// press only counts as hitting the edge if focus has not moved around it.
+    func handleMove(_ direction: MoveCommandDirection) {
+        guard direction == .left, !isFocused else { return }
+        let pressed = Date()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self, !self.isFocused,
+                  self.lastFocusMove < pressed.addingTimeInterval(-0.12) else { return }
+            TVHomeDebugTrace.log("sideMenu.edgeLeft")
+            self.requestFocus()
+        }
     }
 }
 
@@ -3380,10 +3450,19 @@ private struct TVSideMenu: View {
     /// the focus engine places it on the new screen, as the system sidebar
     /// did. Cleared once focus has gone.
     @State private var isHandingOff = false
+    /// Set while Back is bringing the menu up, so a carousel that is holding
+    /// Left does not keep it out of reach.
+    @State private var isSummoned = false
 
     private static let tabs: [TVTab] = [.profile, .home, .search, .library, .calendar, .settings]
 
     private var isOpen: Bool { focusedTab != nil }
+
+    /// Out of reach while the carousel owns Left — never while the menu itself
+    /// has focus, which would throw focus out of it.
+    private var yieldsToCarousel: Bool {
+        state.carouselOwnsLeft && focusedTab == nil && !isSummoned
+    }
 
     private var panelShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: 30, style: .continuous)
@@ -3394,6 +3473,10 @@ private struct TVSideMenu: View {
             column
                 .fixedSize()
                 .background { panel }
+                // Gone for a moment after a tab is chosen. Disabled alone, the
+                // row kept focus and the new screen never got it; a view the
+                // eye cannot see the focus engine cannot keep either.
+                .opacity(isHandingOff ? 0 : 1)
             Spacer(minLength: 0)
         }
         .padding(.leading, 40)
@@ -3401,16 +3484,20 @@ private struct TVSideMenu: View {
         .frame(maxHeight: .infinity, alignment: .topLeading)
         .focusSection()
         .ignoresSafeArea()
-        .disabled(isHandingOff || isParked)
+        .disabled(isHandingOff || isParked || yieldsToCarousel)
         .animation(.easeOut(duration: 0.2), value: isOpen)
         .onChange(of: focusedTab) { _, tab in
             TVHomeDebugTrace.log("sideMenu.focus \(tab?.rawValue ?? "nil") selected=\(selectedTab.rawValue)")
             state.isFocused = tab != nil
             if tab == nil, isHandingOff { isHandingOff = false }
+            if tab == nil, !isHandingOff { state.lastClose = Date() }
+            if tab != nil { isSummoned = false }
         }
         .onChange(of: state.focusRequest) { _, _ in
-            TVHomeDebugTrace.log("sideMenu.request parked=\(isParked)")
-            focusedTab = selectedTab
+            TVHomeDebugTrace.log("sideMenu.request parked=\(isParked) yields=\(state.carouselOwnsLeft)")
+            isSummoned = true
+            // A beat later, once the menu is back in the focus engine's reach.
+            DispatchQueue.main.async { focusedTab = selectedTab }
         }
     }
 
@@ -4264,6 +4351,19 @@ struct TVHomeView: View {
                                             + "wasFeatureFocused=\(isFeatureFocused) "
                                             + "mode=\(metaOverride == nil && folderOverride == nil ? "carousel" : "override")"
                                     )
+                                    #if os(tvOS)
+                                    // Right out of the menu lands on the carousel, the
+                                    // nearest thing to the menu row, wherever the menu
+                                    // was opened from. Opened from a row, focus goes
+                                    // back to that row's card instead.
+                                    if focused, !isFeatureFocused,
+                                       TVSideMenuState.shared.justClosed,
+                                       let saved = store.lastFocusedCardID {
+                                        TVHomeDebugTrace.log("sideMenu.return card=\(saved)")
+                                        DispatchQueue.main.async { focusedCardID = saved }
+                                        return
+                                    }
+                                    #endif
                                     if focused { isFeatureFocused = true }
                                 },
                                 onSelect: { item in
@@ -4900,6 +5000,11 @@ struct TVHomeView: View {
             guard isActive else { return }
             scheduleContinueWatchingRefresh()
         }
+        #if os(tvOS)
+        .onChange(of: carouselOwnsLeft, initial: true) { _, owns in
+            TVSideMenuState.shared.carouselOwnsLeft = owns
+        }
+        #endif
         // TabView can keep Home mounted while Settings is selected, so returning
         // to Home does not reliably produce another onAppear.
         .onChange(of: isActive) { _, active in
@@ -5458,6 +5563,15 @@ struct TVHomeView: View {
     /// carousel has focus, where the glass steps aside and the rows under the
     /// carousel would be pushed off the screen.
     static let liquidGlassRowsDropAmount: CGFloat = 100
+
+    #if os(tvOS)
+    /// The featured carousel is past its first slide, so Left belongs to it:
+    /// it pages back. The menu stays out of the focus engine's reach until
+    /// then, or Left would open the menu from any slide.
+    private var carouselOwnsLeft: Bool {
+        isActive && featureHeroActive && featureFocused && featureIndex > 0
+    }
+    #endif
 
     /// tvOS: while the featured carousel holds focus no row counts as the
     /// focused one, so the first row offers only its remembered card. Down
