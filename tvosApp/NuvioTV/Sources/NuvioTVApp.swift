@@ -2719,6 +2719,45 @@ extension CrossfadingBackdrop: Equatable {
     }
 }
 
+/// How far Home's rows have scrolled, for the backdrop's parallax.
+@Observable
+final class TVHomeParallax {
+    var offset: CGFloat = 0
+}
+
+/// Reports Home's scroll position to the parallax. tvOS 17 has no scroll
+/// geometry, so there the backdrop simply stays put.
+struct TVHomeScrollTracker: ViewModifier {
+    let parallax: TVHomeParallax
+
+    func body(content: Content) -> some View {
+        if #available(tvOS 18.0, macOS 15.0, iOS 18.0, *) {
+            content.onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.contentOffset.y + geometry.contentInsets.top
+            } action: { _, offset in
+                parallax.offset = offset
+            }
+        } else {
+            content
+        }
+    }
+}
+
+/// Home's backdrop drifting up behind the rows at a fraction of their
+/// scroll, eased so the focus engine's row-by-row jumps glide.
+struct TVHomeParallaxScroll: ViewModifier {
+    let parallax: TVHomeParallax
+    private static let rate: CGFloat = 0.3
+    private static let maxDrift: CGFloat = 220
+
+    func body(content: Content) -> some View {
+        let drift = min(max(parallax.offset, 0) * Self.rate, Self.maxDrift)
+        content
+            .offset(y: -drift)
+            .animation(.easeOut(duration: 0.35), value: drift)
+    }
+}
+
 /// Plays the focused title's trailer in the Home backdrop, with sound when
 /// Trailer Preview Sound is on.
 ///
@@ -3972,6 +4011,9 @@ struct TVHomeView: View {
     @State private var jellyfinSection: TVHomeSection?
     @State private var isLoading = true
     @State private var focusedMeta: NuvioMeta?
+    /// How far the rows have scrolled, read only by the backdrop's parallax
+    /// so a scroll redraws the art, not Home.
+    @State private var homeParallax = TVHomeParallax()
     /// Collection folder currently focused on Home. When set, the hero shows
     /// emoji + folder title instead of title poster meta/description.
     @State private var focusedCollectionFolder: TVCollectionFolderItem?
@@ -4207,6 +4249,7 @@ struct TVHomeView: View {
                             onPlayingChange: { isHeroTrailerPlaying = $0 }
                         )
                     }
+                    .modifier(TVHomeParallaxScroll(parallax: homeParallax))
                     .clipped()
                 } else {
                     let backdropWidth = proxy.size.width * 0.65
@@ -4224,6 +4267,7 @@ struct TVHomeView: View {
                         )
                         .equatable()
                         .frame(width: backdropWidth, height: backdropHeight, alignment: .topTrailing)
+                        .modifier(TVHomeParallaxScroll(parallax: homeParallax))
                         // Inside the masks, so the trailer dissolves into the
                         // page on exactly the same edges the artwork does.
                         .overlay {
@@ -4832,6 +4876,7 @@ struct TVHomeView: View {
                                         .frame(height: proxy.size.height + TVHomeLayout.finalRowScrollRunway)
                                         .accessibilityHidden(true)
                                 }
+                                .modifier(TVHomeScrollTracker(parallax: homeParallax))
                                 #if os(tvOS)
                                 // Liquid Glass lowers the rows as focus comes down
                                 // from the featured carousel, and the focus engine
