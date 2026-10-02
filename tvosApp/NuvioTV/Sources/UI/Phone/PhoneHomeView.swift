@@ -268,6 +268,10 @@ struct PhoneHomeView: View {
     /// carries on round instead of rewinding. Landing on a copy hops,
     /// unanimated, to the real page it shows.
     @State private var heroPage = 1
+    /// The carousel's exact swipe position, for the art's parallax. Kept in
+    /// an observable object only the art reads, so a frame of swiping
+    /// redraws the art and not the whole page.
+    @State private var heroParallax = PhoneHeroParallax()
 
     /// The real slide index behind `heroPage`.
     private var heroIndex: Int {
@@ -427,36 +431,25 @@ struct PhoneHomeView: View {
             ZStack {
                 blurredBackdrop(url: url)
                 if isLandscape {
-                    Color.clear
-                        .overlay { PhoneArtwork(url: url, kind: .backdrop) }
-                        .clipped()
-                        .opacity(heroFade)
-                        .animation(.easeInOut(duration: 0.6), value: url)
+                    PhoneHeroParallaxArt(
+                        parallax: heroParallax,
+                        urls: heroPages(heroSlides).map { $0.slide.artURL(portrait: false) },
+                        fallbackURL: url,
+                        portraitWidth: nil
+                    )
+                    .opacity(heroFade)
                 } else {
                     // The poster at the screen's width, pinned to the top, as
                     // the hero drew it — filling the full height instead crops
                     // a 2:3 poster's sides, title included. It dissolves into
                     // the frosted backdrop below.
-                    VStack(spacing: 0) {
-                        Color.clear
-                            .frame(width: pageWidth, height: pageWidth * 1.5)
-                            .overlay { PhoneArtwork(url: url, kind: .backdrop) }
-                            .clipped()
-                            .mask {
-                                LinearGradient(
-                                    stops: [
-                                        .init(color: .black, location: 0),
-                                        .init(color: .black, location: 0.7),
-                                        .init(color: .clear, location: 1)
-                                    ],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                            }
-                        Spacer(minLength: 0)
-                    }
+                    PhoneHeroParallaxArt(
+                        parallax: heroParallax,
+                        urls: heroPages(heroSlides).map { $0.slide.artURL(portrait: true) },
+                        fallbackURL: url,
+                        portraitWidth: pageWidth
+                    )
                     .opacity(heroFade)
-                    .animation(.easeInOut(duration: 0.6), value: url)
                 }
                 if isLandscape {
                     // Legibility for the hero's text on the left, and a floor
@@ -536,14 +529,20 @@ struct PhoneHomeView: View {
 
     // MARK: Hero
 
-    private func heroCarousel(_ slides: [PhoneHeroSlide]) -> some View {
-        // With more than one slide: last copy, the slides, first copy.
-        let pages: [(id: String, slide: PhoneHeroSlide)] = slides.count > 1
+    /// With more than one slide: last copy, the slides, first copy.
+    private func heroPages(_ slides: [PhoneHeroSlide]) -> [(id: String, slide: PhoneHeroSlide)] {
+        slides.count > 1
             ? [("wrap-head", slides[slides.count - 1])]
                 + slides.map { ($0.id, $0) }
                 + [("wrap-tail", slides[0])]
             : slides.map { ($0.id, $0) }
-        return TabView(selection: $heroPage) {
+    }
+
+    private func heroCarousel(_ slides: [PhoneHeroSlide]) -> some View {
+        let pages = heroPages(slides)
+        let parallax = heroParallax
+        return ScrollView(.horizontal) {
+            LazyHStack(spacing: 0) {
             ForEach(Array(pages.enumerated()), id: \.element.id) { page, entry in
                 PhoneHeroSlideView(
                     slide: entry.slide,
@@ -560,11 +559,23 @@ struct PhoneHomeView: View {
                         continueWatchingMenu(item)
                     }
                 }
-                .tag(page)
+                .containerRelativeFrame(.horizontal)
+                .id(page)
             }
+            }
+            .scrollTargetLayout()
         }
-        // The system dots would count the two copies; these count real slides.
-        .tabViewStyle(.page(indexDisplayMode: .never))
+        // A paging scroll view rather than a page TabView: it reports where
+        // the swipe is between pages, which the art's parallax follows.
+        .scrollTargetBehavior(.paging)
+        .scrollIndicators(.hidden)
+        .scrollPosition(id: Binding(get: { Optional(heroPage) }, set: { if let page = $0 { heroPage = page } }))
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            geometry.containerSize.width > 0 ? geometry.contentOffset.x / geometry.containerSize.width : 0
+        } action: { _, position in
+            parallax.position = position
+        }
+        // These dots count real slides, not the two wrap-around copies.
         .overlay(alignment: .bottom) {
             if slides.count > 1 {
                 HStack(spacing: 8) {
@@ -927,6 +938,84 @@ private struct PhoneHeroSlideView: View {
 
     private var playIcon: String {
         isUnaired ? "info.circle" : "play.fill"
+    }
+}
+/// The hero carousel's swipe position, in pages (1.5 is halfway from page
+/// one to two).
+@Observable
+final class PhoneHeroParallax {
+    var position: CGFloat = 1
+}
+
+/// The hero art behind the carousel, sliding with it at half speed: each
+/// slide's art sits in a window that moves with its page, while the picture
+/// inside moves only half as far — the parallax. Only the two slides on
+/// either side of the swipe are drawn.
+private struct PhoneHeroParallaxArt: View {
+    let parallax: PhoneHeroParallax
+    let urls: [String?]
+    let fallbackURL: String
+    /// Portrait: the poster at this width, pinned to the top and faded out
+    /// at the bottom. Landscape (nil): the wide art over the whole screen.
+    let portraitWidth: CGFloat?
+
+    private static let depth: CGFloat = 0.5
+
+    var body: some View {
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            let position = urls.count > 1 ? parallax.position : 0
+            let base = Int(floor(position))
+            ZStack(alignment: .topLeading) {
+                ForEach([base, base + 1].filter { urls.indices.contains($0) }, id: \.self) { index in
+                    let distance = CGFloat(index) - position
+                    if abs(distance) < 1 {
+                        art(urls[index] ?? fallbackURL, size: proxy.size)
+                            // Picture moves at half speed inside its window…
+                            .offset(x: -distance * width * Self.depth)
+                            .frame(width: width, height: proxy.size.height, alignment: .top)
+                            .clipped()
+                            // …and the window moves with the page.
+                            .offset(x: distance * width)
+                    }
+                }
+                if urls.isEmpty {
+                    art(fallbackURL, size: proxy.size)
+                }
+            }
+            .frame(width: width, height: proxy.size.height, alignment: .topLeading)
+            .clipped()
+        }
+    }
+
+    @ViewBuilder
+    private func art(_ url: String, size: CGSize) -> some View {
+        if let portraitWidth {
+            VStack(spacing: 0) {
+                Color.clear
+                    .frame(width: portraitWidth, height: portraitWidth * 1.5)
+                    .overlay { PhoneArtwork(url: url, kind: .backdrop) }
+                    .clipped()
+                    .mask {
+                        LinearGradient(
+                            stops: [
+                                .init(color: .black, location: 0),
+                                .init(color: .black, location: 0.7),
+                                .init(color: .clear, location: 1)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    }
+                Spacer(minLength: 0)
+            }
+            .frame(width: size.width, height: size.height, alignment: .top)
+        } else {
+            Color.clear
+                .frame(width: size.width, height: size.height)
+                .overlay { PhoneArtwork(url: url, kind: .backdrop) }
+                .clipped()
+        }
     }
 }
 #endif
