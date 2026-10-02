@@ -44,13 +44,25 @@ enum PhoneImageLoader {
 }
 
 /// Remote artwork with a quiet placeholder.
+///
+/// Catalogs often hand over small art (Cinemeta's posters are 300px wide,
+/// short of a card on a 3x screen). The catalog's image is shown first, then
+/// replaced by the smallest larger rendition the same host serves that is
+/// sharp at the size this view is actually drawn — the small one stays as
+/// the fallback if the larger one is missing or slow.
 struct PhoneArtwork: View {
     let url: String?
     var contentMode: ContentMode = .fill
     var kind: PhoneArtKind = .poster
 
+    @Environment(\.displayScale) private var displayScale
     @State private var image: UIImage?
     @State private var loadedURL: String?
+    @State private var pixelWidth: CGFloat = 0
+
+    private var sharperURL: String? {
+        url.flatMap { PhoneArtUpgrade.sharper(than: $0, pixelWidth: pixelWidth, kind: kind) }
+    }
 
     var body: some View {
         ZStack {
@@ -63,14 +75,75 @@ struct PhoneArtwork: View {
                 Rectangle().fill(Color.white.opacity(0.08))
             }
         }
-        .task(id: url) {
-            let loaded = await PhoneImageLoader.image(for: url, kind: kind)
-            guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.2)) {
-                image = loaded
-                loadedURL = url
-            }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+            pixelWidth = width * displayScale
         }
+        .task(id: "\(url ?? "")|\(sharperURL ?? "")") {
+            if loadedURL != url || image == nil {
+                let loaded = await PhoneImageLoader.image(for: url, kind: kind)
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeOut(duration: 0.2)) {
+                    image = loaded
+                    loadedURL = url
+                }
+            }
+            guard let sharperURL else { return }
+            guard let sharp = await PhoneImageLoader.image(for: sharperURL, kind: kind),
+                  !Task.isCancelled else { return }
+            // Same picture at a higher resolution: swapped without a fade.
+            image = sharp
+            loadedURL = url
+        }
+    }
+}
+
+/// Larger renditions of the same artwork, from hosts whose URLs name the size.
+enum PhoneArtUpgrade {
+    /// metahub (Cinemeta): /poster|background|logo/small|medium|large/.
+    private static let metahubSizes: [(name: String, width: CGFloat)] = [
+        ("small", 300), ("medium", 500), ("large", 780)
+    ]
+    /// TMDB's /t/p/wNNN/ widths, posters and backdrops.
+    private static let tmdbPosterWidths: [CGFloat] = [92, 154, 185, 342, 500, 780]
+    private static let tmdbBackdropWidths: [CGFloat] = [300, 780, 1280]
+
+    /// A sharper URL for `pixelWidth`, or nil when the current one already
+    /// suffices or the host isn't one whose sizes are known.
+    static func sharper(than url: String, pixelWidth: CGFloat, kind: PhoneArtKind) -> String? {
+        guard pixelWidth > 1 else { return nil }
+        if url.contains("images.metahub.space/") {
+            for current in metahubSizes {
+                for segment in ["/poster/", "/background/", "/logo/"] {
+                    let token = segment + current.name + "/"
+                    guard url.contains(token) else { continue }
+                    guard current.width < pixelWidth,
+                          let target = metahubSizes.first(where: { $0.width >= pixelWidth }) ?? metahubSizes.last,
+                          target.width > current.width else { return nil }
+                    return url.replacingOccurrences(of: token, with: segment + target.name + "/")
+                }
+            }
+            return nil
+        }
+        if url.contains("image.tmdb.org/t/p/w"),
+           let range = url.range(of: #"/t/p/w(\d+)/"#, options: .regularExpression) {
+            let digits = url[range].dropFirst("/t/p/w".count).dropLast()
+            guard let current = Double(digits).map({ CGFloat($0) }), current < pixelWidth else { return nil }
+            // The current width says which family the image is: 92–500 are
+            // poster-only, 300 and 1280 backdrop-only; 780 is in both, so
+            // the view's kind decides.
+            let widths: [CGFloat]
+            if [92, 154, 185, 342, 500].contains(current) {
+                widths = tmdbPosterWidths
+            } else if current == 300 || current == 1280 {
+                widths = tmdbBackdropWidths
+            } else {
+                widths = kind == .backdrop ? tmdbBackdropWidths : tmdbPosterWidths
+            }
+            guard let target = widths.first(where: { $0 >= pixelWidth }) ?? widths.last,
+                  target > current else { return nil }
+            return url.replacingCharacters(in: range, with: "/t/p/w\(Int(target))/")
+        }
+        return nil
     }
 }
 
