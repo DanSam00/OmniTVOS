@@ -437,6 +437,8 @@ struct PhoneHomeView: View {
                         fallbackURL: url,
                         portraitWidth: nil
                     )
+                    // Drifts up behind the rows as the page scrolls.
+                    .modifier(PhoneParallaxScroll(offset: scrollOffset))
                     .opacity(heroFade)
                 } else {
                     // The poster at the screen's width, pinned to the top, as
@@ -449,6 +451,7 @@ struct PhoneHomeView: View {
                         fallbackURL: url,
                         portraitWidth: pageWidth
                     )
+                    .modifier(PhoneParallaxScroll(offset: scrollOffset))
                     .opacity(heroFade)
                 }
                 if isLandscape {

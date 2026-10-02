@@ -778,17 +778,17 @@ private struct PhoneStreamRow: View {
             .background(Color.primary.opacity(0.12), in: Capsule())
     }
 }
-/// The page art on scroll: it drifts up at a third of the content's speed,
+/// The page art on scroll: it drifts up at about half the content's speed,
 /// so the page appears to slide over it, and stretches from the top when
 /// the page is pulled down past its start.
-private struct PhoneParallaxScroll: ViewModifier {
+struct PhoneParallaxScroll: ViewModifier {
     let offset: CGFloat
-    private static let rate: CGFloat = 0.33
+    private static let rate: CGFloat = 0.55
 
     func body(content: Content) -> some View {
         let pull = max(-offset, 0)
         content
-            .scaleEffect(1 + pull / 400, anchor: .top)
+            .scaleEffect(1 + pull / 250, anchor: .top)
             .offset(y: -max(offset, 0) * Self.rate)
     }
 }

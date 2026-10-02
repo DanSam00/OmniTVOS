@@ -2513,7 +2513,7 @@ struct TvDetailsContent: View {
 
             GeometryReader { proxy in
                 ZStack(alignment: .topLeading) {
-                    TvDetailsBackdrop(meta: meta, blurRadius: backdropBlurRadius)
+                    TvDetailsBackdrop(meta: meta, blurRadius: backdropBlurRadius, scrollOffset: scrollOffset)
 
                     TvDetailsScrolledBackdropDimmer(isScrolledDown: isScrolledDown)
 
@@ -3804,6 +3804,9 @@ private struct TvDetailsScrollTransitionShadow: View {
 private struct TvDetailsBackdrop: View {
     let meta: NuvioMeta
     var blurRadius: CGFloat = 0
+    /// How far the page has scrolled: the art drifts up at a fraction of
+    /// it, a parallax behind the content.
+    var scrollOffset: CGFloat = 0
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
 
@@ -3824,6 +3827,10 @@ private struct TvDetailsBackdrop: View {
                 }
                 .blur(radius: blurRadius, opaque: true)
                 .animation(.easeInOut(duration: 0.35), value: blurRadius)
+                // Overscanned so the drift never uncovers the bottom edge.
+                .scaleEffect(1.12, anchor: .top)
+                .offset(y: -min(scrollOffset, 400) * 0.3)
+                .animation(.easeOut(duration: 0.25), value: scrollOffset)
                 .ignoresSafeArea()
             } else {
                 backdropColor.ignoresSafeArea()

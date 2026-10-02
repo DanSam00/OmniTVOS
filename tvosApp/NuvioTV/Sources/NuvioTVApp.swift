@@ -2607,12 +2607,25 @@ struct CrossfadingBackdrop: View {
     /// Crop anchor for `.fill`. Collection folder heroes use `.topTrailing`
     /// (Android `Alignment.TopEnd`); title posters keep center.
     var alignment: Alignment = .center
+    /// Row (y) and column (x) of the title this art belongs to. Moving
+    /// along a row slides the new art in from that side while the old
+    /// drifts the other way more slowly, as a parallax; other changes
+    /// just crossfade.
+    var gridPosition: CGPoint? = nil
+    /// Slide between titles (Home). Elsewhere the art only crossfades and
+    /// isn't overscanned.
+    var parallax = false
 
     @State private var image: UIImage?
     @State private var loadedURL: String?
     @State private var outgoingImage: UIImage?
     @State private var outgoingOpacity = 0.0
     @State private var imageOpacity = 1.0
+    @State private var imageShift: CGFloat = 0
+    @State private var outgoingShift: CGFloat = 0
+    @State private var lastGridPosition: CGPoint?
+    /// How far the art travels, as a fraction of the width.
+    private static let slideDistance: CGFloat = 0.04
 
     var body: some View {
         GeometryReader { proxy in
@@ -2620,10 +2633,12 @@ struct CrossfadingBackdrop: View {
                 placeholder
                 if let outgoingImage {
                     backdropImage(outgoingImage, size: proxy.size)
+                        .offset(x: outgoingShift * proxy.size.width)
                         .opacity(outgoingOpacity)
                 }
                 if let image {
                     backdropImage(image, size: proxy.size)
+                        .offset(x: imageShift * proxy.size.width)
                         .opacity(imageOpacity)
                         .id(loadedURL)
                 }
@@ -2639,6 +2654,7 @@ struct CrossfadingBackdrop: View {
                 outgoingOpacity = 0
                 return
             }
+            let position = gridPosition
             guard let loaded = await BackdropImageCache.shared.image(for: imageURL) else { return }
             // Some catalog add-ons (including BetterPosters) only provide a
             // poster URL. PosterCard uses that same image for its landscape
@@ -2651,16 +2667,28 @@ struct CrossfadingBackdrop: View {
                 outgoingImage = previousImage
                 outgoingOpacity = 1
             }
+            var slideDirection: CGFloat = 0
+            if let position, let last = lastGridPosition, position.y == last.y, position.x != last.x {
+                slideDirection = position.x > last.x ? 1 : -1
+            }
+            lastGridPosition = position
             image = loaded
             loadedURL = url
             imageOpacity = previousImage == nil ? 1 : 0
+            // Overscaled slightly in `backdropImage`, so the shifted art
+            // never shows its edge.
+            if !parallax { slideDirection = 0 }
+            imageShift = previousImage == nil ? 0 : slideDirection * Self.slideDistance
+            outgoingShift = 0
 
-            withAnimation(.easeInOut(duration: 0.30)) {
+            withAnimation(.easeOut(duration: 0.45)) {
                 imageOpacity = 1
                 outgoingOpacity = 0
+                imageShift = 0
+                outgoingShift = -slideDirection * Self.slideDistance * 0.5
             }
 
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(nanoseconds: 450_000_000)
             guard !Task.isCancelled, loadedURL == url else { return }
             outgoingImage = nil
             outgoingOpacity = 0
@@ -2675,6 +2703,8 @@ struct CrossfadingBackdrop: View {
             // Alignment anchors the crop when the filled image overflows the
             // screen — critical for tall hero art (collection folder backdrops).
             .frame(width: size.width, height: size.height, alignment: alignment)
+            // Just enough overscan that the sliding art never shows its edge.
+            .scaleEffect(parallax ? 1 + Self.slideDistance * 2 : 1)
             .clipped()
     }
 }
@@ -2684,6 +2714,8 @@ extension CrossfadingBackdrop: Equatable {
         lhs.url == rhs.url
             && lhs.placeholder == rhs.placeholder
             && lhs.alignment == rhs.alignment
+            && lhs.gridPosition == rhs.gridPosition
+            && lhs.parallax == rhs.parallax
     }
 }
 
@@ -4158,7 +4190,9 @@ struct TVHomeView: View {
                     CrossfadingBackdrop(
                         url: showsLoading || homeLayout == "Grid View" ? nil : homeBackdropURL,
                         placeholder: backdropColor,
-                        alignment: focusedCollectionFolder != nil ? .topTrailing : .center
+                        alignment: focusedCollectionFolder != nil ? .topTrailing : .center,
+                        gridPosition: backdropGridPosition,
+                        parallax: true
                     )
                     .equatable()
                     .frame(width: proxy.size.width, height: proxy.size.height)
@@ -4184,7 +4218,9 @@ struct TVHomeView: View {
                         CrossfadingBackdrop(
                             url: showsLoading || homeLayout == "Grid View" ? nil : homeBackdropURL,
                             placeholder: backdropColor,
-                            alignment: .topTrailing
+                            alignment: .topTrailing,
+                            gridPosition: backdropGridPosition,
+                        parallax: true
                         )
                         .equatable()
                         .frame(width: backdropWidth, height: backdropHeight, alignment: .topTrailing)
@@ -6134,6 +6170,22 @@ struct TVHomeView: View {
                 ?? preferredBackdropURL(for: visibleHero)
         }
         return preferredBackdropURL(for: visibleFocusedMeta) ?? preferredBackdropURL(for: visibleHero)
+    }
+
+    /// Row and column of the title whose art the backdrop shows, so the
+    /// backdrop can slide the way focus moved. The featured carousel is
+    /// row -1.
+    private var backdropGridPosition: CGPoint? {
+        if featureHeroActive, featureFocused, featureItems.indices.contains(featureIndex) {
+            return CGPoint(x: featureIndex, y: -1)
+        }
+        guard let id = homeBackdropMeta?.id else { return nil }
+        for (row, section) in visibleSections.enumerated() {
+            if let column = section.items.firstIndex(where: { $0.id == id }) {
+                return CGPoint(x: column, y: row)
+            }
+        }
+        return nil
     }
 
     /// The title whose art the backdrop is currently showing, so the hero
