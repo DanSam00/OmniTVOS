@@ -33,8 +33,6 @@ struct PhoneDetailsView: View {
     /// then shown when the Trailer Delay runs out — as Home does on the TV.
     @State private var trailerPreparedID: String?
     @State private var trailerShownID: String?
-    /// Set when the trailer reaches its end, to fade back to the art.
-    @State private var trailerFinishedID: String?
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -229,31 +227,23 @@ struct PhoneDetailsView: View {
         ZStack {
             PhoneArtwork(url: url, kind: .backdrop)
             if trailerPreparedID == meta.id {
-                TrailerPreviewPlayer(
+                // Shows only once the delay is up *and* enough is buffered,
+                // then fades back to the art when it ends.
+                PhoneTrailerView(
                     meta: meta,
                     isActive: trailerShownID == meta.id
                         && artFade > 0.05
                         && !playerPresence.isVisible
                         && !isSourcesPresented
-                        && scenePhase == .active,
-                    onPlaybackFinished: { trailerFinishedID = meta.id },
-                    logLabel: "phone-details"
+                        && scenePhase == .active
                 )
                 .id(meta.id)
-                // The player keeps itself hidden until its first frame is up
-                // and it is active. Its ready callback can't be used to reveal
-                // it: the surface holds the callback from when it was made, so
-                // a trailer that resolves after the delay never fires it, and
-                // only the sound came through.
-                .opacity(trailerFinishedID == meta.id ? 0 : 1)
-                .animation(.easeInOut(duration: 0.6), value: trailerFinishedID)
             }
         }
         .allowsHitTesting(false)
         .task(id: "\(meta.id)|\(trailersEnabled)|\(trailerDelay)") {
             trailerPreparedID = nil
             trailerShownID = nil
-            trailerFinishedID = nil
             guard trailersEnabled else { return }
             let delay = Double(max(0, trailerDelay))
             let settle = min(delay, 1.5)
