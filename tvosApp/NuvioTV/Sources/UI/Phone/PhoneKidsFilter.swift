@@ -4,10 +4,10 @@ import SwiftUI
 /// Kids profiles: only titles rated for children are listed.
 ///
 /// A title's official US age rating decides it — up to PG for films and up
-/// to TV-PG for shows — looked up through TMDB and remembered. Where there
+/// to TV-G for shows — looked up through TMDB and remembered. Where there
 /// is no rating (no TMDB key, or TMDB has none) a genre rule decides
-/// instead: family, animation or kids titles, and nothing tagged horror,
-/// thriller, crime, war or adult.
+/// instead: family or kids titles only. Either way nothing tagged horror,
+/// thriller, crime, war, mystery or adult gets through.
 enum PhoneKidsMode {
     static var isActive: Bool {
         #if OMNI_DEBUG_TOOLS
@@ -21,9 +21,11 @@ enum PhoneKidsMode {
 
 enum KidsContentFilter {
     private static let allowedMovieRatings: Set<String> = ["G", "PG"]
-    private static let allowedTVRatings: Set<String> = ["TV-Y", "TV-Y7", "TV-Y7-FV", "TV-G", "TV-PG"]
-    private static let blockedRatings: Set<String> = ["PG-13", "R", "NC-17", "NR", "TV-14", "TV-MA"]
-    private static let kidGenres = ["family", "animation", "kids", "children"]
+    private static let allowedTVRatings: Set<String> = ["TV-Y", "TV-Y7", "TV-Y7-FV", "TV-G"]
+    private static let blockedRatings: Set<String> = ["PG-13", "R", "NC-17", "NR", "TV-PG", "TV-14", "TV-MA"]
+    /// For titles without a rating. Animation alone isn't enough: plenty
+    /// of anime and adult animation is untagged by rating.
+    private static let kidGenres = ["family", "kids", "children"]
     private static let adultGenres = ["horror", "thriller", "crime", "war", "adult", "erotic", "mystery"]
 
     /// `metas` unchanged outside a Kids profile; otherwise only the allowed

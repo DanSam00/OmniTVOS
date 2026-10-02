@@ -107,14 +107,26 @@ final class PhoneHomeLoader: ObservableObject {
                 skip: skip,
                 genre: section.catalogGenre
             )
+            guard let page else {
+                if let latest = sections.firstIndex(where: { $0.id == sectionId }) {
+                    sections[latest].isLoadingMore = false
+                }
+                return
+            }
+            let existingBefore = Set(sections.first { $0.id == sectionId }?.items.map(\.id) ?? [])
+            let unseen = page.items.filter { !existingBefore.contains($0.id) }
+            // Kids profiles: later pages go through the same filter as the
+            // first, or scrolling a row brought adult titles in.
+            let allowed = await KidsContentFilter.filterIfNeeded(unseen.filter(isVisible))
             guard let latest = sections.firstIndex(where: { $0.id == sectionId }) else { return }
             sections[latest].isLoadingMore = false
-            guard let page else { return }
             let existing = Set(sections[latest].items.map(\.id))
-            let fresh = page.items.filter { !existing.contains($0.id) && isVisible($0) }
+            let fresh = allowed.filter { !existing.contains($0.id) }
             sections[latest].items.append(contentsOf: fresh)
             sections[latest].nextSkip = page.nextSkip ?? (skip + page.items.count)
-            sections[latest].hasMore = page.hasMore && !fresh.isEmpty
+            // More pages may still hold allowed titles even when this one
+            // had none, so keep going while the catalog has new items.
+            sections[latest].hasMore = page.hasMore && !unseen.isEmpty
         }
     }
 

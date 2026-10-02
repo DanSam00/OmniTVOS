@@ -325,7 +325,7 @@ private struct PhoneAddProfileSheet: View {
 
                         Toggle("Kids profile", isOn: $isKids)
                             .padding(.top, 4)
-                        Text("Only shows films rated up to PG and shows up to TV-PG, and nothing tagged horror, thriller, crime or war.")
+                        Text("Only shows films rated up to PG and shows up to TV-G, and nothing tagged horror, thriller, crime or war.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
