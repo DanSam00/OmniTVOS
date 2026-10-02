@@ -358,15 +358,18 @@ struct PhonePosterGrid: View {
     private let columns = [GridItem(.adaptive(minimum: 104), spacing: 12, alignment: .top)]
 
     var body: some View {
-        LazyVGrid(columns: columns, spacing: 16) {
-            ForEach(items.uniquedByID(), id: \.id) { meta in
-                Button { onSelect(meta) } label: {
-                    PhoneFlexiblePoster(meta: meta)
+        // Search, Discover and "see all" grids all come through here.
+        PhoneKidsFiltered(items: items) { visible in
+            LazyVGrid(columns: columns, spacing: 16) {
+                ForEach(visible.uniquedByID(), id: \.id) { meta in
+                    Button { onSelect(meta) } label: {
+                        PhoneFlexiblePoster(meta: meta)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
+            .padding(.horizontal, PhoneLayout.gutter)
         }
-        .padding(.horizontal, PhoneLayout.gutter)
     }
 }
 

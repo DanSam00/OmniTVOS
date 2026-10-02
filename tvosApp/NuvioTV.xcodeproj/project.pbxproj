@@ -408,6 +408,7 @@
 		IOSUI0000000000000000024 /* NuvioTV/Sources/UI/Phone/PhoneDiscoverSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = IOSUI0000000000000000023 /* NuvioTV/Sources/UI/Phone/PhoneDiscoverSection.swift */; };
 		IOSUI0000000000000000026 /* NuvioTV/Sources/UI/Phone/PhoneCastController.swift in Sources */ = {isa = PBXBuildFile; fileRef = IOSUI0000000000000000025 /* NuvioTV/Sources/UI/Phone/PhoneCastController.swift */; };
 		IOSUI0000000000000000028 /* NuvioTV/Sources/UI/Phone/PhoneTrailerPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = IOSUI0000000000000000027 /* NuvioTV/Sources/UI/Phone/PhoneTrailerPlayer.swift */; };
+		IOSUI0000000000000000030 /* NuvioTV/Sources/UI/Phone/PhoneKidsFilter.swift in Sources */ = {isa = PBXBuildFile; fileRef = IOSUI0000000000000000029 /* NuvioTV/Sources/UI/Phone/PhoneKidsFilter.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -617,6 +618,7 @@
 		IOSUI0000000000000000023 /* NuvioTV/Sources/UI/Phone/PhoneDiscoverSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/UI/Phone/PhoneDiscoverSection.swift; sourceTree = "<group>"; };
 		IOSUI0000000000000000025 /* NuvioTV/Sources/UI/Phone/PhoneCastController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/UI/Phone/PhoneCastController.swift; sourceTree = "<group>"; };
 		IOSUI0000000000000000027 /* NuvioTV/Sources/UI/Phone/PhoneTrailerPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/UI/Phone/PhoneTrailerPlayer.swift; sourceTree = "<group>"; };
+		IOSUI0000000000000000029 /* NuvioTV/Sources/UI/Phone/PhoneKidsFilter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/UI/Phone/PhoneKidsFilter.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -1468,6 +1470,7 @@
 				IOSUI0000000000000000024 /* NuvioTV/Sources/UI/Phone/PhoneDiscoverSection.swift in Sources */,
 				IOSUI0000000000000000026 /* NuvioTV/Sources/UI/Phone/PhoneCastController.swift in Sources */,
 				IOSUI0000000000000000028 /* NuvioTV/Sources/UI/Phone/PhoneTrailerPlayer.swift in Sources */,
+				IOSUI0000000000000000030 /* NuvioTV/Sources/UI/Phone/PhoneKidsFilter.swift in Sources */,
 				IOSUI0000000000000000022 /* NuvioTV/Sources/UI/Phone/PhoneCalendarView.swift in Sources */,
 				IOSUI0000000000000000002 /* NuvioTV/Sources/UI/Phone/PhoneComponents.swift in Sources */,
 				IOSUI0000000000000000004 /* NuvioTV/Sources/UI/Phone/PhoneHomeView.swift in Sources */,

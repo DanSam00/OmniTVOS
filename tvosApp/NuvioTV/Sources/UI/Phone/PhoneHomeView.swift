@@ -71,10 +71,12 @@ final class PhoneHomeLoader: ObservableObject {
             guard let items = catalog.items else { continue }
             let head = await TmdbDetailsService.localizedMetadata(for: Array(items.prefix(18)))
             let all = head + items.dropFirst(18)
+            // Kids profiles: only child-friendly titles, in rows and hero.
+            let visible = await KidsContentFilter.filterIfNeeded(all.filter(isVisible))
             result.append(TVHomeSection(
                 id: catalog.id,
                 title: catalog.name,
-                items: all.filter(isVisible),
+                items: visible,
                 contentType: catalog.contentType,
                 catalogId: catalog.catalogId,
                 addonId: catalog.addonId,

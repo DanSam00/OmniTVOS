@@ -128,6 +128,21 @@ enum SettingsKey {
     static let profilePinEnabled = "nuvio.tv.settings.profile.pinEnabled"
     static let profileAutoSelectLast = "nuvio.tv.settings.profile.autoSelectLast"
     static let profileRequireSelectionAfterBackground = "nuvio.tv.settings.profile.requireSelectionAfterBackground"
+    /// Kids profile: only child-friendly titles are listed. Kept with the
+    /// profile's settings so it travels with the profile between devices.
+    static let kidsProfile = "nuvio.tv.settings.profile.kids"
+    /// A photo chosen as this profile's avatar in Omni: a small JPEG, base64.
+    /// Kept with the profile's Omni settings so it reaches other Omni
+    /// devices; Nuvio's own avatar field holds a catalog avatar instead.
+    static let customAvatarPhoto = "nuvio.tv.settings.profile.customAvatarPhoto"
+    /// API keys and service tokens, left out when a new profile opts out of
+    /// copying them.
+    static let credentials = [
+        traktClientID, traktClientSecret, simklClientID, simklAccessToken,
+        tmdbApiKey, mdbListApiKey, debridApiKey,
+        torboxAccessToken, premiumizeAccessToken, realDebridAccessToken,
+        aiSubtitlesGeminiAPIKey,
+    ]
     static let accountSyncWatchState = "nuvio.tv.settings.account.syncWatchState"
 
     static let theme = "nuvio.tv.settings.appearance.theme"
@@ -335,7 +350,8 @@ enum SettingsKey {
     ])
 
     static let all = [
-        profileName, profilePinEnabled, profileAutoSelectLast, profileRequireSelectionAfterBackground,
+        profileName, profilePinEnabled, profileAutoSelectLast, profileRequireSelectionAfterBackground, kidsProfile,
+        customAvatarPhoto,
         accountSyncWatchState,
         theme, bodyColor, font, language, amoled, amoledSurfaces, reduceMotion,
         homeLayout, heroEnabled, homeFeature, heroAutoScroll, heroCatalogs, fullscreenHeroBackdrop, posterLabels, catalogAddonNames, discoverLocation,
@@ -1789,7 +1805,8 @@ private struct AccountSettingsView: View {
                 HStack(spacing: 22) {
                     ProfileAvatarView(
                         avatarId: activeProfile?.avatarId ?? ProfileAvatarCatalog.defaultId,
-                        size: 84
+                        size: 84,
+                        profileId: activeProfile?.id
                     )
 
                     VStack(alignment: .leading, spacing: 8) {
@@ -1991,6 +2008,32 @@ private struct AccountSettingsView: View {
         .onChange(of: activeProfile) { _, _ in refreshEditableName() }
         .sheet(isPresented: $showingAvatarPicker) {
             if let profile = activeProfile {
+                #if os(iOS)
+                PhoneAvatarPickerSheet(
+                    title: displayProfileName,
+                    profileId: profile.id,
+                    selectedAvatarId: profile.avatarId.isEmpty
+                        ? ProfileAvatarCatalog.defaultId
+                        : profile.avatarId
+                ) { avatarId, photo in
+                    OmniCustomAvatar.set(photo, forProfile: profile.id)
+                    if avatarId != profile.avatarId {
+                        onChangeProfileAvatar?(profile.id, avatarId)
+                    }
+                }
+                #elseif os(macOS)
+                ProfileAvatarPickerSheet(
+                    isPresented: $showingAvatarPicker,
+                    title: displayProfileName,
+                    selectedAvatarId: profile.avatarId.isEmpty
+                        ? ProfileAvatarCatalog.defaultId
+                        : profile.avatarId,
+                    profileId: profile.id,
+                    onSavePhoto: { photo in OmniCustomAvatar.set(photo, forProfile: profile.id) }
+                ) { avatarId in
+                    onChangeProfileAvatar?(profile.id, avatarId)
+                }
+                #else
                 ProfileAvatarPickerSheet(
                     isPresented: $showingAvatarPicker,
                     title: displayProfileName,
@@ -2000,6 +2043,7 @@ private struct AccountSettingsView: View {
                 ) { avatarId in
                     onChangeProfileAvatar?(profile.id, avatarId)
                 }
+                #endif
             }
         }
     }

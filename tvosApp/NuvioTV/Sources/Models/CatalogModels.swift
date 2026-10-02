@@ -6133,14 +6133,44 @@ enum ProfileSettings {
 
     /// Clone the current profile's settings into a freshly created profile, then
     /// mark it seeded so the global migration never overwrites the copy.
-    static func seedNewProfile(_ profileId: String, copyingFrom source: UserDefaults? = nil) {
+    static func seedNewProfile(
+        _ profileId: String,
+        copyingFrom source: UserDefaults? = nil,
+        copySettings copies: Bool = true,
+        copyCredentials: Bool = true
+    ) {
         let destination = store(for: profileId)
-        copySettings(from: source ?? current, to: destination)
+        let from = source ?? current
+        if copies {
+            copySettings(from: from, to: destination)
+            // The settings, not the identity: name and PIN belong to the
+            // profile being copied from.
+            [SettingsKey.profileName, SettingsKey.profilePinEnabled, SettingsKey.customAvatarPhoto]
+                .forEach(destination.removeObject(forKey:))
+            if copyCredentials {
+                // Signed-in services keep their tokens beside, not in, the
+                // settings list.
+                for key in TraktAuthStore.credentialKeys {
+                    if let value = from.object(forKey: key) { destination.set(value, forKey: key) }
+                }
+            } else {
+                SettingsKey.credentials.forEach(destination.removeObject(forKey:))
+            }
+        } else {
+            SettingsKey.all.forEach(destination.removeObject(forKey:))
+        }
         // Secrets never cross profile boundaries. Keep AI translation disabled
         // until this profile explicitly supplies its own Keychain credential.
         destination.set(false, forKey: SettingsKey.aiSubtitlesEnabled)
         destination.removeObject(forKey: SettingsKey.aiSubtitlesGeminiAPIKey)
         destination.set(true, forKey: seededFlag)
+    }
+
+    /// A deleted profile's settings and tokens, so a later profile in the
+    /// same slot starts clean.
+    static func removeProfileData(_ profileId: String) {
+        guard !profileId.isEmpty else { return }
+        UserDefaults.standard.removePersistentDomain(forName: "\(suitePrefix).\(profileId)")
     }
 
     private static func seedFromGlobalIfNeeded(_ suite: UserDefaults) {

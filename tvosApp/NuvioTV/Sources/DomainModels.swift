@@ -198,6 +198,14 @@ public class ProfileManager {
         try? ProfilePinStore.removePin(for: id)
     }
 
+    public func updateProfileSharing(id: String, usesPrimaryAddons: Bool, usesPrimaryPlugins: Bool) throws {
+        var profiles = (try? getProfiles()) ?? []
+        guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
+        profiles[index].usesPrimaryAddons = usesPrimaryAddons
+        profiles[index].usesPrimaryPlugins = usesPrimaryPlugins
+        try saveProfiles(profiles)
+    }
+
     public func updateProfileAvatar(id: String, avatarId: String) throws {
         var profiles = (try? getProfiles()) ?? []
         guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
@@ -497,6 +505,18 @@ private struct StoredProfile: Codable {
 }
 
 /// Input for creating a profile
+/// What a new profile takes from the primary one. All on by default.
+public struct NewProfileSetup {
+    public var usesPrimaryAddons = true
+    public var usesPrimaryPlugins = true
+    /// A one-time copy of the primary's settings.
+    public var copiesSettings = true
+    /// With the settings: API keys and signed-in services (Trakt, Simkl,
+    /// TMDB, MDBList, debrid).
+    public var copiesCredentials = true
+    public init() {}
+}
+
 public struct CreateProfileInput {
     public var name: String
     public var profileType: ProfileTypeStub
@@ -740,6 +760,9 @@ public class ProfileViewModel: ObservableObject {
         name: String,
         pin: String?,
         avatarId: String = "",
+        isKids: Bool = false,
+        setup: NewProfileSetup = NewProfileSetup(),
+        customAvatarPhoto: Data? = nil,
         onCreated: (() -> Void)? = nil
     ) {
         guard let manager = profileManager else {
@@ -753,9 +776,28 @@ public class ProfileViewModel: ObservableObject {
         Task {
             do {
                 let newProfile = try manager.createProfile(input: input)
-                // Start the new profile as a copy of the current settings; it
-                // diverges independently from then on.
-                ProfileSettings.seedNewProfile(newProfile.id)
+                if setup.usesPrimaryAddons || setup.usesPrimaryPlugins {
+                    try manager.updateProfileSharing(
+                        id: newProfile.id,
+                        usesPrimaryAddons: setup.usesPrimaryAddons,
+                        usesPrimaryPlugins: setup.usesPrimaryPlugins
+                    )
+                }
+                // Copied from the account's primary profile, not whichever
+                // one happens to be loaded; it diverges independently from
+                // then on.
+                ProfileSettings.seedNewProfile(
+                    newProfile.id,
+                    copyingFrom: ProfileSettings.store(for: primaryProfile?.id),
+                    copySettings: setup.copiesSettings,
+                    copyCredentials: setup.copiesSettings && setup.copiesCredentials
+                )
+                // Set explicitly, not inherited: the copied settings carry
+                // whatever the current profile had.
+                ProfileSettings.store(for: newProfile.id).set(isKids, forKey: SettingsKey.kidsProfile)
+                if let customAvatarPhoto {
+                    OmniCustomAvatar.set(customAvatarPhoto, forProfile: newProfile.id)
+                }
                 loadProfiles()
                 isLoading = false
                 onCreated?()
@@ -764,6 +806,34 @@ public class ProfileViewModel: ObservableObject {
                 print("Failed to create profile: \(error)")
                 isLoading = false
             }
+        }
+    }
+
+    /// The account's primary profile: remote slot 1, which sync marks admin.
+    public var primaryProfile: Profile? {
+        profiles.first(where: \.isAdmin) ?? profiles.first
+    }
+
+    /// Removes a profile from this device. The primary profile can't be
+    /// deleted. The caller pushes the change to the account. If the deleted
+    /// profile was active, the primary one becomes active.
+    @discardableResult
+    public func deleteProfile(id: String) -> Bool {
+        guard let manager = profileManager,
+              let primary = primaryProfile, primary.id != id,
+              profiles.contains(where: { $0.id == id }) else { return false }
+        do {
+            try manager.deleteProfile(id: id)
+            if activeProfile?.id == id {
+                try? manager.switchProfile(id: primary.id)
+            }
+            ProfileSettings.removeProfileData(id)
+            loadProfiles()
+            if activeProfile?.id == id { loadActiveProfile() }
+            return true
+        } catch {
+            print("Failed to delete profile: \(error)")
+            return false
         }
     }
 

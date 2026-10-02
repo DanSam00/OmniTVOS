@@ -61,6 +61,11 @@ final class NuvioSyncManager: ObservableObject {
     private var homeCatalogPushTask: Task<Void, Never>?
     private var profileSelectionRefreshTask: Task<Void, Never>?
     private var completedInitialPullKeys: Set<String> = []
+    /// The account whose profile list has been read from Nuvio this session.
+    /// Profiles are the first step of the account pull and are account-wide,
+    /// so a profile edit only needs this — not the whole pull (add-ons,
+    /// library, history, Continue Watching), which can take half a minute.
+    private var profileListPulledUserId: String?
     /// When each account+profile last finished a pull, so a screen re-entry can
     /// tell "the user came back" from "the data is old".
     private var lastCompletedPullAt: [String: Date] = [:]
@@ -336,6 +341,7 @@ final class NuvioSyncManager: ObservableObject {
             profileSelectionRefreshTask?.cancel()
             profileSelectionRefreshTask = nil
             completedInitialPullKeys.removeAll()
+            profileListPulledUserId = nil
             lastCompletedPullAt.removeAll()
             activePullKey = nil
             pendingResyncRequested = false
@@ -497,12 +503,56 @@ final class NuvioSyncManager: ObservableObject {
     /// account profile set, then reads it back so the picker reflects exactly
     /// what the server accepted. This intentionally does not use the delayed
     /// general snapshot queue.
+    /// Deletes a profile from the account and this device, as Nuvio's own
+    /// apps do: the account call also clears the profile's library, history
+    /// and settings on the server. Returns an error message on failure. The
+    /// primary profile can't be deleted.
+    func deleteProfile(_ profile: Profile) async -> String? {
+        guard let profileViewModel else { return "Profiles are unavailable." }
+        let profiles = profileViewModel.profiles
+        let remoteId = ProfileSyncIndexStore.remoteId(for: profile, in: profiles)
+        guard profile.id != profileViewModel.primaryProfile?.id, remoteId != 1 else {
+            return "The primary profile can't be deleted."
+        }
+        let signedIn = AuthConfig.isConfigured && authManager?.isAuthenticated == true
+        if signedIn {
+            guard let authManager, let session = await authManager.validSessionForSync() else {
+                return "Couldn't reach your Nuvio account."
+            }
+            do {
+                try await client.deleteProfileData(session: session, remoteProfileId: remoteId)
+            } catch {
+                return "Couldn't delete the profile: \(error.localizedDescription)"
+            }
+        }
+        guard profileViewModel.deleteProfile(id: profile.id) else {
+            return "Couldn't delete the profile on this device."
+        }
+        ProfileSyncIndexStore.unbind(localId: profile.id)
+        guard signedIn, let authManager,
+              let session = await authManager.validSessionForSync(),
+              let remote = try? await client.pullProfiles(session: session), !remote.isEmpty else { return nil }
+        let merged = ProfileSyncIndexStore.localProfiles(from: remote, preserving: profileViewModel.profiles)
+        isApplyingRemote = true
+        isApplyingRemoteProfiles = true
+        profileViewModel.applyRemoteProfiles(merged)
+        isApplyingRemoteProfiles = false
+        isApplyingRemote = false
+        return nil
+    }
+
     func syncProfilesAfterLocalEdit() {
         guard AuthConfig.isConfigured, authManager?.isAuthenticated == true else { return }
         guard let profileViewModel else { return }
         let profiles = profileViewModel.profiles
         guard !profiles.isEmpty else { return }
-        guard let syncKey = currentSyncKey(), completedInitialPullKeys.contains(syncKey) else {
+        // Saving needs the account's profile list to have been read, so it
+        // can't overwrite profiles this device hasn't seen. Waiting for the
+        // whole account pull instead made an edit made in its first ~30s
+        // re-pull and erase the profile just created.
+        let profileListIsCurrent = accountUserId().map { $0 == profileListPulledUserId } ?? false
+        let initialPullDone = currentSyncKey().map(completedInitialPullKeys.contains) ?? false
+        guard profileListIsCurrent || initialPullDone else {
             profileSyncError = "Finish loading the account before saving profile changes."
             retryInitialAccountPull()
             return
@@ -651,6 +701,7 @@ final class NuvioSyncManager: ObservableObject {
                 // complete Home/account pull. Do not depend on the timing of
                 // SwiftUI's `$activeProfile` delivery to start it.
                 shouldPullFullAccount = true
+                profileListPulledUserId = accountUserId()
                 print("Nuvio profile picker refreshed \(remoteProfiles.count) account profile(s).")
                 return
             } catch {
@@ -944,6 +995,7 @@ final class NuvioSyncManager: ObservableObject {
                 throw AuthError(message: "The downloaded profiles could not be applied on this Apple TV.")
             }
             profileSyncError = nil
+            profileListPulledUserId = accountUserId()
             print("Nuvio sync pulled \(remoteProfiles.count) account profile(s).")
 
             guard let activeProfile = profileViewModel.activeProfile ?? profileViewModel.profiles.first else {
@@ -1446,6 +1498,11 @@ final class NuvioSyncManager: ObservableObject {
         CinemetaCatalogRepository.normalizedManifestURL(from: rawValue)?.absoluteString
     }
 
+    private func accountUserId() -> String? {
+        guard let authManager, case let .fullAccount(userId, _) = authManager.authState else { return nil }
+        return userId
+    }
+
     private func currentSyncKey() -> String? {
         guard let authManager, let profileViewModel else { return nil }
         guard case let .fullAccount(userId, _) = authManager.authState else { return nil }
@@ -1532,6 +1589,10 @@ final class NuvioSyncManager: ObservableObject {
 
 private enum ProfileSyncIndexStore {
     private static let prefix = "nuvio.tv.sync.profileIndex."
+
+    static func unbind(localId: String) {
+        UserDefaults.standard.removeObject(forKey: prefix + localId)
+    }
 
     static func eraseAll() {
         let defaults = UserDefaults.standard
@@ -2420,6 +2481,16 @@ fileprivate final class NuvioAPIClient {
                 "p_addons": rows,
                 "p_profile_id": remoteProfileId
             ]
+        )
+    }
+
+    /// Nuvio's profile delete (as the Android app): removes the profile and
+    /// everything stored under it on the account.
+    func deleteProfileData(session: AuthSession, remoteProfileId: Int) async throws {
+        try await rpcVoid(
+            "sync_delete_profile_data",
+            session: session,
+            params: ["p_profile_id": remoteProfileId]
         )
     }
 

@@ -257,7 +257,7 @@ struct MacHomeMenu: View {
 
         HStack(spacing: 14) {
             if tab == .profile, let avatarId = state.profileAvatarId, !avatarId.isEmpty {
-                ProfileAvatarView(avatarId: avatarId, size: 30)
+                ProfileAvatarView(avatarId: avatarId, size: 30, profileId: ProfileSettings.activeProfileID)
                     .frame(width: 30)
             } else {
                 Image(systemName: tab.symbol)

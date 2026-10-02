@@ -434,8 +434,10 @@ struct PhoneDetailsView: View {
         VStack(alignment: .leading, spacing: 10) {
             PhoneSectionHeader(title: "More Like This")
             ScrollView(.horizontal, showsIndicators: false) {
+                PhoneKidsFiltered(items: viewModel.uiState.moreLikeThis.map(\.kidsCheckMeta)) { visible in
+                let visibleIDs = Set(visible.map(\.id))
                 LazyHStack(alignment: .top, spacing: 12) {
-                    ForEach(viewModel.uiState.moreLikeThis, id: \.id) { title in
+                    ForEach(viewModel.uiState.moreLikeThis.filter { visibleIDs.contains($0.id) }, id: \.id) { title in
                         Button { onOpenTitle(title.id, title.type) } label: {
                             VStack(alignment: .leading, spacing: 6) {
                                 PhoneArtwork(url: title.posterURL)
@@ -449,6 +451,7 @@ struct PhoneDetailsView: View {
                     }
                 }
                 .padding(.horizontal, PhoneLayout.gutter)
+                }
             }
         }
     }

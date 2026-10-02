@@ -171,6 +171,12 @@ enum TraktAuthStore {
         state(in: ProfileSettings.current)
     }
 
+    /// The signed-in session, for copying it to a new profile.
+    static let credentialKeys = [
+        Key.accessToken, Key.refreshToken, Key.tokenType, Key.createdAt,
+        Key.expiresIn, Key.username, Key.userSlug, Key.credentialClientID,
+    ]
+
     static func state(in defaults: UserDefaults) -> TraktAuthState {
         return TraktAuthState(
             accessToken: defaults.string(forKey: Key.accessToken),

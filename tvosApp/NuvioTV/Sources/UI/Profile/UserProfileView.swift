@@ -1,15 +1,24 @@
 import SwiftUI
 import Foundation
+import ImageIO
+#if os(macOS)
+import PhotosUI
+#endif
 
 public struct UserProfileView: View {
     @StateObject private var viewModel: ProfileViewModel
     private let accountSyncError: String?
     private let onRetryAccountSync: (() -> Void)?
     private let onProfileCreated: (() -> Void)?
+    /// Deletes from the account and this device; returns an error message.
+    private let onDeleteProfile: ((Profile) async -> String?)?
     @State private var showingAddProfile = false
+    @State private var profilePendingDelete: Profile?
+    @State private var deleteError: String?
     @State private var newProfileName = ""
     @State private var newProfilePin = ""
     @State private var newProfileAvatarId = ProfileAvatarCatalog.defaultId
+    @State private var newProfilePhoto: Data?
     @FocusState private var focusedItem: String?
     #if os(macOS)
     /// macOS has no focus engine, so the cards were unreachable: the profile
@@ -25,12 +34,14 @@ public struct UserProfileView: View {
         viewModel: ProfileViewModel,
         accountSyncError: String? = nil,
         onRetryAccountSync: (() -> Void)? = nil,
-        onProfileCreated: (() -> Void)? = nil
+        onProfileCreated: (() -> Void)? = nil,
+        onDeleteProfile: ((Profile) async -> String?)? = nil
     ) {
         _viewModel = StateObject(wrappedValue: viewModel)
         self.accountSyncError = accountSyncError
         self.onRetryAccountSync = onRetryAccountSync
         self.onProfileCreated = onProfileCreated
+        self.onDeleteProfile = onDeleteProfile
     }
 
     /// Whether `id` draws as focused.
@@ -136,6 +147,17 @@ public struct UserProfileView: View {
                         }
                         .nuvioFocusable()
                         .focused($focusedItem, equals: profile.id)
+                        // Hold Select on the Siri Remote, right-click on a Mac.
+                        // The primary profile can't be deleted.
+                        .contextMenu {
+                            if onDeleteProfile != nil, profile.id != viewModel.primaryProfile?.id {
+                                Button(role: .destructive) {
+                                    profilePendingDelete = profile
+                                } label: {
+                                    Label("Delete Profile", systemImage: "trash")
+                                }
+                            }
+                        }
                     }
 
                     AddProfileButton(
@@ -166,23 +188,43 @@ public struct UserProfileView: View {
                     isPresented: $showingAddProfile,
                     name: $newProfileName,
                     pin: $newProfilePin,
-                    avatarId: $newProfileAvatarId
+                    avatarId: $newProfileAvatarId,
+                    photo: $newProfilePhoto
                 ) {
                     viewModel.createProfile(
                         name: newProfileName,
                         pin: newProfilePin.isEmpty ? nil : newProfilePin,
                         avatarId: newProfileAvatarId,
+                        customAvatarPhoto: newProfilePhoto,
                         onCreated: onProfileCreated
                     )
                     newProfileName = ""
                     newProfilePin = ""
                     newProfileAvatarId = ProfileAvatarCatalog.defaultId
+                    newProfilePhoto = nil
                 }
                 .transition(.opacity)
                 .zIndex(2)
             }
         }
         .animation(.easeInOut(duration: 0.18), value: showingAddProfile)
+        .alert(
+            "Delete \(profilePendingDelete?.name ?? "profile")?",
+            isPresented: Binding(get: { profilePendingDelete != nil }, set: { if !$0 { profilePendingDelete = nil } }),
+            presenting: profilePendingDelete
+        ) { profile in
+            Button("Delete", role: .destructive) {
+                Task { deleteError = await onDeleteProfile?(profile) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("This removes the profile from your Nuvio account on every device, with its library, watch history and settings.")
+        }
+        .alert("Couldn't delete", isPresented: Binding(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(deleteError ?? "")
+        }
         .onAppear {
             AvatarCatalogStore.shared.loadIfNeeded()
             if accountSyncError != nil, onRetryAccountSync != nil {
@@ -278,7 +320,8 @@ struct ProfileCard: View {
                 ProfileAvatarView(
                     avatarId: profile.avatarId,
                     size: avatarSize,
-                    isFocused: isFocused
+                    isFocused: isFocused,
+                    profileId: profile.id
                 )
                 .overlay(alignment: .bottomTrailing) { badge }
 
@@ -615,13 +658,21 @@ struct ProfileAvatarView: View {
     let avatarId: String
     var size: CGFloat
     var isFocused: Bool = false
+    /// Whose avatar this is: a photo chosen for the profile in Omni is shown
+    /// in place of its Nuvio avatar.
+    var profileId: String? = nil
+    /// A photo not yet saved (the pickers' preview).
+    var photo: Data? = nil
 
     @ObservedObject private var catalog = AvatarCatalogStore.shared
     @State private var loadedImage: UIImage? = nil
+    @State private var photoRevision = 0
 
     var body: some View {
         let catalogItem = catalog.item(for: avatarId)
         let imageURL = catalog.imageURL(for: avatarId)
+        let customPhoto = photo.flatMap(OmniCustomAvatar.image(from:))
+            ?? OmniCustomAvatar.image(forProfile: profileId, revision: photoRevision)
 
         ZStack {
             if let catalogItem {
@@ -637,7 +688,11 @@ struct ProfileAvatarView: View {
                 )
             }
 
-            if let displayImage = currentImage(for: imageURL) {
+            if let customPhoto {
+                Image(uiImage: customPhoto)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else if let displayImage = currentImage(for: imageURL) {
                 Image(uiImage: displayImage)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
@@ -661,6 +716,9 @@ struct ProfileAvatarView: View {
                 self.loadedImage = img
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: OmniCustomAvatar.changedNotification)) { _ in
+            photoRevision += 1
+        }
     }
 
     private func currentImage(for url: URL?) -> UIImage? {
@@ -672,6 +730,137 @@ struct ProfileAvatarView: View {
     }
 }
 
+/// A photo picked as a profile's avatar in Omni. Nuvio only stores avatars
+/// as catalog ids or web links, so the photo lives in the profile's Omni
+/// settings (which sync through the Nuvio account for Omni devices) while
+/// Nuvio's avatar field gets a catalog avatar for its own apps.
+enum OmniCustomAvatar {
+    static let changedNotification = Notification.Name("omni.customAvatar.changed")
+    /// Stored size: sharp on a 3x screen at picker size, ~15 KB as JPEG.
+    private static let pixelSize = 256
+    private static let cache = NSCache<NSString, UIImage>()
+
+    static func image(forProfile profileId: String?, revision: Int = 0) -> UIImage? {
+        guard let profileId, !profileId.isEmpty,
+              let encoded = ProfileSettings.store(for: profileId).string(forKey: SettingsKey.customAvatarPhoto),
+              !encoded.isEmpty else { return nil }
+        let key = "\(profileId)|\(encoded.count)|\(encoded.suffix(32))" as NSString
+        if let hit = cache.object(forKey: key) { return hit }
+        guard let data = Data(base64Encoded: encoded), let image = UIImage(data: data) else { return nil }
+        cache.setObject(image, forKey: key)
+        return image
+    }
+
+    static func image(from data: Data) -> UIImage? { UIImage(data: data) }
+
+    static func hasPhoto(forProfile profileId: String?) -> Bool {
+        guard let profileId else { return false }
+        return !(ProfileSettings.store(for: profileId).string(forKey: SettingsKey.customAvatarPhoto) ?? "").isEmpty
+    }
+
+    /// Saves (or with nil, removes) a profile's photo. `jpeg` should come
+    /// from `prepare(_:)`.
+    static func set(_ jpeg: Data?, forProfile profileId: String) {
+        let store = ProfileSettings.store(for: profileId)
+        if let jpeg, !jpeg.isEmpty {
+            store.set(jpeg.base64EncodedString(), forKey: SettingsKey.customAvatarPhoto)
+        } else {
+            store.removeObject(forKey: SettingsKey.customAvatarPhoto)
+        }
+        NotificationCenter.default.post(name: changedNotification, object: profileId)
+    }
+
+    /// Any picked image file, centre-cropped to a square and shrunk to a
+    /// small JPEG.
+    static func prepare(_ data: Data) -> Data? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+                  kCGImageSourceThumbnailMaxPixelSize: pixelSize * 2,
+              ] as CFDictionary) else { return nil }
+        let side = min(thumbnail.width, thumbnail.height)
+        let crop = CGRect(x: (thumbnail.width - side) / 2, y: (thumbnail.height - side) / 2, width: side, height: side)
+        guard let square = thumbnail.cropping(to: crop),
+              let context = CGContext(
+                  data: nil, width: pixelSize, height: pixelSize, bitsPerComponent: 8, bytesPerRow: 0,
+                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+              ) else { return nil }
+        context.interpolationQuality = .high
+        context.draw(square, in: CGRect(x: 0, y: 0, width: pixelSize, height: pixelSize))
+        guard let scaled = context.makeImage() else { return nil }
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(output, "public.jpeg" as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, scaled, [kCGImageDestinationLossyCompressionQuality: 0.75] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return output as Data
+    }
+
+    /// A random catalog avatar for Nuvio's own apps to show.
+    @MainActor static func randomCatalogAvatarId() -> String {
+        AvatarCatalogStore.shared.items.randomElement()?.id ?? ProfileAvatarCatalog.defaultId
+    }
+}
+
+#if os(macOS)
+/// "Choose from Photos…" and "Image Link…" for a profile avatar on the Mac.
+/// A photo is kept for Omni and Nuvio's apps get a random catalog avatar; a
+/// link is the avatar everywhere.
+struct MacCustomAvatarButtons: View {
+    @Binding var avatarId: String
+    @Binding var photo: Data?
+    var includesLink = true
+    @State private var pickedItem: PhotosPickerItem?
+    @State private var isEnteringLink = false
+    @State private var linkText = ""
+
+    var body: some View {
+        HStack(spacing: 12) {
+            PhotosPicker(selection: $pickedItem, matching: .images) {
+                Label("Choose from Photos…", systemImage: "photo.on.rectangle")
+            }
+            if includesLink {
+                Button {
+                    linkText = ""
+                    isEnteringLink = true
+                } label: {
+                    Label("Image Link…", systemImage: "link")
+                }
+            }
+            if photo != nil {
+                Button("Remove Photo", role: .destructive) { photo = nil }
+            }
+        }
+        .controlSize(.large)
+        .onChange(of: pickedItem) { _, item in
+            guard let item else { return }
+            Task {
+                defer { pickedItem = nil }
+                guard let data = try? await item.loadTransferable(type: Data.self),
+                      let jpeg = OmniCustomAvatar.prepare(data) else { return }
+                photo = jpeg
+                if !AvatarCatalogStore.shared.items.contains(where: { $0.id == avatarId }) {
+                    avatarId = OmniCustomAvatar.randomCatalogAvatarId()
+                }
+            }
+        }
+        .alert("Image link", isPresented: $isEnteringLink) {
+            TextField("https://example.com/avatar.png", text: $linkText)
+            Button("Use Image") {
+                let link = linkText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let url = URL(string: link), ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil {
+                    avatarId = link
+                    photo = nil
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Paste a direct link to an image. It shows in Nuvio's apps too.")
+        }
+    }
+}
+#endif
+
 /// Stable accent used by the primary-profile star / label.
 enum ProfileAvatarStyle {
     static let accent = Color(red: 0.98, green: 0.67, blue: 0.12) // primary star / label
@@ -682,6 +871,8 @@ struct AddProfileView: View {
     @Binding var name: String
     @Binding var pin: String
     @Binding var avatarId: String
+    /// A photo for Omni (macOS picks one from Photos); nil on the TV.
+    @Binding var photo: Data?
     var onSave: () -> Void
 
     @FocusState private var focusedField: Field?
@@ -715,7 +906,7 @@ struct AddProfileView: View {
 
                     Spacer()
 
-                    ProfileAvatarView(avatarId: avatarId, size: 112)
+                    ProfileAvatarView(avatarId: avatarId, size: 112, photo: photo)
                 }
 
                 VStack(alignment: .leading, spacing: 14) {
@@ -737,11 +928,21 @@ struct AddProfileView: View {
                     }
                 }
 
-                Text("Avatar")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.62))
+                HStack(spacing: 16) {
+                    Text("Avatar")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.62))
+                    #if os(macOS)
+                    Spacer()
+                    MacCustomAvatarButtons(avatarId: $avatarId, photo: $photo)
+                    #endif
+                }
 
-                AvatarPickerGrid(selectedAvatarId: $avatarId, scrollsGrid: true)
+                AvatarPickerGrid(
+                    selectedAvatarId: $avatarId,
+                    onSelectAvatar: { _ in photo = nil },
+                    scrollsGrid: true
+                )
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
                 HStack(spacing: 16) {
@@ -1002,13 +1203,27 @@ struct ProfileAvatarPickerSheet: View {
     @State private var customAvatarURL: String
     @State private var isEditingCustomAvatarURL = false
     @FocusState private var isCustomAvatarFieldFocused: Bool
+    @State private var photo: Data?
     let onSave: (String) -> Void
+    /// The profile's Omni photo, or nil to remove it. Only offered where a
+    /// photo can be picked (macOS).
+    var onSavePhoto: ((Data?) -> Void)?
 
-    init(isPresented: Binding<Bool>, title: String, selectedAvatarId: String, onSave: @escaping (String) -> Void) {
+    init(
+        isPresented: Binding<Bool>,
+        title: String,
+        selectedAvatarId: String,
+        profileId: String? = nil,
+        onSavePhoto: ((Data?) -> Void)? = nil,
+        onSave: @escaping (String) -> Void
+    ) {
         _isPresented = isPresented
         self.title = title
         _selectedAvatarId = State(initialValue: selectedAvatarId)
         _customAvatarURL = State(initialValue: Self.validCustomAvatarURL(selectedAvatarId) ?? "")
+        let stored = profileId.flatMap { ProfileSettings.store(for: $0).string(forKey: SettingsKey.customAvatarPhoto) }
+        _photo = State(initialValue: stored.flatMap { Data(base64Encoded: $0) })
+        self.onSavePhoto = onSavePhoto
         self.onSave = onSave
     }
 
@@ -1031,8 +1246,14 @@ struct ProfileAvatarPickerSheet: View {
 
                     Spacer()
 
-                    ProfileAvatarView(avatarId: selectedAvatarId, size: 112)
+                    ProfileAvatarView(avatarId: selectedAvatarId, size: 112, photo: photo)
                 }
+
+                #if os(macOS)
+                if onSavePhoto != nil {
+                    MacCustomAvatarButtons(avatarId: $selectedAvatarId, photo: $photo, includesLink: false)
+                }
+                #endif
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Custom Avatar URL")
@@ -1062,7 +1283,10 @@ struct ProfileAvatarPickerSheet: View {
 
                 AvatarPickerGrid(
                     selectedAvatarId: $selectedAvatarId,
-                    onSelectAvatar: { _ in customAvatarURL = "" },
+                    onSelectAvatar: { _ in
+                        customAvatarURL = ""
+                        photo = nil
+                    },
                     scrollsGrid: true
                 )
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1079,6 +1303,7 @@ struct ProfileAvatarPickerSheet: View {
                         disabled: avatarToSave == nil
                     ) {
                         guard let avatarToSave else { return }
+                        onSavePhoto?(photo)
                         onSave(avatarToSave)
                         isPresented = false
                     }
@@ -1101,6 +1326,7 @@ struct ProfileAvatarPickerSheet: View {
     private func applyCustomAvatarURL() {
         guard let customURL = Self.validCustomAvatarURL(customAvatarURL) else { return }
         customAvatarURL = customURL
+        photo = nil
         selectedAvatarId = customURL
         isEditingCustomAvatarURL = false
     }

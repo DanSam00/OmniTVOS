@@ -339,6 +339,12 @@ struct ContentView: View {
                         onRetryAccountSync: {
                             syncManager.retryInitialAccountPull()
                             awaitingPostLoginSync = syncManager.isPullingAccountProfiles
+                        },
+                        onProfileCreated: {
+                            syncManager.syncProfilesAfterLocalEdit()
+                        },
+                        onDeleteProfile: { profile in
+                            await syncManager.deleteProfile(profile)
                         }
                     )
                         .transition(.opacity)
@@ -364,6 +370,9 @@ struct ContentView: View {
                         },
                         onProfileCreated: {
                             syncManager.syncProfilesAfterLocalEdit()
+                        },
+                        onDeleteProfile: { profile in
+                            await syncManager.deleteProfile(profile)
                         }
                     )
                         .transition(.opacity)
@@ -3672,7 +3681,8 @@ private struct TVSidebarAvatar: View {
         ProfileAvatarView(
             avatarId: profile?.avatarId ?? ProfileAvatarCatalog.defaultId,
             size: 44,
-            isFocused: isFocused
+            isFocused: isFocused,
+            profileId: profile?.id
         )
         .scaleEffect(isFocused ? 1.12 : 1)
         .offset(y: isFocused ? -3 : 0)
