@@ -1602,6 +1602,8 @@ enum ContinueWatchingStore {
     static func setActiveProfile(_ profileId: String?) {
         guard activeProfileId != profileId else { return }
         activeProfileId = profileId
+        // The last row Home showed belongs to the profile being left.
+        homePublishedItems = nil
         // The key check in `items()` already separates profiles; this also covers
         // re-selecting the same profile after the file changed underneath us (a
         // sync pull, or the legacy migration below).
@@ -2390,7 +2392,25 @@ enum ContinueWatchingStore {
     /// the Top Shelf extension can render the Apple TV home row. No-op when the
     /// shared container isn't available.
     private static func writeTopShelfFeed() {
-        let entries = items().prefix(10).map { item -> TopShelfEntry in
+        writeTopShelfFeed(from: homePublishedItems ?? items())
+    }
+
+    /// What Home last put in its Continue Watching row. Home builds that row
+    /// from the progress source — Simkl, Trakt or the account ledger — while
+    /// `items()` is only this device's local list, so a shelf written from
+    /// `items()` showed different titles and resume points from the app.
+    private static var homePublishedItems: [ContinueWatchingItem]?
+
+    /// Called by Home with exactly the row it shows, so the Apple TV Top Shelf
+    /// mirrors it. Later local saves keep using this list until Home publishes
+    /// again, which it does whenever the row changes.
+    static func publishHomeRowToTopShelf(_ rowItems: [ContinueWatchingItem]) {
+        homePublishedItems = rowItems
+        writeTopShelfFeed(from: rowItems)
+    }
+
+    private static func writeTopShelfFeed(from source: [ContinueWatchingItem]) {
+        let entries = source.prefix(10).map { item -> TopShelfEntry in
             let fraction = item.duration > 0 ? min(max(item.position / item.duration, 0), 1) : nil
             var subtitleParts: [String] = []
             if let season = item.season, let episode = item.episode {

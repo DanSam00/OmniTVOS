@@ -216,6 +216,10 @@ struct ContentView: View {
     /// Ceiling on the profile-switch cover, whatever Home ends up publishing.
     private static let profileGateTimeout: TimeInterval = 5
     @State private var selectedTab: TVTab = Self.debugStartTab ?? .home
+    #if os(tvOS)
+    /// See the menu drawn over Details.
+    @State private var isDetailsMenuParked = true
+    #endif
     /// The tab to open on when launched with `-OmniDebugTab <tab>` (a `TVTab`
     /// raw value such as "Search"), so a simulator can be put on a page
     /// without a remote: `xcrun simctl launch <device> <bundle id>
@@ -712,6 +716,21 @@ struct ContentView: View {
     /// would (Player returns to Details for series/trailers, otherwise Home).
     /// Used only by the root Menu-button safety net; changing `activeScreen`
     /// tears the overlay down, so Player's `onDisappear` cleanup still runs.
+    #if os(tvOS)
+    /// A tab chosen from the menu over Details: a jump, not a step back, so
+    /// the whole details chain goes, as on the Mac. Profile switches profiles
+    /// through the tab view's own handling instead.
+    private func chooseTabOverDetails(_ tab: TVTab) {
+        selectedTab = tab
+        guard tab != .profile else { return }
+        detailsBackStack.removeAll()
+        detailsReturnDestination = .main
+        withAnimation(.easeInOut(duration: 0.24)) {
+            activeScreen = .main
+        }
+    }
+    #endif
+
     private func dismissOverlay() {
         if isResolvingContinueWatchingStream {
             PlaybackStartupTiming.cancel()
@@ -1496,11 +1515,40 @@ struct ContentView: View {
                     #if os(iOS)
                     .phoneEdgeSwipeBack(dismissOverlay)
                     #endif
+                    #if os(tvOS)
+                    // Left off the left edge of Details opens the menu drawn
+                    // over it, as it does on the tabs.
+                    .onMoveCommand { direction in TVSideMenuState.shared.handleMove(direction) }
+                    #endif
                     .onDisappear {
                         detailsDidDisappearGeneration &+= 1
                     }
                     .zIndex(1)
             }
+
+            #if os(tvOS)
+            // The menu over Details, as the Mac has: a ☰ while closed, and
+            // choosing a tab abandons the details chain for that tab. The tabs'
+            // own menu is faded out with them under Details.
+            if case .details = activeScreen {
+                TVSideMenu(
+                    selectedTab: $selectedTab,
+                    isParked: isDetailsMenuParked,
+                    isShowingTabPage: false,
+                    onChoose: { tab in chooseTabOverDetails(tab) },
+                    closesOnBack: true
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .transition(.opacity)
+                .zIndex(1.5)
+                .onAppear {
+                    // Details seeds its own focus; the menu, nearest the
+                    // top-left corner, must not take it first.
+                    isDetailsMenuParked = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { isDetailsMenuParked = false }
+                }
+            }
+            #endif
 
             #if os(macOS)
             // Above the overlays rather than beside the tab view: the menu has
@@ -3052,6 +3100,13 @@ private struct TVMainTabView: View {
     /// thing on screen that can take focus it would keep it, and the app
     /// would open with the menu out instead of on Home.
     @State private var isSideMenuParked = true
+    /// True while Details or the player covers the tabs and for a moment
+    /// after. Screens hand focus back to the card that was opened by leaving
+    /// it the only thing focusable; the menu, being closest to the top-left
+    /// corner, took focus first instead, and Search was left with every
+    /// control disabled and no way back in.
+    @State private var isSideMenuHeldForOverlay = false
+    @State private var overlayHoldGeneration = 0
     #endif
 
     private var displayedProfile: Profile? {
@@ -3334,15 +3389,7 @@ private struct TVMainTabView: View {
 
             TVSideMenu(
                 selectedTab: $selectedTab,
-                profileName: profileTabTitle,
-                profileAvatar: profileTabAvatar.image,
-                profileSymbol: sessionNeedsReauthentication
-                    ? "person.crop.circle.badge.exclamationmark"
-                    : ProfileAvatarCatalog.symbolName(for: displayedProfile?.avatarId),
-                settingsSymbol: sessionNeedsReauthentication
-                    ? "exclamationmark.circle"
-                    : TVTab.settings.symbol,
-                isParked: isSideMenuParked
+                isParked: isSideMenuParked || isSideMenuHeldForOverlay
             )
             .zIndex(2)
         }
@@ -3363,6 +3410,36 @@ private struct TVMainTabView: View {
         .onChange(of: selectedTab, initial: true) { _, tab in
             visitedTabs.insert(tab)
         }
+        .onChange(of: profileTabTitle, initial: true) { _, name in sideMenu.profileName = name }
+        .onChange(of: profileTabAvatar.image, initial: true) { _, image in sideMenu.profileAvatar = image }
+        .onChange(of: sideMenuSymbols, initial: true) { _, symbols in
+            sideMenu.profileSymbol = symbols[0]
+            sideMenu.settingsSymbol = symbols[1]
+        }
+        .onChange(of: isFullScreenOverlayPresented, initial: true) { _, presented in
+            overlayHoldGeneration &+= 1
+            if presented {
+                isSideMenuHeldForOverlay = true
+            } else {
+                // Long enough for the screen's focus restore to land; a newer
+                // overlay in the meantime keeps the hold.
+                let generation = overlayHoldGeneration
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                    if overlayHoldGeneration == generation { isSideMenuHeldForOverlay = false }
+                }
+            }
+        }
+    }
+
+    /// The profile and Settings icons, which show a warning while the
+    /// session needs signing in again.
+    private var sideMenuSymbols: [String] {
+        [
+            sessionNeedsReauthentication
+                ? "person.crop.circle.badge.exclamationmark"
+                : ProfileAvatarCatalog.symbolName(for: displayedProfile?.avatarId),
+            sessionNeedsReauthentication ? "exclamationmark.circle" : TVTab.settings.symbol,
+        ]
     }
 
     @ViewBuilder
@@ -3463,6 +3540,13 @@ final class TVSideMenuState: ObservableObject {
     /// Set by Home while its carousel is past the first slide: Left there
     /// pages back, so the menu must not be the thing to its left.
     @Published var carouselOwnsLeft = false
+    /// The profile row and the Settings icon, published by `TVMainTabView`,
+    /// which owns the profile. Held here so the menu drawn over Details shows
+    /// the same rows as the one on the tabs.
+    @Published var profileName = ""
+    @Published var profileAvatar: UIImage?
+    @Published var profileSymbol = TVTab.profile.symbol
+    @Published var settingsSymbol = TVTab.settings.symbol
     /// When the focus engine last moved focus leftward, for telling a Left
     /// press that went somewhere from one that ran into the edge of the screen.
     private var lastLeftFocusMove = Date.distantPast
@@ -3539,13 +3623,18 @@ final class TVSideMenuState: ObservableObject {
 /// screen.
 private struct TVSideMenu: View {
     @Binding var selectedTab: TVTab
-    let profileName: String
-    let profileAvatar: UIImage?
-    let profileSymbol: String
-    let settingsSymbol: String
     /// Out of the focus engine's reach entirely; see
     /// `TVMainTabView.isSideMenuParked`.
     var isParked = false
+    /// False over a page that is not a tab — Details — where the closed menu
+    /// is a ☰ rather than the tab's icon, as on the Mac.
+    var isShowingTabPage = true
+    /// Replaces the plain tab switch, for the menu over Details, which also
+    /// has to close Details to show the tab.
+    var onChoose: ((TVTab) -> Void)? = nil
+    /// Back closes the menu instead of being left to the screen. Over Details,
+    /// Back unhandled here would close Details from under the open menu.
+    var closesOnBack = false
 
     @ObservedObject private var state = TVSideMenuState.shared
     @FocusState private var focusedTab: TVTab?
@@ -3596,6 +3685,11 @@ private struct TVSideMenu: View {
             if tab == nil, !isHandingOff { state.lastClose = Date() }
             if tab != nil { isSummoned = false }
         }
+        .onExitCommand(perform: closesOnBack && isOpen ? { handOff() } : nil)
+        // The menu over Details goes with Details, possibly while it has
+        // focus; left set, the tabs would think the menu still had it and
+        // stop Back from opening it.
+        .onDisappear { if focusedTab != nil { state.isFocused = false } }
         .onChange(of: state.focusRequest) { _, _ in
             TVHomeDebugTrace.log("sideMenu.request parked=\(isParked) yields=\(state.carouselOwnsLeft)")
             isSummoned = true
@@ -3642,7 +3736,7 @@ private struct TVSideMenu: View {
                 icon(for: tab)
                     .frame(width: 38, height: 38)
                 if isOpen {
-                    Text(tab == .profile ? profileName : tab.title)
+                    Text(tab == .profile ? state.profileName : tab.title)
                         .font(.system(size: 28, weight: isCurrent ? .semibold : .regular))
                         .lineLimit(1)
                         .fixedSize()
@@ -3666,23 +3760,34 @@ private struct TVSideMenu: View {
 
     @ViewBuilder
     private func icon(for tab: TVTab) -> some View {
-        if tab == .profile, let profileAvatar {
+        if !isOpen, !isShowingTabPage {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 28, weight: .medium))
+        } else if tab == .profile, let profileAvatar = state.profileAvatar {
             Image(uiImage: profileAvatar)
                 .renderingMode(.original)
                 .resizable()
                 .scaledToFit()
                 .clipShape(Circle())
         } else {
-            Image(systemName: tab == .profile ? profileSymbol : (tab == .settings ? settingsSymbol : tab.symbol))
+            Image(systemName: tab == .profile ? state.profileSymbol : (tab == .settings ? state.settingsSymbol : tab.symbol))
                 .font(.system(size: 28, weight: .medium))
         }
     }
 
     private func choose(_ tab: TVTab) {
         TVHomeDebugTrace.log("sideMenu.choose \(tab.rawValue)")
-        selectedTab = tab
-        // Hand focus to the screen: with the rows briefly disabled the focus
-        // engine has to look for it there.
+        if let onChoose {
+            onChoose(tab)
+        } else {
+            selectedTab = tab
+        }
+        handOff()
+    }
+
+    /// Hand focus to the screen: with the rows briefly gone the focus engine
+    /// has to look for it there.
+    private func handOff() {
         isHandingOff = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { isHandingOff = false }
     }
@@ -7511,6 +7616,9 @@ struct TVHomeView: View {
         }
 
         continueWatching = items
+        #if os(tvOS)
+        ContinueWatchingStore.publishHomeRowToTopShelf(items)
+        #endif
         // The full series episode guide remains on the source item for resume,
         // episode lookup, and playback. The row cards only need presentation
         // metadata; keeping hundreds of `videos` entries in every SwiftUI card
