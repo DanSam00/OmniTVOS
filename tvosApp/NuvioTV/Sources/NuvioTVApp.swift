@@ -3463,9 +3463,11 @@ final class TVSideMenuState: ObservableObject {
     /// Set by Home while its carousel is past the first slide: Left there
     /// pages back, so the menu must not be the thing to its left.
     @Published var carouselOwnsLeft = false
-    /// When the focus engine last moved focus, for telling a Left press that
-    /// went somewhere from one that ran into the edge of the screen.
-    private var lastFocusMove = Date.distantPast
+    /// When the focus engine last moved focus leftward, for telling a Left
+    /// press that went somewhere from one that ran into the edge of the screen.
+    private var lastLeftFocusMove = Date.distantPast
+    /// Where the focused item sits on screen, from the last focus update.
+    private var focusedFrame: CGRect?
     private var focusObserver: NSObjectProtocol?
     /// When focus last left the menu for the screen beside it.
     fileprivate var lastClose = Date.distantPast
@@ -3479,8 +3481,16 @@ final class TVSideMenuState: ObservableObject {
             forName: UIFocusSystem.didUpdateNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.lastFocusMove = Date() }
+        ) { [weak self] note in
+            let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext
+            let heading = context?.focusHeading ?? []
+            let view = context?.nextFocusedItem as? UIView
+            let frame = view.map { $0.convert($0.bounds, to: nil) }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if heading.contains(.left) { self.lastLeftFocusMove = Date() }
+                self.focusedFrame = frame
+            }
         }
     }
 
@@ -3492,18 +3502,31 @@ final class TVSideMenuState: ObservableObject {
     /// any height. The menu's focus section only catches Left from about the
     /// height of its icon, so off a lower row the press was simply dropped.
     ///
-    /// `onMoveCommand` also hears presses the focus engine did act on, so a
-    /// press only counts as hitting the edge if focus has not moved around it.
+    /// `onMoveCommand` also hears presses the focus engine did act on. With the
+    /// keyboard the two arrive together, but on the Siri Remote the focus move
+    /// can come well before or after the command, and a narrow timing window
+    /// opened the menu on most ordinary Left presses. So a press only counts as
+    /// hitting the edge when no leftward move happened anywhere near it *and*
+    /// what is focused is already at the left edge of the screen.
     func handleMove(_ direction: MoveCommandDirection) {
         guard direction == .left, !isFocused else { return }
         let pressed = Date()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
-            guard let self, !self.isFocused,
-                  self.lastFocusMove < pressed.addingTimeInterval(-0.12) else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self, !self.isFocused else { return }
+            let movedLeft = self.lastLeftFocusMove > pressed.addingTimeInterval(-0.6)
+            let atEdge = (self.focusedFrame?.minX ?? .infinity) < Self.leftEdgeLimit
+            TVHomeDebugTrace.log(
+                "sideMenu.leftPress movedLeft=\(movedLeft) focusedMinX=\(Int(self.focusedFrame?.minX ?? -1))"
+            )
+            guard !movedLeft, atEdge else { return }
             TVHomeDebugTrace.log("sideMenu.edgeLeft")
             self.requestFocus()
         }
     }
+
+    /// The first card of a row starts at 128pt and the carousel's content at
+    /// about the same; anything further right has more screen to its left.
+    private static let leftEdgeLimit: CGFloat = 260
 }
 
 /// The Apple TV menu, drawn by the app as the Mac's is: the current tab's
