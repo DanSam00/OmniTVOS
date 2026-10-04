@@ -807,18 +807,39 @@ enum OmniCustomAvatar {
 /// A photo is kept for Omni and Nuvio's apps get a random catalog avatar; a
 /// link is the avatar everywhere.
 struct MacCustomAvatarButtons: View {
+    /// Keyboard ids for the buttons, as a screen's focus band lists them.
+    static let photosID = "avatar.photos"
+    static let linkID = "avatar.link"
+    static let removeID = "avatar.remove"
+
     @Binding var avatarId: String
     @Binding var photo: Data?
     var includesLink = true
+    /// The keyboard caret, when the screen drives one; outlined like a focus.
+    var macFocusedID: String? = nil
+    /// Return on a button: the screen sets its id here and this view acts on
+    /// it, since the picker and the link prompt are this view's own state.
+    var activation: Binding<String?> = .constant(nil)
     @State private var pickedItem: PhotosPickerItem?
+    @State private var isPickingPhoto = false
     @State private var isEnteringLink = false
     @State private var linkText = ""
 
+    /// The buttons present right now, in order.
+    var keyboardIDs: [String] {
+        [Self.photosID] + (includesLink ? [Self.linkID] : []) + (photo != nil ? [Self.removeID] : [])
+    }
+
     var body: some View {
         HStack(spacing: 12) {
-            PhotosPicker(selection: $pickedItem, matching: .images) {
+            // A plain button opening the picker, not `PhotosPicker` itself, so
+            // Return can open it as well as a click.
+            Button {
+                isPickingPhoto = true
+            } label: {
                 Label("Choose from Photos…", systemImage: "photo.on.rectangle")
             }
+            .macCaretOutline(macFocusedID == Self.photosID)
             if includesLink {
                 Button {
                     linkText = ""
@@ -826,12 +847,27 @@ struct MacCustomAvatarButtons: View {
                 } label: {
                     Label("Image Link…", systemImage: "link")
                 }
+                .macCaretOutline(macFocusedID == Self.linkID)
             }
             if photo != nil {
                 Button("Remove Photo", role: .destructive) { photo = nil }
+                    .macCaretOutline(macFocusedID == Self.removeID)
             }
         }
         .controlSize(.large)
+        .photosPicker(isPresented: $isPickingPhoto, selection: $pickedItem, matching: .images)
+        .onChange(of: activation.wrappedValue) { _, id in
+            guard let id else { return }
+            activation.wrappedValue = nil
+            switch id {
+            case Self.photosID: isPickingPhoto = true
+            case Self.linkID where includesLink:
+                linkText = ""
+                isEnteringLink = true
+            case Self.removeID: photo = nil
+            default: break
+            }
+        }
         .onChange(of: pickedItem) { _, item in
             guard let item else { return }
             Task {
@@ -859,6 +895,17 @@ struct MacCustomAvatarButtons: View {
         }
     }
 }
+
+private extension View {
+    /// The Mac keyboard caret on a system-styled button.
+    func macCaretOutline(_ focused: Bool) -> some View {
+        overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(focused ? AppFocusOutline.color : .clear, lineWidth: AppFocusOutline.width)
+                .padding(-4)
+        }
+    }
+}
 #endif
 
 /// Stable accent used by the primary-profile star / label.
@@ -877,10 +924,98 @@ struct AddProfileView: View {
 
     @FocusState private var focusedField: Field?
     @State private var showingPinSheet = false
+    /// Whether the name field is taking typing. Held here, not in the field,
+    /// so the Mac keyboard can start and end it.
+    @State private var isEditingName = false
+    #if os(macOS)
+    /// macOS has no focus engine, so none of this screen could be reached from
+    /// the keyboard. Bands top to bottom: name and PIN, the photo buttons, the
+    /// avatar categories, the avatar grid, then Cancel and Save.
+    @StateObject private var macFocus = MacScreenFocus("addProfile")
+    private let keyRouter = MacKeyRouter.shared
+    @ObservedObject private var avatarCatalog = AvatarCatalogStore.shared
+    @State private var avatarCategory = "all"
+    @State private var avatarButtonActivation: String?
+    #endif
 
     fileprivate enum Field {
         case name
     }
+
+    #if os(macOS)
+    private static var nameID: String { macNameID }
+    private static var pinID: String { macPinID }
+    private static var cancelID: String { macCancelID }
+    private static var saveID: String { macSaveID }
+    private static let categoryPrefix = "category:"
+    /// Matches `AvatarPickerGrid`'s fixed Mac columns.
+    static let macAvatarColumns = 7
+
+    private var macAvatarButtonIDs: [String] {
+        [MacCustomAvatarButtons.photosID, MacCustomAvatarButtons.linkID]
+            + (photo != nil ? [MacCustomAvatarButtons.removeID] : [])
+    }
+
+    private var macBands: [MacFocusBand] {
+        [
+            MacFocusBand(id: "info", items: [Self.nameID, Self.pinID]),
+            MacFocusBand(id: "photo", items: macAvatarButtonIDs),
+            MacFocusBand(id: "categories", items: avatarCatalog.categories.map { Self.categoryPrefix + $0 }),
+            MacFocusBand(
+                id: "avatars",
+                items: avatarCatalog.items(in: avatarCategory).map(\.id),
+                columns: Self.macAvatarColumns,
+                carriesColumn: true
+            ),
+            MacFocusBand(id: "actions", items: [Self.cancelID, Self.saveID]),
+        ]
+    }
+
+    private func macIsFocused(_ id: String) -> Bool { macFocus.itemID == id }
+
+    private func macActivate(_ band: String, _ item: String) {
+        switch item {
+        case Self.nameID: isEditingName = true
+        case Self.pinID: showingPinSheet = true
+        case Self.cancelID: isPresented = false
+        case Self.saveID:
+            guard canSave else { return }
+            onSave()
+            isPresented = false
+        default:
+            if item.hasPrefix(Self.categoryPrefix) {
+                avatarCategory = String(item.dropFirst(Self.categoryPrefix.count))
+            } else if band == "photo" {
+                avatarButtonActivation = item
+            } else if band == "avatars" {
+                avatarId = item
+                photo = nil
+            }
+        }
+    }
+
+    private func macHandle(_ key: MacKey) {
+        // The PIN pad covers the screen; it takes digits itself, and Escape
+        // closes it rather than the whole screen.
+        if showingPinSheet {
+            if key == .back { showingPinSheet = false }
+            return
+        }
+        if key == .back {
+            isPresented = false
+            return
+        }
+        // Up or Down out of the name field ends typing in it.
+        if isEditingName, key == .up || key == .down { isEditingName = false }
+        // There is no menu here to open, so Left at the edge goes nowhere.
+        if key == .left, let band = macBands.first(where: { $0.id == macFocus.bandID }),
+           let index = macFocus.itemID.flatMap({ band.items.firstIndex(of: $0) }),
+           index % band.columns == 0 {
+            return
+        }
+        macFocus.handle(key, activate: macActivate)
+    }
+    #endif
 
     private var canSave: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -918,11 +1053,13 @@ struct AddProfileView: View {
                         AddProfileTextField(
                             placeholder: "Name",
                             text: $name,
+                            isEditing: $isEditingName,
                             focusedField: $focusedField,
-                            field: .name
+                            field: .name,
+                            macIsFocused: macFocused(Self.macNameID)
                         )
 
-                        AddProfilePinButton(pinIsSet: !pin.isEmpty) {
+                        AddProfilePinButton(pinIsSet: !pin.isEmpty, macIsFocused: macFocused(Self.macPinID)) {
                             showingPinSheet = true
                         }
                     }
@@ -934,19 +1071,24 @@ struct AddProfileView: View {
                         .foregroundColor(.white.opacity(0.62))
                     #if os(macOS)
                     Spacer()
-                    MacCustomAvatarButtons(avatarId: $avatarId, photo: $photo)
+                    MacCustomAvatarButtons(
+                        avatarId: $avatarId,
+                        photo: $photo,
+                        macFocusedID: macFocus.itemID,
+                        activation: $avatarButtonActivation
+                    )
                     #endif
                 }
 
-                AvatarPickerGrid(
-                    selectedAvatarId: $avatarId,
-                    onSelectAvatar: { _ in photo = nil },
-                    scrollsGrid: true
-                )
+                avatarGrid
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
                 HStack(spacing: 16) {
-                    ProfileAvatarPickerButton(title: "Cancel", systemImage: "xmark") {
+                    ProfileAvatarPickerButton(
+                        title: "Cancel",
+                        systemImage: "xmark",
+                        macIsFocused: macFocused(Self.macCancelID)
+                    ) {
                         isPresented = false
                     }
 
@@ -954,7 +1096,8 @@ struct AddProfileView: View {
                         title: "Save",
                         systemImage: "checkmark",
                         prominent: true,
-                        disabled: !canSave
+                        disabled: !canSave,
+                        macIsFocused: macFocused(Self.macSaveID)
                     ) {
                         onSave()
                         isPresented = false
@@ -990,6 +1133,54 @@ struct AddProfileView: View {
         .onAppear {
             DispatchQueue.main.async { focusedField = .name }
         }
+        #if os(macOS)
+        .onAppear {
+            macFocus.update(macBands)
+            macFocus.focus(band: "info", item: Self.nameID)
+            macFocus.syncClaim(isCurrent: true)
+        }
+        .onDisappear { macFocus.release() }
+        .onChange(of: macBands.map(\.items)) { _, _ in macFocus.update(macBands) }
+        .onReceive(keyRouter.presses.map(Optional.some)) { press in
+            guard let press, macFocus.isFront else { return }
+            macHandle(press.key)
+        }
+        #endif
+    }
+
+    /// The avatar grid, following the Mac caret and category on macOS.
+    @ViewBuilder
+    private var avatarGrid: some View {
+        #if os(macOS)
+        AvatarPickerGrid(
+            selectedAvatarId: $avatarId,
+            onSelectAvatar: { _ in photo = nil },
+            scrollsGrid: true,
+            macFocusedID: macFocus.itemID,
+            macCategory: $avatarCategory
+        )
+        #else
+        AvatarPickerGrid(
+            selectedAvatarId: $avatarId,
+            onSelectAvatar: { _ in photo = nil },
+            scrollsGrid: true
+        )
+        #endif
+    }
+
+    /// Ids for the controls drawn on both platforms; on tvOS they are never
+    /// focused through here.
+    private static let macNameID = "name"
+    private static let macPinID = "pin"
+    private static let macCancelID = "cancel"
+    private static let macSaveID = "save"
+
+    private func macFocused(_ id: String) -> Bool {
+        #if os(macOS)
+        macIsFocused(id)
+        #else
+        false
+        #endif
     }
 
     private func handleExitCommand() {
@@ -1004,10 +1195,10 @@ struct AddProfileView: View {
 private struct AddProfileTextField: View {
     let placeholder: String
     @Binding var text: String
+    @Binding var isEditing: Bool
     var focusedField: FocusState<AddProfileView.Field?>.Binding
     let field: AddProfileView.Field
-
-    @State private var isEditing = false
+    var macIsFocused = false
 
     var body: some View {
         Button {
@@ -1016,7 +1207,7 @@ private struct AddProfileTextField: View {
             SettingsGlassTextField(
                 text: $text,
                 placeholder: placeholder,
-                focused: focusedField.wrappedValue == field,
+                focused: focusedField.wrappedValue == field || macIsFocused,
                 isEditing: $isEditing,
                 fieldWidth: 490,
                 centerDisplayText: true
@@ -1030,9 +1221,11 @@ private struct AddProfileTextField: View {
 
 private struct AddProfilePinButton: View {
     let pinIsSet: Bool
+    var macIsFocused = false
     let action: () -> Void
 
-    @FocusState private var isFocused: Bool
+    @FocusState private var focusState: Bool
+    private var isFocused: Bool { focusState || macIsFocused }
 
     var body: some View {
         Button(action: action) {
@@ -1047,7 +1240,7 @@ private struct AddProfilePinButton: View {
         }
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
-        .focused($isFocused)
+        .focused($focusState)
         .focusEffectDisabledIfAvailable()
     }
 }
@@ -1058,11 +1251,29 @@ struct AvatarPickerGrid: View {
     @Binding var selectedAvatarId: String
     var onSelectAvatar: ((String) -> Void)? = nil
     var scrollsGrid = false
+    /// The Mac keyboard caret: an avatar id, or "category:<name>" for a tab.
+    var macFocusedID: String? = nil
+    /// The category, when the screen drives it from the keyboard.
+    var macCategory: Binding<String>? = nil
 
     @ObservedObject private var catalog = AvatarCatalogStore.shared
-    @State private var selectedCategory = "all"
+    @State private var ownCategory = "all"
 
-    private let columns = [GridItem(.adaptive(minimum: 118, maximum: 118), spacing: 18)]
+    private var selectedCategory: String { macCategory?.wrappedValue ?? ownCategory }
+
+    private func selectCategory(_ category: String) {
+        if let macCategory { macCategory.wrappedValue = category } else { ownCategory = category }
+    }
+
+    private var columns: [GridItem] {
+        #if os(macOS)
+        // Fixed, so the keyboard's Up and Down know the row length.
+        if macCategory != nil {
+            return Array(repeating: GridItem(.fixed(118), spacing: 18, alignment: .top), count: AddProfileView.macAvatarColumns)
+        }
+        #endif
+        return [GridItem(.adaptive(minimum: 118, maximum: 118), spacing: 18)]
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -1074,19 +1285,27 @@ struct AvatarPickerGrid: View {
                 }
                 .padding(.vertical, 24)
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 10) {
-                        ForEach(catalog.categories, id: \.self) { category in
-                            AvatarCategoryTab(
-                                label: categoryLabel(category),
-                                isSelected: selectedCategory == category
-                            ) {
-                                selectedCategory = category
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            ForEach(catalog.categories, id: \.self) { category in
+                                AvatarCategoryTab(
+                                    label: categoryLabel(category),
+                                    isSelected: selectedCategory == category,
+                                    macIsFocused: macFocusedID == "category:" + category
+                                ) {
+                                    selectCategory(category)
+                                }
+                                .id("category:" + category)
                             }
                         }
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 4)
                     }
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 4)
+                    .onChange(of: macFocusedID) { _, id in
+                        guard let id, id.hasPrefix("category:") else { return }
+                        withAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo(id, anchor: .center) }
+                    }
                 }
 
                 grid
@@ -1098,9 +1317,16 @@ struct AvatarPickerGrid: View {
     @ViewBuilder
     private var grid: some View {
         if scrollsGrid {
-            ScrollView {
-                gridContent
-                    .padding(.vertical, 6)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    gridContent
+                        .padding(.vertical, 6)
+                }
+                // macOS has no focus engine to scroll the caret into view.
+                .onChange(of: macFocusedID) { _, id in
+                    guard let id, catalog.items(in: selectedCategory).contains(where: { $0.id == id }) else { return }
+                    withAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo(id, anchor: .center) }
+                }
             }
         } else {
             gridContent
@@ -1112,11 +1338,13 @@ struct AvatarPickerGrid: View {
             ForEach(catalog.items(in: selectedCategory)) { avatar in
                 AvatarGridCell(
                     avatar: avatar,
-                    isSelected: avatar.id == selectedAvatarId
+                    isSelected: avatar.id == selectedAvatarId,
+                    macIsFocused: macFocusedID == avatar.id
                 ) {
                     selectedAvatarId = avatar.id
                     onSelectAvatar?(avatar.id)
                 }
+                .id(avatar.id)
             }
         }
     }
@@ -1129,9 +1357,11 @@ struct AvatarPickerGrid: View {
 private struct AvatarCategoryTab: View {
     let label: String
     let isSelected: Bool
+    var macIsFocused = false
     let action: () -> Void
 
-    @FocusState private var isFocused: Bool
+    @FocusState private var focusState: Bool
+    private var isFocused: Bool { focusState || macIsFocused }
 
     var body: some View {
         Button(action: action) {
@@ -1144,7 +1374,7 @@ private struct AvatarCategoryTab: View {
         }
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
-        .focused($isFocused)
+        .focused($focusState)
         .focusEffectDisabledIfAvailable()
         .scaleEffect(isFocused ? 1.05 : 1)
         .animation(.easeOut(duration: 0.12), value: isFocused)
@@ -1154,9 +1384,11 @@ private struct AvatarCategoryTab: View {
 private struct AvatarGridCell: View {
     let avatar: AvatarCatalogItem
     let isSelected: Bool
+    var macIsFocused = false
     let action: () -> Void
 
-    @FocusState private var isFocused: Bool
+    @FocusState private var focusState: Bool
+    private var isFocused: Bool { focusState || macIsFocused }
 
     var body: some View {
         Button(action: action) {
@@ -1191,7 +1423,7 @@ private struct AvatarGridCell: View {
         }
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
-        .focused($isFocused)
+        .focused($focusState)
         .focusEffectDisabledIfAvailable()
     }
 }
@@ -1346,9 +1578,11 @@ private struct ProfileAvatarPickerButton: View {
     let systemImage: String
     var prominent: Bool = false
     var disabled: Bool = false
+    var macIsFocused = false
     let action: () -> Void
 
-    @FocusState private var isFocused: Bool
+    @FocusState private var focusState: Bool
+    private var isFocused: Bool { focusState || macIsFocused }
 
     var body: some View {
         Button(action: action) {
@@ -1365,7 +1599,7 @@ private struct ProfileAvatarPickerButton: View {
         .buttonStyle(PosterCardButtonStyle())
         .disabled(disabled)
         .nuvioFocusable()
-        .focused($isFocused)
+        .focused($focusState)
         .focusEffectDisabledIfAvailable()
         .animation(.easeOut(duration: 0.12), value: isFocused)
     }

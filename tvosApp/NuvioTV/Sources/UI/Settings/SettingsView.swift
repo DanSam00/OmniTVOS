@@ -2106,6 +2106,11 @@ struct ProfilePinManagementView: View {
     @State private var errorMessage: String?
     @State private var isWorking = false
     @FocusState private var focusedPinKey: String?
+    #if os(macOS)
+    /// The number keys and Delete type the PIN on a Mac; the on-screen pad
+    /// is for a remote and could not be reached from the keyboard.
+    @State private var macKeyMonitor: Any?
+    #endif
 
     var body: some View {
         ZStack {
@@ -2176,6 +2181,27 @@ struct ProfilePinManagementView: View {
             guard !isWorking else { return }
             onDismiss()
         }
+        #if os(macOS)
+        .onAppear {
+            guard macKeyMonitor == nil else { return }
+            macKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                if event.keyCode == 51 { // Delete
+                    deleteDigit()
+                    return nil
+                }
+                if let typed = event.charactersIgnoringModifiers, typed.count == 1,
+                   let digit = typed.first, ("0"..."9").contains(digit) {
+                    addDigit(String(digit))
+                    return nil
+                }
+                return event
+            }
+        }
+        .onDisappear {
+            if let macKeyMonitor { NSEvent.removeMonitor(macKeyMonitor) }
+            macKeyMonitor = nil
+        }
+        #endif
     }
 
     private var title: String {
