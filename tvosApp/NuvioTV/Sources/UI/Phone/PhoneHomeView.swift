@@ -223,12 +223,21 @@ private enum PhoneHeroSlide: Identifiable {
         }
     }
 
-    /// Wide art (backdrop, or an episode still for resume entries).
+    /// Wide art (backdrop, or an episode still for resume entries). Many
+    /// Continue Watching entries carry only a poster, so an IMDb title
+    /// falls back to Cinemeta's backdrop for it.
     private var wideURL: String? {
         switch self {
-        case .title(let meta): return meta.backgroundUrl
-        case .resume(let item): return item.meta.backgroundUrl ?? item.episodeThumbnailOverride
+        case .title(let meta):
+            return meta.backgroundUrl ?? Self.cinemetaBackdrop(for: meta)
+        case .resume(let item):
+            return item.meta.backgroundUrl ?? Self.cinemetaBackdrop(for: item.meta) ?? item.episodeThumbnailOverride
         }
+    }
+
+    private static func cinemetaBackdrop(for meta: NuvioMeta) -> String? {
+        guard let imdb = meta.imdbId ?? NuvioMeta.canonicalImdbID(from: meta.id), imdb.hasPrefix("tt") else { return nil }
+        return "https://images.metahub.space/background/large/\(imdb)/img"
     }
 
     /// The hero's art for the phone's orientation: the 2:3 poster suits a
@@ -280,8 +289,7 @@ struct PhoneHomeView: View {
         return ((heroPage - 1) % count + count) % count
     }
     /// Side safe-area inset (the Dynamic Island in landscape), zero upright.
-    @State private var sideInset: CGFloat = 0
-    @State private var scrollOffset: CGFloat = 0
+    @State private var sideInset = PhoneSideInsets()
     @State private var pageHeight: CGFloat = 0
     @State private var pageWidth: CGFloat = 402
     @State private var browsingSection: TVHomeSection?
@@ -359,24 +367,40 @@ struct PhoneHomeView: View {
                 }
                 // Rows keep clear of the Dynamic Island in landscape; their
                 // horizontal scrollers still run to the screen edge.
-                .safeAreaPadding(.horizontal, sideInset)
+                .safeAreaPadding(sideInset)
             }
             .padding(.bottom, 24)
         }
         // Edge to edge in every orientation: the hero art reaches the sides
         // in landscape too, and the side insets are added back where text is.
         .ignoresSafeArea(edges: [.top, .horizontal])
-        .onGeometryChange(for: CGFloat.self) { proxy in
-            max(proxy.safeAreaInsets.leading, proxy.safeAreaInsets.trailing)
+        .onGeometryChange(for: PhoneSideInsets.self) { proxy in
+            PhoneSideInsets(proxy.safeAreaInsets)
         } action: { sideInset = $0 }
-        .onGeometryChange(for: CGSize.self) { $0.size } action: {
+        // The whole screen, safe areas included: the iPhone Duo keeps a
+        // column down one side out of the safe area, and the art and the
+        // poster-or-wide choice go by the screen, not that narrower area.
+        .onGeometryChange(for: CGSize.self) { proxy in
+            CGSize(
+                width: proxy.size.width + proxy.safeAreaInsets.leading + proxy.safeAreaInsets.trailing,
+                height: proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom
+            )
+        } action: {
             pageHeight = $0.height
             pageWidth = $0.width
         }
         .onScrollGeometryChange(for: CGFloat.self) { geometry in
             geometry.contentOffset.y + geometry.contentInsets.top
-        } action: { _, offset in scrollOffset = offset }
-        .background { pageBackdrop }
+        } action: { _, offset in
+            // Into the observable only the backdrop reads: a @State here
+            // rebuilt all of Home on every scroll frame, and the Duo's larger
+            // landscape page dropped frames doing it.
+            heroParallax.scroll = offset
+        }
+        .background(alignment: .topLeading) {
+            pageBackdrop
+                .ignoresSafeArea()
+        }
         .onChange(of: heroSlides.map(\.id), initial: true) { _, _ in
             PhoneImageLoader.prefetch(heroSlides.map { $0.artURL(portrait: !isLandscape) }, kind: .backdrop)
         }
@@ -385,15 +409,23 @@ struct PhoneHomeView: View {
         .navigationDestination(item: $browsingSection) { section in
             PhoneSectionGridView(sectionID: section.id, loader: loader, onOpenDetails: onOpenDetails)
         }
-        .onChange(of: heroSlides.map(\.id)) { _, ids in
-            if heroIndex >= ids.count || ids.count <= 1 { heroPage = ids.count > 1 ? 1 : 0 }
+        .onChange(of: heroSlides.map(\.id)) { old, ids in
+            // The list changes as Home loads (Continue Watching, catalogs).
+            // Stay on the title being shown if it's still there; the
+            // carousel is rebuilt for the new list (see heroCarousel).
+            let oldIndex = old.isEmpty ? 0 : ((heroPage - 1) % old.count + old.count) % old.count
+            let newIndex = old.indices.contains(oldIndex) ? ids.firstIndex(of: old[oldIndex]) ?? 0 : 0
+            heroPage = ids.count > 1 ? newIndex + 1 : 0
         }
-        .onChange(of: heroPage) { _, page in
+        .onChange(of: heroPage, initial: true) { _, page in
+            heroParallax.page = page
             let count = heroSlides.count
             guard count > 1, page == 0 || page == count + 1 else { return }
             // Let the slide onto the copy finish, then swap in the real page.
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 350_000_000)
+                // Swiped on again before the hop: that swipe wins.
+                guard heroPage == page else { return }
                 var transaction = Transaction()
                 transaction.disablesAnimations = true
                 withTransaction(transaction) {
@@ -413,13 +445,16 @@ struct PhoneHomeView: View {
         }
     }
 
-    private var isLandscape: Bool { verticalSizeClass == .compact }
-
-    /// Landscape: 1 with the hero in view, fading to 0 as it scrolls away.
-    private var heroFade: Double {
-        let distance = max(pageHeight * 0.8, 1)
-        return Double(min(max(1 - scrollOffset / distance, 0), 1))
+    /// The wide hero layout and art: in landscape, and also whenever the
+    /// screen is too wide for the 2:3 poster to fit its height (the iPhone
+    /// Duo's near-square screen).
+    private var isLandscape: Bool {
+        guard pageWidth > 0, pageHeight > 0 else { return verticalSizeClass == .compact }
+        return pageWidth * 1.5 > pageHeight
     }
+
+    /// Scroll distance over which the hero art fades out.
+    private var heroFadeDistance: CGFloat { max(pageHeight * 0.8, 1) }
 
     /// In both orientations the hero's art is the whole background — edge to
     /// edge and top to bottom, fixed behind the rows — and fades out as the
@@ -435,11 +470,11 @@ struct PhoneHomeView: View {
                         parallax: heroParallax,
                         urls: heroPages(heroSlides).map { $0.slide.artURL(portrait: false) },
                         fallbackURL: url,
-                        portraitWidth: nil
+                        portraitWidth: nil,
+                        size: CGSize(width: pageWidth, height: pageHeight)
                     )
                     // Drifts up behind the rows as the page scrolls.
-                    .modifier(PhoneParallaxScroll(offset: scrollOffset))
-                    .opacity(heroFade)
+                    .modifier(PhoneHeroScrollEffect(parallax: heroParallax, fadeDistance: heroFadeDistance))
                 } else {
                     // The poster at the screen's width, pinned to the top, as
                     // the hero drew it — filling the full height instead crops
@@ -449,10 +484,10 @@ struct PhoneHomeView: View {
                         parallax: heroParallax,
                         urls: heroPages(heroSlides).map { $0.slide.artURL(portrait: true) },
                         fallbackURL: url,
-                        portraitWidth: pageWidth
+                        portraitWidth: pageWidth,
+                        size: CGSize(width: pageWidth, height: pageHeight)
                     )
-                    .modifier(PhoneParallaxScroll(offset: scrollOffset))
-                    .opacity(heroFade)
+                    .modifier(PhoneHeroScrollEffect(parallax: heroParallax, fadeDistance: heroFadeDistance))
                 }
                 if isLandscape {
                     // Legibility for the hero's text on the left, and a floor
@@ -486,7 +521,10 @@ struct PhoneHomeView: View {
                     )
                 }
             }
-            .ignoresSafeArea()
+            // Exactly the screen, from its top-left corner: centred in the
+            // background instead, the fixed-size art sat 21pt off the left
+            // edge on the iPhone Duo and left a dark strip down the right.
+            .frame(width: pageWidth, height: pageHeight, alignment: .topLeading)
         } else {
             portraitBackdrop
         }
@@ -552,6 +590,7 @@ struct PhoneHomeView: View {
                     sideInset: sideInset,
                     // The page backdrop draws the art, fixed, in both orientations.
                     drawsArt: false,
+                    isPortrait: !isLandscape,
                     onOpenDetails: { onOpenDetails(entry.slide.meta) },
                     onResume: onResume
                 )
@@ -562,7 +601,12 @@ struct PhoneHomeView: View {
                         continueWatchingMenu(item)
                     }
                 }
-                .containerRelativeFrame(.horizontal)
+                // The measured screen width, not containerRelativeFrame: on
+                // the iPhone Duo that flipped between the full width and the
+                // width less its 84pt side column, so the pages shifted under
+                // the carousel — it flickered by 84pt, settled on the wrong
+                // page, and the art behind followed the wrong title.
+                .frame(width: pageWidth)
                 .id(page)
             }
             }
@@ -571,12 +615,25 @@ struct PhoneHomeView: View {
         // A paging scroll view rather than a page TabView: it reports where
         // the swipe is between pages, which the art's parallax follows.
         .scrollTargetBehavior(.paging)
+        // A new slide list builds a new carousel: an existing one kept
+        // showing the slide it had while its page number now named another,
+        // so the art behind belonged to a different title.
+        .id(slides.map(\.id))
         .scrollIndicators(.hidden)
         .scrollPosition(id: Binding(get: { Optional(heroPage) }, set: { if let page = $0 { heroPage = page } }))
         .onScrollGeometryChange(for: CGFloat.self) { geometry in
             geometry.containerSize.width > 0 ? geometry.contentOffset.x / geometry.containerSize.width : 0
         } action: { _, position in
+            // Only while the carousel is actually moving. At rest its offset
+            // isn't trustworthy: on the iPhone Duo it flicked by the width of
+            // the side safe area (84pt) as Home scrolled under the camera
+            // column, and a re-created carousel reports page 0 first. Either
+            // slid the art sideways mid-scroll, which looked like a zoom.
+            guard parallax.isPaging else { return }
             parallax.position = position
+        }
+        .onScrollPhaseChange { _, phase in
+            parallax.isPaging = phase != .idle
         }
         // These dots count real slides, not the two wrap-around copies.
         .overlay(alignment: .bottom) {
@@ -787,15 +844,15 @@ private struct PhoneSectionGridView: View {
 /// the title's logo, and what to do next.
 private struct PhoneHeroSlideView: View {
     let slide: PhoneHeroSlide
-    var sideInset: CGFloat = 0
+    var sideInset = PhoneSideInsets()
     /// False in landscape, where the page draws this art full screen behind.
     var drawsArt: Bool = true
+    /// The page's layout (poster) rather than the size class, which stays
+    /// regular on large screens.
+    var isPortrait = true
     let onOpenDetails: () -> Void
     let onResume: (ContinueWatchingItem) -> Void
 
-    @Environment(\.verticalSizeClass) private var verticalSizeClass
-
-    private var isPortrait: Bool { verticalSizeClass != .compact }
 
     /// A poster usually carries the title in its own artwork, so the logo
     /// on top of it would say the same thing twice.
@@ -862,7 +919,7 @@ private struct PhoneHeroSlideView: View {
                 details
                 actions
             }
-            .padding(.horizontal, PhoneLayout.gutter + sideInset)
+            .padding(sideInset, plus: PhoneLayout.gutter)
             .padding(.bottom, drawsArt ? 40 : 34)
             .shadow(color: .black.opacity(0.45), radius: 8)
         }
@@ -948,6 +1005,29 @@ private struct PhoneHeroSlideView: View {
 @Observable
 final class PhoneHeroParallax {
     var position: CGFloat = 1
+    /// The carousel is being swiped or is animating between slides.
+    var isPaging = false
+    /// The carousel's current page (wrap-around copies included).
+    var page = 1
+    /// How far Home has scrolled.
+    var scroll: CGFloat = 0
+}
+
+/// The hero art's drift and fade as Home scrolls. Reads the scroll here,
+/// so a scroll frame redraws the art and nothing else.
+private struct PhoneHeroScrollEffect: ViewModifier {
+    let parallax: PhoneHeroParallax
+    let fadeDistance: CGFloat
+
+    func body(content: Content) -> some View {
+        let offset = parallax.scroll
+        content
+            .modifier(PhoneParallaxScroll(offset: offset))
+            // Unanimated, like the drift (see PhoneParallaxScroll).
+            .transaction { $0.animation = nil } body: { content in
+                content.opacity(Double(min(max(1 - offset / fadeDistance, 0), 1)))
+            }
+    }
 }
 
 /// The hero art behind the carousel, sliding with it at half speed: each
@@ -961,34 +1041,39 @@ private struct PhoneHeroParallaxArt: View {
     /// Portrait: the poster at this width, pinned to the top and faded out
     /// at the bottom. Landscape (nil): the wide art over the whole screen.
     let portraitWidth: CGFloat?
+    /// The whole screen, measured by the page. Not measured here: inside
+    /// the scroll drift, ignoring the safe area made the art grow by the
+    /// drift into the bottom inset (up to 34pt) and snap back past it,
+    /// which zoomed the full-height wide art in and out as Home scrolled.
+    let size: CGSize
 
     private static let depth: CGFloat = 0.5
 
     var body: some View {
-        GeometryReader { proxy in
-            let width = proxy.size.width
-            let position = urls.count > 1 ? parallax.position : 0
-            let base = Int(floor(position))
-            ZStack(alignment: .topLeading) {
-                ForEach([base, base + 1].filter { urls.indices.contains($0) }, id: \.self) { index in
-                    let distance = CGFloat(index) - position
-                    if abs(distance) < 1 {
-                        art(urls[index] ?? fallbackURL, size: proxy.size)
-                            // Picture moves at half speed inside its window…
-                            .offset(x: -distance * width * Self.depth)
-                            .frame(width: width, height: proxy.size.height, alignment: .top)
-                            .clipped()
-                            // …and the window moves with the page.
-                            .offset(x: distance * width)
-                    }
-                }
-                if urls.isEmpty {
-                    art(fallbackURL, size: proxy.size)
+        let width = size.width
+        // The swipe's own position while the carousel moves; at rest,
+        // the current page itself.
+        let position = urls.count > 1 ? (parallax.isPaging ? parallax.position : CGFloat(parallax.page)) : 0
+        let base = Int(floor(position))
+        ZStack(alignment: .topLeading) {
+            ForEach([base, base + 1].filter { urls.indices.contains($0) }, id: \.self) { index in
+                let distance = CGFloat(index) - position
+                if abs(distance) < 1 {
+                    art(urls[index] ?? fallbackURL, size: size)
+                        // Picture moves at half speed inside its window…
+                        .offset(x: -distance * width * Self.depth)
+                        .frame(width: width, height: size.height, alignment: .top)
+                        .clipped()
+                        // …and the window moves with the page.
+                        .offset(x: distance * width)
                 }
             }
-            .frame(width: width, height: proxy.size.height, alignment: .topLeading)
-            .clipped()
+            if urls.isEmpty {
+                art(fallbackURL, size: size)
+            }
         }
+        .frame(width: width, height: size.height, alignment: .topLeading)
+        .clipped()
     }
 
     @ViewBuilder

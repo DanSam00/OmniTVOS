@@ -16,8 +16,11 @@ struct PhoneCalendarView: View {
     /// Landscape month view: the tapped day's entries beside the grid.
     @State private var isDayPanelOpen = false
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @State private var pageSize: CGSize = .zero
 
-    private var isLandscape: Bool { verticalSizeClass == .compact }
+    private var isLandscape: Bool {
+        phoneIsLandscape(width: pageSize.width, height: pageSize.height, fallback: verticalSizeClass == .compact)
+    }
 
     private var viewMode: CalendarViewMode { CalendarViewMode.from(viewModeRaw) }
     private var todayKey: String { CalendarDayKey.dayKey(from: Date()) }
@@ -43,6 +46,7 @@ struct PhoneCalendarView: View {
             }
         }
         .background(Color.black.ignoresSafeArea())
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { pageSize = $0 }
         // No title: the tab bar already says where you are, and the space
         // goes to the calendar.
         .toolbar(.hidden, for: .navigationBar)

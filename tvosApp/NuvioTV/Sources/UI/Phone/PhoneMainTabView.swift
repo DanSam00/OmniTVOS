@@ -99,6 +99,9 @@ struct PhoneMainTabView: View {
         }
         #endif
         .onChange(of: homeKey) { _, key in homeLoader.load(key: key) }
+        // Cast devices can take a while to answer; looking from launch means
+        // the player's Cast button already lists them.
+        .task { PhoneCastController.shared.startDiscovery() }
     }
 }
 

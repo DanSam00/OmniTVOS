@@ -6,6 +6,44 @@
 #if os(iOS)
 import SwiftUI
 
+/// The safe-area insets on each side. Kept apart because they differ: the
+/// iPhone Duo keeps its status column and tab bar down one edge only, and
+/// in landscape the Dynamic Island is on one side.
+struct PhoneSideInsets: Equatable {
+    var leading: CGFloat = 0
+    var trailing: CGFloat = 0
+
+    init(leading: CGFloat = 0, trailing: CGFloat = 0) {
+        self.leading = leading
+        self.trailing = trailing
+    }
+
+    init(_ insets: EdgeInsets) {
+        leading = insets.leading
+        trailing = insets.trailing
+    }
+}
+
+extension View {
+    func safeAreaPadding(_ insets: PhoneSideInsets) -> some View {
+        safeAreaPadding(.leading, insets.leading)
+            .safeAreaPadding(.trailing, insets.trailing)
+    }
+
+    func padding(_ insets: PhoneSideInsets, plus extra: CGFloat = 0) -> some View {
+        padding(.leading, insets.leading + extra)
+            .padding(.trailing, insets.trailing + extra)
+    }
+}
+
+/// Landscape by the screen's shape, not its size class: on a large screen
+/// such as the iPhone Duo's the vertical size class stays regular when it
+/// turns, so the layouts never noticed.
+func phoneIsLandscape(width: CGFloat, height: CGFloat, fallback: Bool) -> Bool {
+    guard width > 0, height > 0 else { return fallback }
+    return width > height
+}
+
 enum PhoneLayout {
     static let gutter: CGFloat = 16
     static let posterWidth: CGFloat = 112

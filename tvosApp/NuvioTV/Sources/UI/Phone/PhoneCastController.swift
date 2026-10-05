@@ -30,14 +30,27 @@ final class PhoneCastController: NSObject, ObservableObject {
         let criteria = GCKDiscoveryCriteria(applicationID: kGCKDefaultMediaReceiverApplicationID)
         let options = GCKCastOptions(discoveryCriteria: criteria)
         options.physicalVolumeButtonsWillControlDeviceVolume = true
-        // Discovery (and iOS's Local Network prompt) waits for the first tap
-        // on the Cast button, so opening the player doesn't trigger it.
-        options.startDiscoveryAfterFirstTapOnCastButton = true
+        // Discovery starts when the player opens (startDiscovery), not on
+        // the first tap of the Cast button: waiting for the tap left the
+        // device list empty when it opened, so no Chromecast was offered.
+        options.startDiscoveryAfterFirstTapOnCastButton = false
         GCKCastContext.setSharedInstanceWith(options)
+        GCKCastContext.sharedInstance().discoveryManager.add(self)
         GCKCastContext.sharedInstance().sessionManager.add(self)
         if let session = GCKCastContext.sharedInstance().sessionManager.currentCastSession {
             attach(session)
         }
+    }
+
+    /// Looks for Cast devices on the network. The first call is when iOS
+    /// asks for Local Network access.
+    func startDiscovery() {
+        let discovery = GCKCastContext.sharedInstance().discoveryManager
+        discovery.passiveScan = false
+        discovery.startDiscovery()
+        #if OMNI_DEBUG_TOOLS
+        NSLog("Cast discovery: started, state %d", discovery.discoveryState.rawValue)
+        #endif
     }
 
     private var client: GCKRemoteMediaClient? {
@@ -220,6 +233,15 @@ extension PhoneCastController: @preconcurrency GCKSessionManagerListener {
     func sessionManager(_ sessionManager: GCKSessionManager, didFailToStart session: GCKCastSession, withError error: Error) {
         detach()
         lastError = "Couldn't connect to the Cast device"
+    }
+}
+
+extension PhoneCastController: @preconcurrency GCKDiscoveryManagerListener {
+    func didUpdateDeviceList() {
+        #if OMNI_DEBUG_TOOLS
+        let discovery = GCKCastContext.sharedInstance().discoveryManager
+        NSLog("Cast discovery: %d device(s), state %d", discovery.deviceCount, discovery.discoveryState.rawValue)
+        #endif
     }
 }
 

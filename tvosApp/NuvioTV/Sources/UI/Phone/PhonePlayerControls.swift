@@ -44,6 +44,7 @@ struct PhonePlayerControls: View {
         .animation(.easeInOut(duration: 0.25), value: isCasting)
         .onAppear {
             applyScreenMode()
+            cast.startDiscovery()
             if cast.isConnected { startCastingWhenReady() }
         }
         .onChange(of: screenModeRaw) { _, _ in applyScreenMode() }

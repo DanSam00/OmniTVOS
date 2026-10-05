@@ -20,10 +20,11 @@ struct PhoneDetailsView: View {
     /// "season:episode" keys of watched episodes, for the eye markers.
     @State private var watchedEpisodeKeys: Set<String> = []
     /// Side safe-area inset (the Dynamic Island in landscape), zero upright.
-    @State private var sideInset: CGFloat = 0
+    @State private var sideInset = PhoneSideInsets()
     /// How far the page has scrolled, for fading the fixed art.
     @State private var scrollOffset: CGFloat = 0
     @State private var pageHeight: CGFloat = 0
+    @State private var pageWidth: CGFloat = 0
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var playerPresence = PhonePlayerPresence.shared
@@ -50,9 +51,11 @@ struct PhoneDetailsView: View {
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-
-            backButton
         }
+        // No back button: the left-edge swipe goes back (added where
+        // ContentView presents this page, `phoneEdgeSwipeBack`), and
+        // VoiceOver's scrub gesture does the same.
+        .accessibilityAction(.escape) { onBack() }
         .foregroundStyle(.white)
         .preferredColorScheme(.dark)
         .onAppear {
@@ -82,18 +85,6 @@ struct PhoneDetailsView: View {
         }
         // The left-edge back swipe is added where ContentView presents this
         // page (`phoneEdgeSwipeBack`), alongside the other overlay pages.
-    }
-
-    private var backButton: some View {
-        Button(action: onBack) {
-            Image(systemName: "chevron.left")
-                .font(.headline.weight(.semibold))
-                .frame(width: 40, height: 40)
-                .background(.ultraThinMaterial, in: Circle())
-        }
-        .padding(.leading, PhoneLayout.gutter)
-        .padding(.top, 8)
-        .accessibilityLabel("Back")
     }
 
     // MARK: Content
@@ -131,22 +122,27 @@ struct PhoneDetailsView: View {
                 }
                 // Everything below the art keeps clear of the Dynamic Island
                 // in landscape; the art itself runs to the screen edges.
-                .safeAreaPadding(.horizontal, sideInset)
+                .safeAreaPadding(sideInset)
             }
             .padding(.bottom, 32)
         }
         .ignoresSafeArea(edges: [.top, .horizontal])
-        .onGeometryChange(for: CGFloat.self) { proxy in
-            max(proxy.safeAreaInsets.leading, proxy.safeAreaInsets.trailing)
+        .onGeometryChange(for: PhoneSideInsets.self) { proxy in
+            PhoneSideInsets(proxy.safeAreaInsets)
         } action: { sideInset = $0 }
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { pageHeight = $0 }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: {
+            pageHeight = $0.height
+            pageWidth = $0.width
+        }
         .onScrollGeometryChange(for: CGFloat.self) { geometry in
             geometry.contentOffset.y + geometry.contentInsets.top
         } action: { _, offset in scrollOffset = offset }
         .background { pageBackdrop(meta) }
     }
 
-    private var isLandscape: Bool { verticalSizeClass == .compact }
+    private var isLandscape: Bool {
+        phoneIsLandscape(width: pageWidth, height: pageHeight, fallback: verticalSizeClass == .compact)
+    }
 
     /// 1 at the top, fading to 0 as the page scrolls, leaving the blur.
     private var artFade: Double {
@@ -271,8 +267,8 @@ struct PhoneDetailsView: View {
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.75))
             }
-            .padding(PhoneLayout.gutter)
-            .padding(.horizontal, sideInset)
+            .padding(.vertical, PhoneLayout.gutter)
+            .padding(sideInset, plus: PhoneLayout.gutter)
         }
     }
 
@@ -787,9 +783,24 @@ struct PhoneParallaxScroll: ViewModifier {
 
     func body(content: Content) -> some View {
         let pull = max(-offset, 0)
-        content
-            .scaleEffect(1 + pull / 250, anchor: .top)
-            .offset(y: -max(offset, 0) * Self.rate)
+        let drift = -max(offset, 0) * Self.rate
+        // The stretch grows the art by exactly the overscroll, relative to
+        // its own height, so its bottom edge follows the content down. A
+        // fixed divisor ballooned it on short screens: a 90pt bounce on the
+        // iPhone Duo in landscape scaled the art by 36% and it snapped back.
+        //
+        // Never animated: the scroll position must land on the frame it's
+        // read. Posters in the rows fade in as they load while the page
+        // scrolls, and a scroll update sharing a frame with one of those
+        // fades took on its animation — the art lagged behind the content
+        // and then jumped to catch up.
+        content.transaction { $0.animation = nil } body: { content in
+            content.visualEffect { view, proxy in
+                view
+                    .scaleEffect(1 + pull / max(proxy.size.height, 1), anchor: .top)
+                    .offset(y: drift)
+            }
+        }
     }
 }
 #endif
