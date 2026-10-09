@@ -631,12 +631,42 @@ private struct SimklAuthorizedClient {
         path: String,
         query: [URLQueryItem] = []
     ) async throws -> T {
-        let result: SimklHTTPResult<T> = try await client.get(
-            path: path,
-            clientID: clientID,
-            accessToken: token,
-            queryItems: query
-        )
+        let result: SimklHTTPResult<T> = try await send(path: path) { clientID in
+            try await client.get(path: path, clientID: clientID, accessToken: token, queryItems: query)
+        }
+        return try result.valueOrThrow()
+    }
+
+    /// Runs a request through Omni's V2 app, or the V1 app while V2 is over
+    /// Simkl's per-user daily limit (see `SimklV2Limit`).
+    ///
+    /// Only V2's own 401 signs the profile out. The token was issued to V2,
+    /// and V1 refusing it says nothing about whether it is still good.
+    private func send<R>(
+        path: String,
+        _ request: (String) async throws -> SimklHTTPResult<R>
+    ) async throws -> SimklHTTPResult<R> {
+        let v1 = SimklConfig.publicLookupClientID
+        if SimklV2Limit.isActive, SimklV2Limit.v1AcceptsToken, clientID != v1 {
+            let viaV1 = try await request(v1)
+            if Self.refusesToken(viaV1.statusCode) {
+                SimklV2Limit.v1RefusedToken(path: path, status: viaV1.statusCode)
+            }
+            return viaV1
+        }
+
+        let result = try await request(clientID)
+        if Self.isDailyLimit(result.statusCode, result.errorMessage), clientID != v1 {
+            SimklV2Limit.reached(path: path, status: result.statusCode)
+            guard SimklV2Limit.v1AcceptsToken else { return result }
+            let viaV1 = try await request(v1)
+            if Self.refusesToken(viaV1.statusCode) {
+                SimklV2Limit.v1RefusedToken(path: path, status: viaV1.statusCode)
+                return result
+            }
+            SimklV2Limit.log("simkl.v1 used path=\(path) status=\(viaV1.statusCode)")
+            return viaV1
+        }
         if result.statusCode == 401 {
             SimklAuthStore.clearAuth(
                 profileScope: profileScope,
@@ -644,7 +674,15 @@ private struct SimklAuthorizedClient {
                 tokenStorage: tokenStorage
             )
         }
-        return try result.valueOrThrow()
+        return result
+    }
+
+    private static func isDailyLimit(_ status: Int, _ message: String?) -> Bool {
+        status == 429 || (message?.lowercased().contains("request limit") ?? false)
+    }
+
+    private static func refusesToken(_ status: Int) -> Bool {
+        status == 401 || status == 403
     }
 
     func post<B: Encodable>(
@@ -657,18 +695,8 @@ private struct SimklAuthorizedClient {
 
     func delete(path: String, query: [URLQueryItem] = []) async throws -> Int {
         SimklSyncLoader.forgetActivities(token: token)
-        let result = try await client.delete(
-            path: path,
-            clientID: clientID,
-            accessToken: token,
-            queryItems: query
-        )
-        if result.statusCode == 401 {
-            SimklAuthStore.clearAuth(
-                profileScope: profileScope,
-                store: store,
-                tokenStorage: tokenStorage
-            )
+        let result = try await send(path: path) { clientID in
+            try await client.delete(path: path, clientID: clientID, accessToken: token, queryItems: query)
         }
         return result.statusCode
     }
@@ -683,21 +711,52 @@ private struct SimklAuthorizedClient {
     ) async throws -> (status: Int, data: Data) {
         // A write moves the account's activity stamps; the next read must see it.
         SimklSyncLoader.forgetActivities(token: token)
-        let result = try await client.post(
-            path: path,
-            clientID: clientID,
-            accessToken: token,
-            queryItems: query,
-            body: body
-        )
-        if result.statusCode == 401 {
-            SimklAuthStore.clearAuth(
-                profileScope: profileScope,
-                store: store,
-                tokenStorage: tokenStorage
-            )
+        let result = try await send(path: path) { clientID in
+            try await client.post(path: path, clientID: clientID, accessToken: token, queryItems: query, body: body)
         }
         return (result.statusCode, result.rawData)
+    }
+}
+
+/// Omni's V2 Simkl app has a per-user daily request limit. Once Simkl says
+/// it is reached, requests go through the V1 app instead — until Simkl
+/// retires V1, or V1 will not take the profile's token — and when neither
+/// answers, Continue Watching falls back to its last saved list.
+enum SimklV2Limit {
+    /// How long to stay on V1 before trying V2 again. Simkl does not say when
+    /// the limit resets.
+    private static let backoff: TimeInterval = 3600
+    private static let limitedUntilKey = "omni.simkl.v2LimitedUntil"
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var v1Refused = false
+
+    static var isActive: Bool {
+        let until = UserDefaults.standard.double(forKey: limitedUntilKey)
+        return until > Date().timeIntervalSince1970
+    }
+
+    /// False once V1 has refused the token this launch.
+    static var v1AcceptsToken: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return !v1Refused
+    }
+
+    static func reached(path: String, status: Int) {
+        UserDefaults.standard.set(Date().addingTimeInterval(backoff).timeIntervalSince1970, forKey: limitedUntilKey)
+        log("simkl.v2 limit path=\(path) status=\(status)")
+    }
+
+    static func v1RefusedToken(path: String, status: Int) {
+        lock.lock(); v1Refused = true; lock.unlock()
+        log("simkl.v1 refused token path=\(path) status=\(status)")
+    }
+
+    static func log(_ line: String) {
+        #if os(macOS)
+        MacDiagnostics.log(line)
+        #else
+        print(line)
+        #endif
     }
 }
 
