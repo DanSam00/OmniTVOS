@@ -2642,7 +2642,7 @@ struct TvDetailsContent: View {
                                     },
                                     onTrailerClick: onTrailerClick,
                                     headerFocus: $castHeaderFocus,
-                                    entryLocked: focusedDetailsSection != .cast,
+                                    entryLocked: isSectionEntryLocked(.cast),
                                     onFocus: {
                                         guard focusedDetailsSection != .cast else { return }
                                         focusedDetailsSection = .cast
@@ -2662,7 +2662,7 @@ struct TvDetailsContent: View {
                                     TvDetailsRelatedRow(
                                         title: L10n.string("settings_tmdb_module_more_like_this", fallback: "More Like This"),
                                         items: uiState.moreLikeThis,
-                                        entryLocked: focusedDetailsSection != .related,
+                                        entryLocked: isSectionEntryLocked(.related),
                                         macFocusedIndex: macFocusedIndex(in: .related),
                                         onSelect: { item in
                                             onOpenTitle?(item.id, item.type)
@@ -2690,7 +2690,7 @@ struct TvDetailsContent: View {
                                     TvDetailsProductionRow(
                                         title: L10n.string("details_network", fallback: "Network"),
                                         companies: networks,
-                                        entryLocked: focusedDetailsSection != .network,
+                                        entryLocked: isSectionEntryLocked(.network),
                                         macRow: .network,
                                         onSelect: { company in
                                             onOpenProduction?(company)
@@ -2715,7 +2715,7 @@ struct TvDetailsContent: View {
                                     TvDetailsProductionRow(
                                         title: L10n.string("details_production", fallback: "Production"),
                                         companies: productionCompanies,
-                                        entryLocked: focusedDetailsSection != .production,
+                                        entryLocked: isSectionEntryLocked(.production),
                                         macRow: .production,
                                         onSelect: { company in
                                             onOpenProduction?(company)
@@ -2739,7 +2739,7 @@ struct TvDetailsContent: View {
                                 if !uiState.comments.isEmpty {
                                     TvDetailsCommentsRow(
                                         comments: uiState.comments,
-                                        entryLocked: focusedDetailsSection != .comments,
+                                        entryLocked: isSectionEntryLocked(.comments),
                                         onSelect: { comment in
                                             onCommentSelect?(comment)
                                         },
@@ -3680,11 +3680,30 @@ struct TvDetailsContent: View {
     #endif
 
     private func isDetailsFocusReachable(_ section: TvDetailsFocusSection) -> Bool {
+        #if os(macOS)
+        // A tvOS focus-engine device: sections out of reach are disabled so the
+        // engine cannot jump into them. The Mac drives its own caret, and a
+        // disabled section there took no clicks, hover or scrolling, so no row
+        // below the buttons could be swiped.
+        return true
+        #else
         guard let currentIndex = detailsFocusOrder.firstIndex(of: focusedDetailsSection),
               let sectionIndex = detailsFocusOrder.firstIndex(of: section) else {
             return true
         }
         return abs(sectionIndex - currentIndex) <= 1
+        #endif
+    }
+
+    /// tvOS locks a section's cards, all but the scrolled-to one, until focus
+    /// enters it. The Mac has no focus engine to steer, and the lock only left
+    /// most posters unclickable.
+    private func isSectionEntryLocked(_ section: TvDetailsFocusSection) -> Bool {
+        #if os(macOS)
+        return false
+        #else
+        return focusedDetailsSection != section
+        #endif
     }
 
     // Give series more horizontal room so the episode cards aren't cramped.
@@ -4612,6 +4631,11 @@ private struct TvDetailsRelatedRow: View {
             // Deliberately do not clip this strip to the text column. Like the
             // Home rows, posters keep drawing all the way to the screen edge.
             .frame(height: stripHeight, alignment: .leading)
+            #if os(macOS)
+            .modifier(MacRowSwipe(label: "related") { delta in
+                scrollIndex = min(max(scrollIndex + delta, 0), max(items.count - 1, 0))
+            })
+            #endif
             .animation(
                 smoothFocus ? TvDetailsHorizontalStrip.scrollSpring : nil,
                 value: scrollIndex
@@ -4820,6 +4844,11 @@ private struct TvDetailsCommentsRow: View {
             // Keep comment cards edge-to-edge as well; the parent vertical
             // scroll view owns the viewport instead of this row clipping it.
             .frame(height: stripHeight, alignment: .leading)
+            #if os(macOS)
+            .modifier(MacRowSwipe(label: "comments") { delta in
+                scrollIndex = min(max(scrollIndex + delta, 0), max(comments.count - 1, 0))
+            })
+            #endif
             .animation(
                 smoothFocus ? TvDetailsHorizontalStrip.scrollSpring : nil,
                 value: scrollIndex

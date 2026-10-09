@@ -4248,6 +4248,9 @@ struct TVHomeView: View {
     /// The rows' scroll offset when the featured carousel last took focus, so
     /// scrolling past it with the mouse can be told from where it started.
     @State private var macFeatureScrollBaseline: CGFloat = 0
+    /// True while the rows move under the viewer's own wheel or trackpad, as
+    /// against a scroll Home starts itself (a key move, the launch viewport).
+    @State private var macUserScrolling = false
     /// Captured from the rows' ScrollViewReader so the move handler can scroll
     /// an off-screen row in before focusing it.
     @State private var macScrollProxy: ScrollViewProxy?
@@ -4608,6 +4611,11 @@ struct TVHomeView: View {
                             )
                             // Zero while the carousel itself has focus.
                             .offset(y: liquidGlassRowsDrop)
+                            #if os(macOS)
+                            .modifier(MacRowSwipe(label: "feature", onePerSwipe: true) { delta in
+                                macSwipeSlides(&featureIndex, count: featureItems.count, by: delta)
+                            })
+                            #endif
                         } else if let folder = focusedCollectionFolder {
                             TVCollectionFolderHeroView(folder: folder)
                                 .offset(y: liquidGlassRowsDrop)
@@ -4663,6 +4671,16 @@ struct TVHomeView: View {
                                     // Spacing is 0 here because each row carries its own top gap;
                                     // see the ForEach below.
                                     LazyVStack(alignment: .leading, spacing: 0) {
+                                        #if os(macOS)
+                                        // The top inset as the stack's first view rather than
+                                        // padding: mouse scrolling settles on the stack's views,
+                                        // and as padding the top of the page, where the hero
+                                        // shows whole, was not one of them, so it could never
+                                        // be scrolled back to.
+                                        Color.clear
+                                            .frame(height: heroEnabled ? TVHomeLayout.rowsTopPadding : TVHomeLayout.noHeroTopPadding)
+                                            .accessibilityHidden(true)
+                                        #endif
                                         if sessionNeedsReauthentication && !isBannerDismissed {
                                             TVReauthBannerView(
                                                 onSignIn: onRequestReauth,
@@ -4985,10 +5003,12 @@ struct TVHomeView: View {
                                     .scrollTargetLayout()
                                     #endif
                                     .frame(maxWidth: .infinity, alignment: .leading)
+                                    #if !os(macOS)
                                     .padding(
                                         .top,
                                         heroEnabled ? TVHomeLayout.rowsTopPadding : TVHomeLayout.noHeroTopPadding
                                     )
+                                    #endif
                                     .padding(.bottom, 80)
                                     .onAppear {
                                         prepareInitialFocusViewport(
@@ -5021,6 +5041,9 @@ struct TVHomeView: View {
                                 // Keys always pin a row's top there; let a mouse
                                 // scroll come to rest the same way.
                                 .scrollTargetBehavior(.viewAligned)
+                                .onScrollPhaseChange { _, phase in
+                                    macUserScrolling = phase == .interacting || phase == .decelerating
+                                }
                                 #endif
                                 #if os(tvOS)
                                 // Liquid Glass lowers the rows as focus comes down
@@ -5160,6 +5183,12 @@ struct TVHomeView: View {
                     .allowsHitTesting(false)
             }
         }
+        #if os(macOS)
+        // Home stays mounted under Details and the player and its rows still
+        // get the pointer's hover through them, so they took the swipes meant
+        // for the page on top: no row on a show page could be scrolled.
+        .environment(\.macRowSwipeEnabled, isActive && !isFullScreenOverlayPresented)
+        #endif
         .task(id: "\(contentIdentity.profileId):\(contentIdentity.catalogRevision):\(tmdbHomeSettingsKey)") {
             #if os(macOS)
             // Continue Watching renders from the persisted first page until the
@@ -5599,6 +5628,11 @@ struct TVHomeView: View {
                     ) { selectedMeta in
                         navigateToDetailsFromHome(id: selectedMeta.id, type: selectedMeta.type)
                     }
+                    #if os(macOS)
+                    .modifier(MacRowSwipe(label: "gridHero", onePerSwipe: true) { delta in
+                        macSwipeSlides(&gridHeroIndex, count: gridHeroItems.count, by: delta)
+                    })
+                    #endif
                     .id(gridHeroScrollID)
                 }
 
@@ -6097,6 +6131,14 @@ struct TVHomeView: View {
         using proxy: ScrollViewProxy
     ) {
         guard !didPrepareInitialFocusViewport else { return }
+        #if os(macOS)
+        // Opening on the carousel (see `seedMacHomeFocusIfNeeded`): stay at
+        // the top instead of scrolling to the remembered row.
+        if featureHeroActive {
+            didPrepareInitialFocusViewport = true
+            return
+        }
+        #endif
         guard let location = initialFocusLocation(in: sections) else {
             // Keep a saved target alive while progressive loading has not yet
             // published its section. Once the final tree is known, fall back
@@ -6709,6 +6751,13 @@ struct TVHomeView: View {
     /// Home at all. Prefers the card the user was last on.
     private func seedMacHomeFocusIfNeeded() {
         guard macFocusedCardID == nil else { return }
+        // With the Continue Watching carousel on, Home opens on it, at the top,
+        // rather than on the card last left in a row further down.
+        if featureHeroActive {
+            MacDiagnostics.log("homeFocus.seed feature")
+            macFocusedCardID = MacHomeFocus.featureCardKey
+            return
+        }
         let sections = macNavigableSections
         let gridIds = macGridSectionIds
         let remembered = store.lastFocusedCardID
@@ -6842,8 +6891,19 @@ struct TVHomeView: View {
     /// Scrolled well past the carousel: focus goes to the first row, as Down
     /// would take it, but without Down's scroll, since the viewer is scrolling.
     private func macLeaveFeatureOnScrollIfNeeded(offset: CGFloat) {
-        guard isActive, !isFullScreenOverlayPresented,
-              macFocusedCardID == MacHomeFocus.featureCardKey,
+        // Only the viewer's own scrolling: the launch viewport and Snapping
+        // moved the rows too, and handing focus over then hid the carousel
+        // the moment Home opened.
+        guard macUserScrolling, isActive, !isFullScreenOverlayPresented else { return }
+        // Back at the top from the first row: the carousel again.
+        if offset <= 4, featureHeroActive,
+           let section = macFocusedCardID.flatMap(MacHomeFocus.sectionId(of:)),
+           section == macNavigableSections.dropFirst().first?.id {
+            MacDiagnostics.log("homeFocus.scrollBackToFeature")
+            macFocusedCardID = MacHomeFocus.featureCardKey
+            return
+        }
+        guard macFocusedCardID == MacHomeFocus.featureCardKey,
               offset - macFeatureScrollBaseline > 60,
               let next = MacHomeFocus.nextCardKey(
                 from: MacHomeFocus.featureCardKey,
@@ -6948,6 +7008,15 @@ struct TVHomeView: View {
     /// Pages the carousel, which is what Left/Right mean while it holds the
     /// highlight. Right wraps, matching the auto-advance; Left at the first
     /// slide is the way out to the menu, as it is at the start of any row.
+    /// A swipe over a hero carousel pages it, stopping at either end: unlike
+    /// the arrow keys it never wraps round or opens the menu.
+    private func macSwipeSlides(_ index: inout Int, count: Int, by delta: Int) {
+        guard count > 1 else { return }
+        let next = min(max(index + delta, 0), count - 1)
+        guard next != index else { return }
+        withAnimation(.easeInOut(duration: 0.35)) { index = next }
+    }
+
     private func macPageFeature(_ direction: MoveCommandDirection) {
         let count = featureItems.count
         let slide = min(max(featureIndex, 0), max(count - 1, 0))

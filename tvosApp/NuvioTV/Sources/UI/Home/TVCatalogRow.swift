@@ -1600,43 +1600,99 @@ struct TVCollectionFolderCard: View {
 /// index, and is consumed so the page does not also drift. Vertical scrolling
 /// is left alone for the page.
 struct MacRowSwipe: ViewModifier {
+    /// Names the strip in the log.
+    var label: String = "row"
+    /// A carousel: one slide per swipe. A trackpad swipe arrives as dozens of
+    /// events, then momentum, and stepping on every 70pt of them flew through
+    /// thirteen slides in one go.
+    var onePerSwipe: Bool = false
     let onStep: (Int) -> Void
+    /// False while the strip's screen is covered (Home under Details or the
+    /// player), so the screen on top gets the swipe.
+    @Environment(\.macRowSwipeEnabled) private var isEnabled
     @State private var monitor: Any?
     @State private var accumulated: CGFloat = 0
+    @State private var steppedThisSwipe = false
+    @State private var lastWheelStep = Date.distantPast
+    @State private var lastPreciseEvent = Date.distantPast
     /// Trackpad travel, in points, per card.
     private static let pointsPerCard: CGFloat = 70
+    /// Trackpad travel before a carousel turns its one slide.
+    private static let pointsPerSlide: CGFloat = 40
 
     func body(content: Content) -> some View {
         content
-            .onHover { inside in inside ? install() : remove() }
+            .onHover { inside in inside && isEnabled ? install() : remove() }
+            .onChange(of: isEnabled) { _, enabled in if !enabled { remove() } }
             .onDisappear { remove() }
     }
 
     private func install() {
         guard monitor == nil else { return }
+        MacDiagnostics.log("swipe.hover \(label)")
         accumulated = 0
         monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
             let dx = event.scrollingDeltaX
             guard abs(dx) > abs(event.scrollingDeltaY) else { return event }
             if event.hasPreciseScrollingDeltas {
+                // A new swipe: the gesture's own start, or, for a device that
+                // reports no phases, a pause since the last event.
+                if event.phase == .began || Date().timeIntervalSince(lastPreciseEvent) > 0.5 {
+                    accumulated = 0
+                    steppedThisSwipe = false
+                }
+                lastPreciseEvent = Date()
+                if onePerSwipe {
+                    // Momentum after the fingers lift is the same swipe.
+                    guard event.momentumPhase.isEmpty, !steppedThisSwipe else { return nil }
+                    accumulated += dx
+                    if abs(accumulated) >= Self.pointsPerSlide {
+                        step(accumulated > 0 ? -1 : 1)
+                        steppedThisSwipe = true
+                    }
+                    return nil
+                }
                 // Content follows the fingers: a swipe left (negative) shows
                 // the cards to the right.
                 accumulated += dx
                 while abs(accumulated) >= Self.pointsPerCard {
                     let sign: CGFloat = accumulated > 0 ? 1 : -1
-                    onStep(accumulated > 0 ? -1 : 1)
+                    step(accumulated > 0 ? -1 : 1)
                     accumulated -= sign * Self.pointsPerCard
                 }
             } else if dx != 0 {
-                onStep(dx > 0 ? -1 : 1)
+                // A wheel turn: one card per notch, but a carousel takes a
+                // breath between slides however fast the wheel spins.
+                if onePerSwipe {
+                    guard Date().timeIntervalSince(lastWheelStep) > 0.35 else { return nil }
+                    lastWheelStep = Date()
+                }
+                step(dx > 0 ? -1 : 1)
             }
             return nil
         }
     }
 
+    private func step(_ delta: Int) {
+        MacDiagnostics.log("swipe.step \(label) \(delta)")
+        onStep(delta)
+    }
+
     private func remove() {
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
+    }
+}
+
+private struct MacRowSwipeEnabledKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// Whether `MacRowSwipe` strips below may take sideways scrolling.
+    var macRowSwipeEnabled: Bool {
+        get { self[MacRowSwipeEnabledKey.self] }
+        set { self[MacRowSwipeEnabledKey.self] = newValue }
     }
 }
 #endif

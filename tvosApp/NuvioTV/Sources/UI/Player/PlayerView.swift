@@ -546,6 +546,32 @@ struct PlayerView: View {
                 .padding(.bottom, 150)
                 .zIndex(1)
 
+            // Esc was the only way out, which a mouse user has no reason to
+            // know. Shown with the controls, and throughout loading, when
+            // there are no controls yet and a stalled stream would trap you.
+            if !isCasting, !isCastPickerOpen, !viewModel.showSettingsPanel,
+               (viewModel.showControls && !viewModel.isScrubbing) || !didReportPlaybackStarted {
+                Button {
+                    MacDiagnostics.log("player.control close")
+                    onBack()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 26, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 64, height: 64)
+                        .background(Circle().fill(Color.black.opacity(0.35)))
+                        .modifier(MacPlayerCloseGlass())
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Close the player (Esc)")
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .padding(.top, 34)
+                .padding(.trailing, 60)
+                .transition(.opacity)
+                .zIndex(6)
+            }
+
             if isCasting {
                 MacCastingView(
                     title: viewModel.title,
@@ -2311,6 +2337,19 @@ extension PlayerView {
             viewModel.showNextRecommendation()
         }
         return true
+    }
+}
+#endif
+
+#if os(macOS)
+/// The close button's glass, where the system has it.
+private struct MacPlayerCloseGlass: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect(.regular.interactive(), in: Circle())
+        } else {
+            content
+        }
     }
 }
 #endif

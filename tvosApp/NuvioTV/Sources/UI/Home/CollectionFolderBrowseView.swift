@@ -1152,6 +1152,15 @@ private struct CollectionFolderHomeStyleRow: View {
             )
             .clipped()
             .offset(x: -edgeInset)
+            #if os(macOS)
+            // A swipe that reaches the loaded end asks for the next page, as
+            // focusing a card there does.
+            .modifier(MacRowSwipe(label: "folderBrowse") { delta in
+                guard !items.isEmpty else { return }
+                scrollIndex = min(max(scrollIndex + delta, 0), items.count - 1)
+                onApproachEnd(items[scrollIndex])
+            })
+            #endif
             .animation(rowSmoothFocus ? TVHomeLayout.scrollAnimation : nil, value: scrollIndex)
             .animation(rowSmoothFocus ? TVHomeLayout.scrollAnimation : nil, value: landscapeFocusedId)
         }

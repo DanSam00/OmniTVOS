@@ -1555,7 +1555,7 @@ enum AetherPlaybackLifecyclePolicy {
 /// Long-lived wrapper around a single `AetherEngine` instance (reused across titles).
 @MainActor
 final class AetherPlaybackController: UIViewController, PlaybackEngineControlling {
-    #if os(macOS)
+    #if os(iOS) || os(macOS)
     /// Mirrors the engine's own diagnostics into the app log.
     ///
     /// Aether serves every source to AVPlayer through a local HLS loopback, so
@@ -1567,7 +1567,11 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
     private static let engineLogBridge: Void = {
         EngineLog.handler = { line in
             guard forwardsEngineLine(line) else { return }
+            #if os(macOS)
             MacDiagnostics.log("aether " + line)
+            #else
+            PhoneLogFile.log("aether " + line)
+            #endif
         }
     }()
 
@@ -1607,6 +1611,42 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
     }
     #endif
 
+    #if os(iOS)
+    /// The phone's counterpart of the Mac's `~/Library/Logs/Omni/omni.log`: the
+    /// same engine lines, in the app's own container, so a session on the iPhone
+    /// can be read afterwards (`devicectl device copy from --domain-type
+    /// appDataContainer --source Library/Logs/omni.log`). Kept under 4 MB by
+    /// dropping the older half when it grows past that.
+    enum PhoneLogFile {
+        private static let queue = DispatchQueue(label: "com.saminaden.omni.ios.log")
+        private static let maxBytes = 4 * 1024 * 1024
+
+        static let url: URL = {
+            let dir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Logs", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            return dir.appendingPathComponent("omni.log")
+        }()
+
+        static func log(_ message: String) {
+            let stamp = ISO8601DateFormatter().string(from: Date())
+            guard let data = "[\(stamp)] \(message)\n".data(using: .utf8) else { return }
+            queue.async {
+                let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+                if size > maxBytes, let whole = try? Data(contentsOf: url) {
+                    try? (whole.suffix(maxBytes / 2) + data).write(to: url, options: .atomic)
+                } else if let handle = try? FileHandle(forWritingTo: url) {
+                    defer { try? handle.close() }
+                    _ = try? handle.seekToEnd()
+                    try? handle.write(contentsOf: data)
+                } else {
+                    try? data.write(to: url)
+                }
+            }
+        }
+    }
+    #endif
+
     var onPlaybackSuspended: ((Int64, Int64) -> Void)?
     /// Terminal load/runtime failures the coordinator may use for MPV fallback.
     var onTerminalError: ((String) -> Void)?
@@ -1627,7 +1667,7 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
     private var currentHTTPHeaders: [String: String] = [:]
     private var didReportTerminalError = false
     private var sourceProbe: SourceProbe?
-    #if os(macOS)
+    #if os(iOS) || os(macOS)
     private let engineLogBridgeInstalled: Void = AetherPlaybackController.engineLogBridge
     #endif
     private var subtitleDelaySeconds: Double = 0

@@ -3196,12 +3196,25 @@ private struct LayoutDiscoverySettingsView: View {
     /// and a keyboard; the TVs have only the remote.
     private var layoutSubtitle: String {
         #if os(macOS)
-        L10n.string(
-            "mac_layout_layout_subtitle",
-            fallback: "Modern uses larger posters, **ideal for keyboard navigation**; Compact tightens row and hero sizing; Grid View, **ideal for mouse navigation**"
-        )
+        switch homeLayout {
+        case "Grid View":
+            return L10n.string(
+                "mac_layout_layout_subtitle_grid",
+                fallback: "Each catalog as a poster grid under a featured slideshow. **Ideal for mouse navigation**"
+            )
+        case "Compact":
+            return L10n.string(
+                "mac_layout_layout_subtitle_compact",
+                fallback: "Rows with smaller posters and a shorter hero, so more fits on screen"
+            )
+        default:
+            return L10n.string(
+                "mac_layout_layout_subtitle_modern",
+                fallback: "Rows of larger posters under the hero. **Ideal for keyboard navigation**"
+            )
+        }
         #else
-        L10n.string(
+        return L10n.string(
             "tvos_layout_layout_subtitle",
             fallback: "Modern and Compact use rows; Grid View shows each catalog in a 7 by 3 poster grid"
         )
@@ -10580,6 +10593,24 @@ private struct CollectionsSettingsSection: View {
     @State private var activeSheet: CollectionsSheet?
     @State private var statusToast: String?
     @State private var toastClearTask: Task<Void, Never>?
+    @Environment(\.openURL) private var openURL
+
+    /// Nuvio's collection builder, on the platforms with a browser to open it in.
+    private static var collectionBuilderURL: URL? {
+        #if os(iOS) || os(macOS)
+        URL(string: "https://nuvio.tv/account?tab=collections")
+        #else
+        nil
+        #endif
+    }
+
+    private static var noCollectionsText: String {
+        #if os(iOS) || os(macOS)
+        L10n.string("settings_no_collections_builder", fallback: "No collections yet. Build them with Collection Builder on nuvio.tv, or Import a JSON backup.")
+        #else
+        L10n.string("settings_no_collections_builder_tv", fallback: "No collections yet. Build them at nuvio.tv/account on another device, or Import a JSON backup.")
+        #endif
+    }
 
     var body: some View {
         SettingsGroup(title: L10n.string("tmdb_collections_title", fallback: "Collections"), subtitle: L10n.string("tvos_settings_group_catalogs_into_folders_on_your_home_screen", fallback: "Group catalogs into folders on your home screen")) {
@@ -10589,11 +10620,11 @@ private struct CollectionsSettingsSection: View {
                 onExport: exportCollections,
                 onImport: { activeSheet = .importCollections },
                 onTemplates: { activeSheet = .templates },
-                onNew: { activeSheet = .editor(nil) }
+                onOpenBuilder: Self.collectionBuilderURL.map { url in { openURL(url) } }
             )
 
             if collections.isEmpty {
-                Text(L10n.string("tvos_settings_no_collections_yet_use_new_collection_or_9375fe6e", fallback: "No collections yet. Use New Collection, or Import a JSON backup."))
+                Text(Self.noCollectionsText)
                     .font(.system(size: 18, weight: .medium))
                     .foregroundColor(.white.opacity(0.5))
                     .padding(.vertical, 8)
@@ -10766,14 +10797,20 @@ private extension Array {
     }
 }
 
-/// Export / Import / New Collection actions — same Liquid Glass language as LoginView.
+/// Export / Import / Templates, and on the Mac and iPhone a link to Nuvio's
+/// collection builder — same Liquid Glass language as LoginView.
+///
+/// There was a New Collection button here. Its editor could name a collection
+/// but had no way to put anything in it, so it was removed on every platform;
+/// collections are built on nuvio.tv and arrive with the account.
 private struct CollectionsActionBar: View {
     let accentColor: Color
     let canExport: Bool
     let onExport: () -> Void
     let onImport: () -> Void
     let onTemplates: () -> Void
-    let onNew: () -> Void
+    /// nil where there is no browser to open (Apple TV).
+    let onOpenBuilder: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 14) {
@@ -10798,13 +10835,15 @@ private struct CollectionsActionBar: View {
                 disabled: false,
                 action: onTemplates
             )
-            CollectionsGlassButton(
-                title: L10n.string("tvos_settings_new_collection", fallback: "New Collection"),
-                systemImage: "plus",
-                prominent: true,
-                disabled: false,
-                action: onNew
-            )
+            if let onOpenBuilder {
+                CollectionsGlassButton(
+                    title: L10n.string("settings_collection_builder", fallback: "Collection Builder"),
+                    systemImage: "arrow.up.right.square",
+                    prominent: true,
+                    disabled: false,
+                    action: onOpenBuilder
+                )
+            }
         }
         .padding(28)
         .frame(maxWidth: .infinity, alignment: .center)
@@ -14242,7 +14281,7 @@ private struct SettingsRowText: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
 
-            Text(Self.styled(subtitle))
+            Self.styled(subtitle)
                 .font(.system(size: 17, weight: .medium))
                 .foregroundColor(.white.opacity(0.56))
                 .lineLimit(2)
@@ -14250,12 +14289,19 @@ private struct SettingsRowText: View {
         }
     }
 
-    /// A description may bold a phrase with `**…**`. Only those are read as
-    /// Markdown, so a stray `*` or `_` in any other description stays literal.
-    private static func styled(_ text: String) -> AttributedString {
-        guard text.contains("**"),
-              let parsed = try? AttributedString(markdown: text) else { return AttributedString(text) }
-        return parsed
+    /// A description may stress a phrase with `**…**`, drawn bold and brighter.
+    /// Markdown's own bold came out at the description's medium weight, so the
+    /// phrase did not stand out at all; and only `**` is read, so a stray `*`
+    /// or `_` in any other description stays literal.
+    private static func styled(_ text: String) -> Text {
+        guard text.contains("**") else { return Text(text) }
+        var result = Text("")
+        for (index, part) in text.components(separatedBy: "**").enumerated() where !part.isEmpty {
+            result = result + (index.isMultiple(of: 2)
+                ? Text(part)
+                : Text(part).fontWeight(.bold).foregroundColor(.white.opacity(0.9)))
+        }
+        return result
     }
 }
 
