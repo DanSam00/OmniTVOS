@@ -5211,6 +5211,7 @@ struct TVHomeView: View {
         // for the page on top: no row on a show page could be scrolled.
         .environment(\.macRowSwipeEnabled, isActive && !isFullScreenOverlayPresented)
         #endif
+        .environment(\.homeIsUncovered, isActive && !isFullScreenOverlayPresented)
         .task(id: "\(contentIdentity.profileId):\(contentIdentity.catalogRevision):\(tmdbHomeSettingsKey)") {
             #if os(macOS)
             // Continue Watching renders from the persisted first page until the
@@ -8931,7 +8932,21 @@ extension TVHeroView: Equatable {
 /// controls up there fight the row focus engine. Select resumes, left/right
 /// pages, and the pill is drawn as an affordance rather than being focusable
 /// in its own right.
+private struct HomeIsUncoveredKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// False while Home is mounted but hidden: another tab, or Details or the
+    /// player over it. Timers that only matter on screen stop then.
+    var homeIsUncovered: Bool {
+        get { self[HomeIsUncoveredKey.self] }
+        set { self[HomeIsUncoveredKey.self] = newValue }
+    }
+}
+
 private struct TVFeatureHeroView: View {
+    @Environment(\.homeIsUncovered) private var homeIsUncovered
     let items: [ContinueWatchingItem]
     @Binding var selectedIndex: Int
     /// Title focused in the rows below. While this is set the block stops being
@@ -9188,7 +9203,9 @@ private struct TVFeatureHeroView: View {
         .task(id: autoAdvanceIdentity) {
             // Off unless Auto-Scroll Carousel is on, and never under a trailer:
             // the task restarts when one ends, so the slide moves on then.
-            guard autoScroll, !isTrailerPlaying, items.count > 1, isCarouselMode else { return }
+            // Nor behind the player: it went on paging an hour-long episode
+            // through, every few seconds.
+            guard autoScroll, homeIsUncovered, !isTrailerPlaying, items.count > 1, isCarouselMode else { return }
             // Advances whether or not the block holds focus, the way Prime's
             // feature row does — but hand paging pauses it, and it resumes once
             // navigation has been idle for the same interval. Ticking every
@@ -9248,7 +9265,7 @@ private struct TVFeatureHeroView: View {
     /// and keyed on the title alone the loop stayed ended.
     private var autoAdvanceIdentity: String {
         "\(items.map(\.meta.id).joined(separator: "|"))|\(isCarouselMode)"
-            + "|\(autoScroll)|\(isTrailerPlaying)|\(trailersEnabled)|\(trailerDelay)"
+            + "|\(autoScroll)|\(isTrailerPlaying)|\(trailersEnabled)|\(trailerDelay)|\(homeIsUncovered)"
     }
 
     /// Paging driven by the remote, which also holds off the timer.
