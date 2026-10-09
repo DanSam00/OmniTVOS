@@ -32,6 +32,68 @@ final class MacTabCommandBus: ObservableObject {
     }
 }
 
+/// What the Player menu can ask the open player to do.
+enum MacPlayerAction {
+    case playPause, back, forward, showControls
+    case episodes, sources, settings, pictureInPicture
+    case airPlay, cast, shortcuts, leave
+}
+
+/// Carries Player menu choices to the open player, which is the only thing
+/// that can act on them, and tells the menu whether there is one.
+@MainActor
+final class MacPlayerCommandBus: ObservableObject {
+    static let shared = MacPlayerCommandBus()
+    @Published var isPlayerActive = false
+    let actions = PassthroughSubject<MacPlayerAction, Never>()
+    private init() {}
+}
+
+/// The Player menu: every player action with the key that does it, so the
+/// keys can be learned from the menu bar. The items carry the keys as their
+/// shortcuts for display; while the player is open its own key handling sees
+/// a press first, and while it is not the items are disabled.
+struct MacPlayerCommands: Commands {
+    @ObservedObject private var bus = MacPlayerCommandBus.shared
+
+    var body: some Commands {
+        CommandMenu("Player") {
+            item("Play / Pause", .playPause, key: .space)
+            item("Back", .back, key: .leftArrow)
+            item("Forward", .forward, key: .rightArrow)
+            item("Show Controls", .showControls, key: .upArrow)
+            Divider()
+            item("Episodes", .episodes, key: "e")
+            item("Sources", .sources, key: "s")
+            item("Subtitles, Audio & Speed", .settings, key: ",")
+            Divider()
+            item("AirPlay…", .airPlay, key: "a")
+            item("Cast to Chromecast…", .cast, key: "c")
+            item("Picture in Picture", .pictureInPicture, key: nil)
+            Divider()
+            item("Keyboard Shortcuts", .shortcuts, key: "/", modifiers: .shift)
+            item("Leave Player", .leave, key: .escape)
+        }
+    }
+
+    private func item(
+        _ title: String,
+        _ action: MacPlayerAction,
+        key: KeyEquivalent?,
+        modifiers: EventModifiers = []
+    ) -> some View {
+        Group {
+            if let key {
+                Button(title) { bus.actions.send(action) }
+                    .keyboardShortcut(key, modifiers: modifiers)
+            } else {
+                Button(title) { bus.actions.send(action) }
+            }
+        }
+        .disabled(!bus.isPlayerActive)
+    }
+}
+
 struct MacTabCommands: Commands {
     /// Only the tabs that exist on macOS right now. Search, Library, Calendar
     /// and the profile switcher are parked while keyboard navigation is being

@@ -722,6 +722,7 @@ public final class HLSVideoEngine: @unchecked Sendable {
         panelIsInHDRMode: Bool = false,
         audioSourceStreamIndexOverride: Int32? = nil,
         audioBridgeMode: AudioBridgeMode = .surroundCompat,
+        forceAudioBridge: Bool = false,
         isLiveSession: Bool = false,
         dvrWindowSeconds: Double? = nil,
         liveJoinProfile: LiveJoinProfile = .standard,
@@ -757,6 +758,7 @@ public final class HLSVideoEngine: @unchecked Sendable {
         self.panelIsInHDRMode = panelIsInHDRMode
         self.audioSourceStreamIndexOverride = audioSourceStreamIndexOverride
         self.audioBridgeMode = audioBridgeMode
+        self.forceAudioBridge = forceAudioBridge
         self.isLiveSession = isLiveSession
         self.dvrWindowSeconds = dvrWindowSeconds
         self.liveJoinProfile = liveJoinProfile
@@ -858,6 +860,9 @@ public final class HLSVideoEngine: @unchecked Sendable {
     /// Bridge encoder for codecs illegal in fMP4 (TrueHD, DTS, DTS-HD MA, MP3, Opus,
     /// EAC3 from MKV without dec3 extradata).
     let audioBridgeMode: AudioBridgeMode
+    /// Re-encode the audio even when it could be stream-copied. For an AirPlay receiver that refuses the
+    /// source codec: a browser-based one (LG's) rejects E-AC-3 in fMP4 but takes FLAC.
+    let forceAudioBridge: Bool
 
     /// Pre-opened demuxer reused by `start()` to skip `avformat_find_stream_info` (~1-3 s on slow CDN).
     /// Consumed in `start()`; unconsumed instances are closed by `stop()`.
@@ -1498,10 +1503,14 @@ public final class HLSVideoEngine: @unchecked Sendable {
                     frameSize: acpForHE.frame_size,
                     hasASC: hasASC
                 )
-            if compat.requiresBridge || isHEAAC {
+            if compat.requiresBridge || isHEAAC || forceAudioBridge {
                 bridgePreferred = true
                 EngineLog.emit(
-                    isHEAAC
+                    forceAudioBridge && !compat.requiresBridge && !isHEAAC
+                        ? "[HLSVideoEngine] audio: codec=\(compat) re-encoded to "
+                          + Self.encoderLabel(AudioBridge.receiverCompatEncoder).uppercased()
+                          + " because the AirPlay receiver refused it"
+                        : isHEAAC
                         ? "[HLSVideoEngine] audio: HE-AAC (profile=\(acpForHE.profile) frameSize=\(acpForHE.frame_size)), ADTS stream-copy would mis-signal SBR, bridging instead"
                         : "[HLSVideoEngine] audio: codec=\(compat) (bridge required), decoding + "
                           + Self.encoderLabel(AudioBridge.bridgeEncoder(

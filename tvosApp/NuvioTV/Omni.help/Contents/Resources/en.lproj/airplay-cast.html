@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="description" content="Send what&#x27;s playing to an Apple TV, an AirPlay TV or a Chromecast, and control it from the Mac.">
+  <meta name="keywords" content="airplay, chromecast, cast, google cast, apple tv, tv, send to tv, stream to tv, mirror, receiver, speaker, local network, cast to device, stop casting, subtitles, keyboard navigation, lg, samsung, dolby, sound, audio">
+  <meta name="robots" content="index">
+  <title>AirPlay and Chromecast</title>
+  <link rel="stylesheet" href="help.css">
+</head>
+<body>
+<nav class="back"><a href="index.html">‹ Omni Help</a></nav>
+<h1>AirPlay and Chromecast</h1>
+<p class="lead">Send what&#x27;s playing to an Apple TV, an AirPlay TV or a Chromecast, and control it from the Mac.</p>
+
+<h2>AirPlay</h2>
+<ol>
+  <li>While a video is playing, press <kbd>A</kbd>, or choose the AirPlay button on the control bar.</li>
+  <li>Choose an Apple TV or AirPlay TV from the list. The video moves to it.</li>
+  <li>To bring it back, open the list again and choose this Mac.</li>
+</ol>
+<div class="note">Video goes across for streams Omni plays with Apple's player, which is most of them. A few formats are played by Omni's own decoder; for those only the sound can be sent over AirPlay.</div>
+<h3>Using the AirPlay list from the keyboard</h3>
+<p>macOS draws the AirPlay list itself, and it doesn't respond to the arrow keys. To choose a device without the mouse, turn on <span class="path">System Settings ▸ Keyboard ▸ Keyboard navigation</span>. Then <kbd>Tab</kbd> moves through the list and <kbd>Space</kbd> chooses a device. <kbd>Esc</kbd> closes the list.</p>
+<h3>Subtitles</h3>
+<p>The subtitle you've chosen goes to the TV with the picture, and changing it while AirPlaying changes it on the TV. Subtitles built into the stream go across. A subtitle added later from an add-on shows only on the Mac.</p>
+<h3>TVs that refuse the sound</h3>
+<p>Some AirPlay TVs (several LG and Samsung models) can't play Dolby Digital Plus sound. If a TV refuses the stream, Omni tries once more with the sound converted to a format the TV accepts. If the TV still refuses, the video comes back to the Mac and Omni tells you.</p>
+
+<h2>Chromecast</h2>
+<ol>
+  <li>While a video is playing, press <kbd>C</kbd>, or choose the Cast button on the control bar.</li>
+  <li>Choose your Chromecast, or a TV with Chromecast built in. The first time, macOS asks to let Omni find devices on your local network. Allow it.</li>
+  <li>The Chromecast plays the stream itself, and the Mac becomes a remote: play/pause, back and forward, and a timeline. Use <kbd>←</kbd> <kbd>→</kbd> and <kbd>Return</kbd>, or click.</li>
+  <li>Choose <b>Stop Casting</b> to stop. The Mac picks up where the TV got to.</li>
+</ol>
+<div class="note">The Chromecast fetches the stream directly, so it has to be able to reach it. Streams that only exist on this Mac (local files, some debrid proxies) can't be cast; Omni tells you when that's the case. Speakers and soundbars with Chromecast built in play the sound only.</div>
+<h3>No devices in the list?</h3>
+<ul>
+  <li>Check the Mac and the Chromecast are on the same network.</li>
+  <li>Check <span class="path">System Settings ▸ Privacy &amp; Security ▸ Local Network</span> allows Omni.</li>
+  <li>Give it a few seconds; devices appear as they answer.</li>
+</ul>
+
+</body>
+</html>

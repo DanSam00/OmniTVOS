@@ -283,7 +283,13 @@ extension AetherEngine {
             .store(in: &cancellables)
         failure
             .compactMap { $0 }
-            .sink { [weak self] info in self?.publishError(info) }
+            .sink { [weak self] info in
+                guard let self else { return }
+                #if os(iOS) || os(macOS)
+                if self.recoverFromAirPlayReceiverFailure(info) { return }
+                #endif
+                self.publishError(info)
+            }
             .store(in: &cancellables)
         didReachEnd
             .filter { $0 }
@@ -551,7 +557,7 @@ extension AetherEngine {
         injectedSubtitleRenditionNames = Dictionary(
             uniqueKeysWithValues: zip(tracks.map(\.externalID),
                                       RemoteHLSSubtitleProvider.renditions(for: tracks).map(\.name)))
-        #if os(iOS)
+        #if os(iOS) || os(macOS)
         // #86 / #227: a receiver cannot reach 127.0.0.1. Mounting while already AirPlaying has to hand out
         // the LAN address straight away; the route-change reload re-enters this path and re-resolves it.
         return airPlayActive ? airPlayHostSwapped(prepared.masterURL) : prepared.masterURL
@@ -685,7 +691,10 @@ extension AetherEngine {
             matchContentEnabled: matchContentEnabled,
             panelIsInHDRMode: panelIsInHDRMode,
             audioSourceStreamIndexOverride: audioSourceStreamIndex,
-            audioBridgeMode: audioBridgeMode,
+            // A receiver that refused the source audio gets it re-encoded; FLAC (`.lossless`) is the
+            // encoder a browser-based receiver accepts where it refuses E-AC-3.
+            audioBridgeMode: airPlayForcesAudioBridge ? .lossless : audioBridgeMode,
+            forceAudioBridge: airPlayForcesAudioBridge,
             isLiveSession: isLive,
             dvrWindowSeconds: dvrWindowSeconds,
             // AE#195/#208: the session resolves the cut target and enables the bounded first-manifest

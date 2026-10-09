@@ -261,7 +261,7 @@ struct PhoneHomeView: View {
     let onRemoveContinueWatching: (ContinueWatchingItem) -> Void
 
     // The same Layout settings the TV Home reads, from the profile's suite.
-    @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
+    @AppStorage(SettingsKey.homeLayout) private var homeLayout = SettingsDefault.homeLayout
     @AppStorage(SettingsKey.heroEnabled) private var heroEnabled = true
     @AppStorage(SettingsKey.heroAutoScroll) private var heroAutoScroll = false
     @AppStorage(SettingsKey.homeFeature) private var homeFeature = true

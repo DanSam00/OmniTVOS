@@ -154,6 +154,9 @@ struct MacPlayerKeyCatcher: NSViewRepresentable {
     let onEpisodes: () -> Void
     let onSources: () -> Void
     let onSettings: () -> Void
+    /// A opens the AirPlay picker, C the Cast device list.
+    var onAirPlay: () -> Void = {}
+    var onCast: () -> Void = {}
     let seekStep: () -> Double
     let onToggleHelp: () -> Void
     /// A panel owns Up/Down/Return while it is open: the same keys move its
@@ -200,6 +203,8 @@ struct MacPlayerKeyCatcher: NSViewRepresentable {
         view.onRevealControls = onRevealControls
         view.onEpisodes = onEpisodes
         view.onSources = onSources
+        view.onAirPlay = onAirPlay
+        view.onCast = onCast
         view.seekStep = seekStep
         view.onSettings = onSettings
         view.onToggleHelp = onToggleHelp
@@ -222,6 +227,8 @@ final class PlayerKeyHostView: NSView {
     var onRevealControls: () -> Void = {}
     var onEpisodes: () -> Void = {}
     var onSources: () -> Void = {}
+    var onAirPlay: () -> Void = {}
+    var onCast: () -> Void = {}
     var seekStep: () -> Double = { 10 }
     var onSettings: () -> Void = {}
     var onToggleHelp: () -> Void = {}
@@ -248,6 +255,8 @@ final class PlayerKeyHostView: NSView {
         static let upArrow: UInt16 = 126
         static let downArrow: UInt16 = 125
         static let slash: UInt16 = 44
+        static let a: UInt16 = 0
+        static let c: UInt16 = 8
         static let escape: UInt16 = 53
         static let comma: UInt16 = 43
         static let returnKey: UInt16 = 36
@@ -262,6 +271,10 @@ final class PlayerKeyHostView: NSView {
         guard window != nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
+            // The system AirPlay list is open: its own keyboard handling moves
+            // through the receivers, which it cannot do if the arrows seek the
+            // film and Return presses a player button instead.
+            if MacAirPlay.isPresenting { return event }
             // Modified presses belong to menu commands.
             let disqualifying: NSEvent.ModifierFlags = [.command, .option, .control]
             guard event.modifierFlags.intersection(disqualifying).isEmpty else { return event }
@@ -311,6 +324,14 @@ final class PlayerKeyHostView: NSView {
             case Key.comma:
                 guard !event.isARepeat else { return nil }
                 self.onSettings()
+                return nil
+            case Key.a:
+                guard !event.isARepeat else { return nil }
+                self.onAirPlay()
+                return nil
+            case Key.c:
+                guard !event.isARepeat else { return nil }
+                self.onCast()
                 return nil
             default:
                 break
@@ -404,6 +425,8 @@ struct MacPlayerShortcutsOverlay: View {
         if showsEpisodes { rows.append(("E", "Episodes — press again to close")) }
         if showsSources { rows.append(("S", "Sources — press again to close")) }
         rows.append((",", "Playback settings"))
+        rows.append(("A", "AirPlay to an Apple TV or AirPlay TV"))
+        rows.append(("C", "Cast to a Chromecast"))
         rows.append(("↑  ·  ↓  ·  ↩", "Move and choose, in a panel"))
         rows.append(("?", "This list"))
         rows.append(("Esc", "Back out one layer"))

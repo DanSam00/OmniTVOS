@@ -186,7 +186,7 @@ extension HLSVideoEngine {
                     )
                 }
             }
-        } else if preferBridge && sourceIsAtmos {
+        } else if preferBridge && sourceIsAtmos && !forceAudioBridge {
             // EAC3+JOC always stream-copies; a pre-bridge decision is a codec-table bug.
             EngineLog.emit(
                 "[HLSVideoEngine] WARNING: Atmos source pre-routed to FLAC bridge without stream-copy attempt, Atmos lost. Investigate the codec compatibility table.",
@@ -201,9 +201,12 @@ extension HLSVideoEngine {
             // video-only after one attempt, try the other encoder. Only encoder-absence cascades (retrying
             // a different encoder can help); every other init failure is source-specific and re-attempting
             // is pointless, so it stops immediately.
-            let firstAttempt = AudioBridge.bridgeEncoder(
-                for: audioBridgeMode,
-                sourceChannels: audioStream.pointee.codecpar.pointee.ch_layout.nb_channels)
+            // A receiver-forced bridge opens the receiver-compat encoder outright (AAC, else FLAC).
+            let firstAttempt = forceAudioBridge
+                ? AudioBridge.receiverCompatEncoder
+                : AudioBridge.bridgeEncoder(
+                    for: audioBridgeMode,
+                    sourceChannels: audioStream.pointee.codecpar.pointee.ch_layout.nb_channels)
             let cascade = Self.bridgeEncoderCascade(firstAttempt: firstAttempt)
             attempts: for (attemptIndex, encoderAttempt) in cascade.enumerated() {
                 let isLastAttempt = attemptIndex == cascade.count - 1
@@ -215,7 +218,7 @@ extension HLSVideoEngine {
                         mode: audioBridgeMode,
                         // The first attempt lets the bridge resolve, so a container that under-reports its
                         // channel count still gets the decoder-resolved answer; only the retry is forced.
-                        forcedEncoder: attemptIndex == 0 ? nil : encoderAttempt
+                        forcedEncoder: attemptIndex == 0 && !forceAudioBridge ? nil : encoderAttempt
                     )
                 } catch AudioBridge.AudioBridgeError.encoderNotFound(let missing) where !isLastAttempt {
                     EngineLog.emit(
@@ -253,9 +256,14 @@ extension HLSVideoEngine {
                     // The label and the CODECS attribute come from the encoder the bridge ACTUALLY opened,
                     // not from the mode: `.surroundCompat` on a stereo source produces fLaC, and a master
                     // playlist that advertises ec-3 for a FLAC track is a load failure, not a cosmetic slip.
-                    let isEAC3Out = bridge.outputCodecID == AV_CODEC_ID_EAC3
-                    let hlsCodec = isEAC3Out ? "ec-3" : "fLaC"
-                    let pipelineLabel = "\(sourceCodecLabel) → \(isEAC3Out ? "EAC3" : "FLAC") bridge"
+                    let (hlsCodec, outLabel): (String, String) = {
+                        switch bridge.outputCodecID {
+                        case AV_CODEC_ID_EAC3: return ("ec-3", "EAC3")
+                        case AV_CODEC_ID_AAC:  return ("mp4a.40.2", "AAC")
+                        default:               return ("fLaC", "FLAC")
+                        }
+                    }()
+                    let pipelineLabel = "\(sourceCodecLabel) → \(outLabel) bridge"
                     audioHLSCodecs = hlsCodec
                     self.audioPipelineDescription = pipelineLabel
                     if attemptIndex > 0 {

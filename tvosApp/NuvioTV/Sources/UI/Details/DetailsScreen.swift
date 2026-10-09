@@ -2567,6 +2567,18 @@ struct TvDetailsContent: View {
                                     onWatchlistClick: onWatchlistClick,
                                     onWatchedClick: onWatchedClick,
                                     onTrailerClick: onTrailerClick,
+                                    onEpisodesClick: {
+                                        #if os(macOS)
+                                        macEpisodesAction
+                                        #else
+                                        episodes.isEmpty ? nil : {
+                                            focusEpisodes(
+                                                on: playTarget.episode?.id ?? episodes.first?.id,
+                                                using: scrollProxy
+                                            )
+                                        }
+                                        #endif
+                                    }(),
                                     focus: $actionFocus,
                                     entryLocked: focusedDetailsSection != .actions,
                                     playEntryLocked: focusedDetailsSection == .episodes,
@@ -2878,10 +2890,12 @@ struct TvDetailsContent: View {
                 DispatchQueue.main.async { actionFocus = .play }
                 #if os(macOS)
                 macFocus.begin(page: uiState.meta?.id ?? "")
-                macFocus.setCount(MacDetailsActionSlot.allCases.count, for: .actions)
+                macFocus.setCount(MacDetailsActionSlot.slots(hasEpisodes: macHasEpisodes).count, for: .actions)
                 macFocus.register(.actions) { index in
-                    switch MacDetailsActionSlot(rawValue: index) {
+                    let slots = MacDetailsActionSlot.slots(hasEpisodes: macHasEpisodes)
+                    switch slots.indices.contains(index) ? slots[index] : nil {
                     case .play: macHandlePlay()
+                    case .episodes: macShowEpisodes()
                     case .watchlist: onWatchlistClick()
                     case .watched: onWatchedClick()
                     case .trailer: onTrailerClick()
@@ -2995,6 +3009,23 @@ struct TvDetailsContent: View {
     /// Route the season strip back to the primary action explicitly. tvOS has
     /// no spatial candidate above later season pills because Play sits at the
     /// far-left edge, so geometry alone can leave focus stuck on Season 2/3.
+    /// The action row's Episodes button: down to the strip, onto the episode
+    /// Resume would play. The handoff waits for the scroll, as Play's does, so
+    /// the focus engine does not pick a card spatially while the page moves.
+    private func focusEpisodes(on episodeId: String?, using scrollProxy: ScrollViewProxy) {
+        detailsFocusMoveGeneration &+= 1
+        let generation = detailsFocusMoveGeneration
+        focusedDetailsSection = .episodes
+        withAnimation(.easeOut(duration: TvDetailsScrollTiming.duration)) {
+            scrollProxy.scrollTo(TvDetailsScrollID.episodesSection, anchor: .top)
+        }
+        guard let episodeId else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + TvDetailsScrollTiming.focusHandoffDelay) {
+            guard detailsFocusMoveGeneration == generation else { return }
+            episodeFocus = TvEpisodeFocus.card(episodeId)
+        }
+    }
+
     private func focusPlayFromEpisodes(using scrollProxy: ScrollViewProxy) {
         detailsFocusMoveGeneration &+= 1
         let generation = detailsFocusMoveGeneration
@@ -3427,6 +3458,21 @@ struct TvDetailsContent: View {
     }
 
     private var macHasEpisodes: Bool { !(uiState.meta?.videos ?? []).isEmpty }
+
+    /// The action row's Episodes button: nil on a movie, so it is not drawn.
+    private var macEpisodesAction: (() -> Void)? {
+        macHasEpisodes ? { macShowEpisodes() } : nil
+    }
+
+    /// Puts the episode list back in the rail, from the sources a resumed
+    /// episode opened or from a closed rail, and the caret on it.
+    private func macShowEpisodes() {
+        isStreamsPresented?.wrappedValue = false
+        macRailOpen = true
+        macPublishRailCounts()
+        macFocus.focusRail()
+        MacDiagnostics.log("rail.open episodes (button)")
+    }
 
     /// Nothing is listed until Play is pressed — then a series offers its
     /// episodes and a movie goes straight to its streams.
@@ -3896,14 +3942,19 @@ private struct TvDetailsLogo: View {
 /// (tvOS doesn't auto-focus the primary button when the details content swaps in
 /// after the async load — see `TvDetailsContent`).
 private enum DetailsActionFocus: Hashable {
-    case play, watchlist, watched, trailer
+    case play, episodes, watchlist, watched, trailer
 }
 
 /// The action row's buttons by position, so the keyboard caret's index and the
 /// button that runs can never disagree. Only macOS navigates by it, but the
 /// shared action row names the type.
 enum MacDetailsActionSlot: Int, CaseIterable {
-    case play, watchlist, watched, trailer
+    case play, episodes, watchlist, watched, trailer
+
+    /// The buttons the row actually shows, in order: Episodes only on a series.
+    static func slots(hasEpisodes: Bool) -> [MacDetailsActionSlot] {
+        allCases.filter { $0 != .episodes || hasEpisodes }
+    }
 }
 
 private enum DetailsCastHeaderFocus: Hashable {
@@ -3920,6 +3971,10 @@ private struct TvDetailsActionRow: View {
     let onWatchlistClick: () -> Void
     let onWatchedClick: () -> Void
     let onTrailerClick: () -> Void
+    /// Series only. macOS brings the episode list back into the rail, which a
+    /// resumed episode swaps for its sources; tvOS takes focus down to the
+    /// episode strip, which is otherwise several presses below the buttons.
+    var onEpisodesClick: (() -> Void)? = nil
     var focus: FocusState<DetailsActionFocus?>.Binding
     let entryLocked: Bool
     let playEntryLocked: Bool
@@ -3933,7 +3988,9 @@ private struct TvDetailsActionRow: View {
     /// where the focus engine drives the same appearance.
     private func isMacFocused(_ slot: MacDetailsActionSlot) -> Bool {
         #if os(macOS)
-        return macFocus.isFocused(.actions, slot.rawValue)
+        let slots = MacDetailsActionSlot.slots(hasEpisodes: onEpisodesClick != nil)
+        guard let index = slots.firstIndex(of: slot) else { return false }
+        return macFocus.isFocused(.actions, index)
         #else
         return false
         #endif
@@ -3955,6 +4012,22 @@ private struct TvDetailsActionRow: View {
                 longPressAction: onPlayLongPress
             )
             .disabled(playEntryLocked)
+
+            if let onEpisodesClick {
+                TvDetailsActionButton(
+                    title: nil,
+                    systemName: "list.bullet",
+                    accessibilityLabel: L10n.string("details_episodes", fallback: "Episodes"),
+                    accessibilityHint: L10n.string("details_episodes_hint", fallback: "Shows every episode"),
+                    isPrimary: false,
+                    focus: focus,
+                    tag: .episodes,
+                    macIsFocused: isMacFocused(.episodes),
+                    action: onEpisodesClick,
+                    onFocus: onFocus
+                )
+                .disabled(entryLocked)
+            }
 
             TvDetailsActionButton(
                 title: nil,
@@ -4496,7 +4569,7 @@ private struct TvDetailsRelatedRow: View {
     let onFocus: () -> Void
 
     @State private var scrollIndex = 0
-    @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
+    @AppStorage(SettingsKey.homeLayout) private var homeLayout = SettingsDefault.homeLayout
     @AppStorage(SettingsKey.posterLabels) private var posterLabels = false
     @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
     @AppStorage(SettingsKey.focusHighlighter) private var focusHighlighter = false

@@ -58,8 +58,18 @@ final class AudioBridge: @unchecked Sendable {
     }
 
     /// The other encoder a build can carry, for the #165 cascade when the resolved one is absent.
+    /// AAC (the receiver-compat pick below) falls back to FLAC, which every build ships.
     static func alternateEncoder(to missing: AVCodecID) -> AVCodecID {
-        missing == AV_CODEC_ID_EAC3 ? AV_CODEC_ID_FLAC : AV_CODEC_ID_EAC3
+        missing == AV_CODEC_ID_EAC3 || missing == AV_CODEC_ID_AAC ? AV_CODEC_ID_FLAC : AV_CODEC_ID_EAC3
+    }
+
+    /// The encoder for a stream an AirPlay receiver refused. Some receivers run a browser media stack
+    /// that takes neither E-AC-3 nor FLAC in fMP4 (an LG TV, 2026-10-08: "addSourceBuffer ...
+    /// 'video/mp4;codecs=avc1.640028, fLaC' is unsupported"), and AAC-LC is the one codec every receiver
+    /// plays. It needs an AAC encoder in the linked FFmpeg (its own `aac`, or AudioToolbox's `aac_at`);
+    /// without one this is FLAC.
+    static var receiverCompatEncoder: AVCodecID {
+        avcodec_find_encoder(AV_CODEC_ID_AAC) != nil ? AV_CODEC_ID_AAC : AV_CODEC_ID_FLAC
     }
 
     /// Channel ceiling per bridge encoder. EAC3 sits at 6 because FFmpeg's encoder caps there until the
@@ -70,14 +80,47 @@ final class AudioBridge: @unchecked Sendable {
     /// `DocumentedConstantsTests` pins them: a cap that moves without the sentence moving with it
     /// is a doc that lies in a paragraph that still reads perfectly.
     static func maxEncodedChannels(for encoder: AVCodecID) -> Int32 {
-        encoder == AV_CODEC_ID_EAC3 ? 6 : 8
+        encoder == AV_CODEC_ID_EAC3 || encoder == AV_CODEC_ID_AAC ? 6 : 8
     }
 
     /// EAC3 scales at 128 kbps per resolved channel (Dolby's transparent reference profile): 256
     /// kbps stereo, 768 kbps 5.1, and 1024 kbps if the cap above ever reaches 8. FLAC is VBR, so
     /// its rate is 0 (unlimited) rather than a number.
     static func encoderBitRate(for encoder: AVCodecID, channels: Int32) -> Int64 {
-        encoder == AV_CODEC_ID_EAC3 ? Int64(channels) * 128_000 : 0
+        switch encoder {
+        case AV_CODEC_ID_EAC3: return Int64(channels) * 128_000
+        // AAC-LC: 96 kbps per channel (192 stereo, 576 5.1); AudioToolbox snaps to its nearest allowed rate.
+        case AV_CODEC_ID_AAC:  return Int64(channels) * 96_000
+        default:               return 0
+        }
+    }
+
+    /// The sample formats an encoder publishes, or nil when it accepts any.
+    static func supportedSampleFormats(of codec: UnsafePointer<AVCodec>) -> [AVSampleFormat]? {
+        var out: UnsafeRawPointer?
+        var count: Int32 = 0
+        guard avcodec_get_supported_config(nil, codec, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0, &out, &count) >= 0,
+              let out, count > 0 else { return nil }
+        let list = out.assumingMemoryBound(to: AVSampleFormat.self)
+        return (0..<Int(count)).map { list[$0] }
+    }
+
+    /// Copies the encoder's own layout for `channels` into `layout` when it publishes a list. An encoder
+    /// with a list rejects anything off it: aac_at takes 5.1 only with SIDE surrounds, while FFmpeg's
+    /// default 6-channel layout has them at the back, and the open fails EINVAL. One without a list
+    /// (FFmpeg's `aac`) is left to the default layout. The resampler maps the source onto either.
+    static func copySupportedLayout(
+        of codec: UnsafePointer<AVCodec>, channels: Int32, into layout: inout AVChannelLayout
+    ) -> Bool {
+        var out: UnsafeRawPointer?
+        var count: Int32 = 0
+        guard avcodec_get_supported_config(nil, codec, AV_CODEC_CONFIG_CHANNEL_LAYOUT, 0, &out, &count) >= 0,
+              let out, count > 0 else { return false }
+        let list = out.assumingMemoryBound(to: AVChannelLayout.self)
+        for i in 0..<Int(count) where list[i].nb_channels == channels {
+            return av_channel_layout_copy(&layout, list.advanced(by: i)) >= 0
+        }
+        return false
     }
 
     // MARK: - Errors
@@ -317,6 +360,15 @@ final class AudioBridge: @unchecked Sendable {
             cleanup()
             throw AudioBridgeError.encoderNotFound(codecID: encoderCodecID)
         }
+        // Which AAC encoder answers depends on the FFmpeg the process links: FFmpeg's own `aac` takes FLTP
+        // only, AudioToolbox's `aac_at` S16/U8 only. Where the encoder publishes its formats and the pick
+        // above is not among them, take one it lists (FLTP first, it loses nothing).
+        if let formats = Self.supportedSampleFormats(of: encCodec), !formats.isEmpty,
+           !formats.contains(pcmSampleFmt) {
+            pcmSampleFmt = formats.contains(AV_SAMPLE_FMT_FLTP) ? AV_SAMPLE_FMT_FLTP : formats[0]
+            pcmBytesPerSample = av_get_bytes_per_sample(pcmSampleFmt)
+            pcmBitsPerRawSample = pcmBytesPerSample * 8
+        }
         guard let enc = avcodec_alloc_context3(encCodec) else {
             cleanup()
             throw AudioBridgeError.encoderAllocFailed
@@ -327,9 +379,9 @@ final class AudioBridge: @unchecked Sendable {
         // when source layout exceeds the encoder's; the resampler picks Apple-compatible ordering.
         let nChannels: Int32 = min(resolvedChannels, Self.maxEncodedChannels(for: encoderCodecID))
         let encoderName = avcodec_get_name(encoderCodecID).map { String(cString: $0) } ?? "?"
-        let logBitRate: String = encoderCodecID == AV_CODEC_ID_EAC3
-            ? "\(Int64(nChannels) * 128) kbps"
-            : "VBR"
+        let logBitRate: String = encoderCodecID == AV_CODEC_ID_FLAC
+            ? "VBR"
+            : "\(Self.encoderBitRate(for: encoderCodecID, channels: nChannels) / 1000) kbps"
         EngineLog.emit(
             "[AudioBridge] init: mode=\(mode.rawValue) encoder=\(encoderName)"
             + (forcedEncoder != nil ? " (forced)" : "")
@@ -348,7 +400,9 @@ final class AudioBridge: @unchecked Sendable {
         enc.pointee.bit_rate = resolvedBitRate
         enc.pointee.time_base = AVRational(num: 1, den: sampleRate)
         var encLayout = AVChannelLayout()
-        av_channel_layout_default(&encLayout, nChannels)
+        if !Self.copySupportedLayout(of: encCodec, channels: nChannels, into: &encLayout) {
+            av_channel_layout_default(&encLayout, nChannels)
+        }
         let layoutCopyRet = av_channel_layout_copy(&enc.pointee.ch_layout, &encLayout)
         if layoutCopyRet < 0 {
             cleanup()

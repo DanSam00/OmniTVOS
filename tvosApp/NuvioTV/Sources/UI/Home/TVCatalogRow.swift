@@ -7,6 +7,9 @@
 
 import SwiftUI
 import Foundation
+#if os(macOS)
+import AppKit
+#endif
 
 /// Shared Home vertical rhythm for catalog *and* collection folder rows.
 enum TVHomeLayout {
@@ -78,7 +81,7 @@ struct TVLoadingCatalogRow: View {
     let title: String
     var addonName: String? = nil
 
-    @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
+    @AppStorage(SettingsKey.homeLayout) private var homeLayout = SettingsDefault.homeLayout
     @AppStorage(SettingsKey.posterLabels) private var posterLabels = false
     @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
     @AppStorage(SettingsKey.catalogAddonNames) private var catalogAddonNames = true
@@ -169,7 +172,7 @@ struct TVCatalogRow: View {
     var onRemoveFromContinueWatching: ((ContinueWatchingItem) -> Void)? = nil
 
     @State private var scrollIndex: Int?
-    @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
+    @AppStorage(SettingsKey.homeLayout) private var homeLayout = SettingsDefault.homeLayout
     @AppStorage(SettingsKey.posterLabels) private var posterLabels = false
     @AppStorage(SettingsKey.catalogAddonNames) private var catalogAddonNames = true
     @AppStorage(SettingsKey.theme) private var theme = SettingsAccent.white.rawValue
@@ -224,6 +227,15 @@ struct TVCatalogRow: View {
         guard effectiveScrollIndex != index else { return }
         MacDiagnostics.log("row.follow row=" + id + " index=" + String(index))
         scrollIndex = index
+        onScrollIndexChange(index)
+    }
+
+    /// A trackpad swipe or Shift+wheel over the row moves it a card at a time.
+    private func macStep(_ delta: Int) {
+        guard !items.isEmpty else { return }
+        let index = min(max(effectiveScrollIndex + delta, 0), items.count - 1)
+        guard index != effectiveScrollIndex else { return }
+        withAnimation(TVHomeLayout.scrollAnimation) { scrollIndex = index }
         onScrollIndexChange(index)
     }
     #endif
@@ -522,6 +534,9 @@ struct TVCatalogRow: View {
             )
             .clipped()
             .offset(x: -horizontalEdgeInset)
+            #if os(macOS)
+            .modifier(MacRowSwipe { macStep($0) })
+            #endif
             .animation(rowCardFocusAnimations ? TVHomeLayout.scrollAnimation : nil, value: landscapeFocusedId)
             .onAppear {
                 #if DEBUG
@@ -1001,7 +1016,7 @@ struct TVCollectionFolderRow: View {
     let onSelect: (TVCollectionFolderItem) -> Void
 
     @State private var scrollIndex: Int?
-    @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
+    @AppStorage(SettingsKey.homeLayout) private var homeLayout = SettingsDefault.homeLayout
     @AppStorage(SettingsKey.posterLabels) private var posterLabels = false
     @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
     @AppStorage(SettingsKey.focusHighlighter) private var focusHighlighter = false
@@ -1045,6 +1060,15 @@ struct TVCollectionFolderRow: View {
         let folderId = String(key.dropFirst(prefix.count))
         guard let index = folders.firstIndex(where: { $0.id == folderId }),
               effectiveScrollIndex != index else { return }
+        scrollIndex = index
+        onScrollIndexChange(index)
+    }
+
+    /// A trackpad swipe or Shift+wheel over the row moves it a folder at a time.
+    private func macStep(_ delta: Int) {
+        guard !folders.isEmpty else { return }
+        let index = min(max(effectiveScrollIndex + delta, 0), folders.count - 1)
+        guard index != effectiveScrollIndex else { return }
         scrollIndex = index
         onScrollIndexChange(index)
     }
@@ -1234,6 +1258,9 @@ struct TVCollectionFolderRow: View {
             )
             .clipped()
             .offset(x: -horizontalEdgeInset)
+            #if os(macOS)
+            .modifier(MacRowSwipe { macStep($0) })
+            #endif
             .animation(
                 rowSmoothFocus && !suppressFocusAnimations ? TVHomeLayout.scrollAnimation : nil,
                 value: effectiveScrollIndex
@@ -1563,3 +1590,53 @@ struct TVCollectionFolderCard: View {
         }
     }
 }
+
+#if os(macOS)
+/// Sideways scrolling for a Home row on the Mac.
+///
+/// The rows are not scroll views: each slides its cards by an index the
+/// arrow keys move, so a trackpad swipe or Shift+wheel had nothing to scroll.
+/// While the pointer is over the row, a mostly-horizontal scroll steps that
+/// index, and is consumed so the page does not also drift. Vertical scrolling
+/// is left alone for the page.
+struct MacRowSwipe: ViewModifier {
+    let onStep: (Int) -> Void
+    @State private var monitor: Any?
+    @State private var accumulated: CGFloat = 0
+    /// Trackpad travel, in points, per card.
+    private static let pointsPerCard: CGFloat = 70
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { inside in inside ? install() : remove() }
+            .onDisappear { remove() }
+    }
+
+    private func install() {
+        guard monitor == nil else { return }
+        accumulated = 0
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            let dx = event.scrollingDeltaX
+            guard abs(dx) > abs(event.scrollingDeltaY) else { return event }
+            if event.hasPreciseScrollingDeltas {
+                // Content follows the fingers: a swipe left (negative) shows
+                // the cards to the right.
+                accumulated += dx
+                while abs(accumulated) >= Self.pointsPerCard {
+                    let sign: CGFloat = accumulated > 0 ? 1 : -1
+                    onStep(accumulated > 0 ? -1 : 1)
+                    accumulated -= sign * Self.pointsPerCard
+                }
+            } else if dx != 0 {
+                onStep(dx > 0 ? -1 : 1)
+            }
+            return nil
+        }
+    }
+
+    private func remove() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+    }
+}
+#endif

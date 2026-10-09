@@ -64,6 +64,9 @@ struct PhonePlayerControls: View {
             // Finished, or stopped from the TV's own remote.
             if !hasMedia, isCasting { endCasting(at: cast.position) }
         }
+        .onReceive(viewModel.aetherController.engine.airPlayReceiverRefused) { _ in
+            viewModel.showCastMessage("That TV couldn't play this video's format over AirPlay, so it's back on your iPhone")
+        }
         .onChange(of: cast.lastError) { _, error in
             guard let error else { return }
             viewModel.showCastMessage(error)
@@ -190,7 +193,15 @@ struct PhonePlayerControls: View {
                 // AirPlay. AetherEngine moves its loopback stream onto the LAN
                 // while a receiver is active, so the video itself goes across;
                 // under MPV only the audio can be routed.
-                PhoneRoutePicker(prioritizesVideo: viewModel.activeEngineKind == .aether)
+                PhoneRoutePicker(
+                    prioritizesVideo: viewModel.activeEngineKind == .aether,
+                    player: { viewModel.aetherController.engine.currentAVPlayer },
+                    onSoundOnly: {
+                        viewModel.showCastMessage(
+                            "This stream plays in Omni's own player, so AirPlay can send its sound but not the picture"
+                        )
+                    }
+                )
                     .frame(width: 44, height: 44)
                     .accessibilityLabel("AirPlay")
             }
@@ -1305,6 +1316,12 @@ struct PhoneScrubBar: View {
 /// The system AirPlay button, styled for the player chrome.
 private struct PhoneRoutePicker: UIViewRepresentable {
     let prioritizesVideo: Bool
+    /// Apple's player, when that is what plays the stream; nil when mpv does.
+    var player: () -> AVPlayer? = { nil }
+    /// Called as the list opens on a stream only its sound can follow.
+    var onSoundOnly: () -> Void = {}
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> AVRoutePickerView {
         let picker = AVRoutePickerView()
@@ -1312,11 +1329,31 @@ private struct PhoneRoutePicker: UIViewRepresentable {
         picker.activeTintColor = .systemBlue
         picker.backgroundColor = .clear
         picker.prioritizesVideoDevices = prioritizesVideo
+        picker.delegate = context.coordinator
+        context.coordinator.parent = self
         return picker
     }
 
     func updateUIView(_ picker: AVRoutePickerView, context: Context) {
         picker.prioritizesVideoDevices = prioritizesVideo
+        context.coordinator.parent = self
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, @preconcurrency AVRoutePickerViewDelegate {
+        var parent: PhoneRoutePicker?
+
+        func routePickerViewWillBeginPresentingRoutes(_ routePickerView: AVRoutePickerView) {
+            guard let parent else { return }
+            guard let player = parent.player() else {
+                // AirPlay video goes through Apple's player only; mpv's sound
+                // still follows the system route.
+                parent.onSoundOnly()
+                return
+            }
+            // Off if a TV refused the last stream; the viewer is choosing again.
+            player.allowsExternalPlayback = true
+        }
     }
 }
 

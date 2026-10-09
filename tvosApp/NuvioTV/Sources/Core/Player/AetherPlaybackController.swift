@@ -1601,6 +1601,7 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
             "[SegmentCache]",        // what was stored, pruned and served
             "[HLSLocalServer]",      // what AVPlayer actually asked us for
             "[AetherEngine]",        // session lifecycle
+            "[AirPlay]",             // receiver hand-over, refusals and returns
         ]
         return wanted.contains { line.contains($0) }
     }
@@ -2478,7 +2479,10 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
             panelIsInHDRMode: panelInHDR,
             audioBridgeMode: .surroundCompat,
             preserveASSMarkup: false,
-            prepareNativeSubtitles: false,
+            // iOS and macOS: declare text subtitles as native renditions, so the engine can hand the active
+            // one to an AirPlay receiver, which never sees the overlay drawn on this device. Selection stays
+            // host-driven, so nothing doubles up while the picture is here.
+            prepareNativeSubtitles: Self.preparesNativeSubtitles,
             preferredAudioLanguages: request.preferredAudioLanguages,
             preferredSubtitleLanguages: request.preferredSubtitleLanguages,
             externalSubtitles: externalRegistration.tracks,
@@ -2622,6 +2626,24 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
         } else {
             engine.selectSubtitleTrack(index: trackId)
         }
+        followSubtitleOntoReceiver()
+    }
+
+    private static var preparesNativeSubtitles: Bool {
+        #if os(iOS) || os(macOS)
+        true
+        #else
+        false
+        #endif
+    }
+
+    /// While AirPlaying, a newly chosen subtitle has to be handed to the stream too: the receiver shows
+    /// only native renditions. A subtitle added after load (an add-on's) has none, and stays on this device.
+    private func followSubtitleOntoReceiver() {
+        #if os(iOS) || os(macOS)
+        guard engine.currentAVPlayer?.isExternalPlaybackActive == true else { return }
+        engine.setNativeSubtitleRendering(true)
+        #endif
     }
 
     func addSubtitle(_ subtitle: NuvioSubtitle, select: Bool) {
@@ -2640,6 +2662,7 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
         mapSubtitleTracks(engine.subtitleTracks)
         if select {
             engine.selectSubtitleTrack(index: info.id)
+            followSubtitleOntoReceiver()
         }
     }
 

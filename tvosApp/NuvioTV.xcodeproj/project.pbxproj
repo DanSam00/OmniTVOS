@@ -268,6 +268,8 @@
 		MACID00000000000000003C2 /* AetherEngineSMB in Frameworks */ = {isa = PBXBuildFile; productRef = A21100000000000000000001 /* AetherEngineSMB */; };
 		MACID0000000000000000F02 /* NuvioTV/Sources/Core/PlatformShims.swift in Sources */ = {isa = PBXBuildFile; fileRef = MACID0000000000000000F01 /* NuvioTV/Sources/Core/PlatformShims.swift */; };
 		MACMN0000000000000000002 /* NuvioTV/Sources/Core/MacHomeMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = MACMN0000000000000000001 /* NuvioTV/Sources/Core/MacHomeMenu.swift */; };
+		MACCAST000000000000000002 /* NuvioTV/Sources/Core/Player/MacCast.swift in Sources */ = {isa = PBXBuildFile; fileRef = MACCAST000000000000000001 /* NuvioTV/Sources/Core/Player/MacCast.swift */; };
+		MACHELP000000000000000002 /* NuvioTV/Omni.help in Resources */ = {isa = PBXBuildFile; fileRef = MACHELP000000000000000001 /* NuvioTV/Omni.help */; };
 		MACTC0000000000000000002 /* NuvioTV/Sources/Core/MacTabCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = MACTC0000000000000000001 /* NuvioTV/Sources/Core/MacTabCommands.swift */; };
 		MACHF0000000000000000002 /* NuvioTV/Sources/Core/MacHomeFocusNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = MACHF0000000000000000001 /* NuvioTV/Sources/Core/MacHomeFocusNavigation.swift */; };
 		MACTV0000000000000000002 /* NuvioTV/Sources/Core/MacTVCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = MACTV0000000000000000001 /* NuvioTV/Sources/Core/MacTVCanvas.swift */; };
@@ -600,6 +602,8 @@
 		MACID0000000000000000005 /* Omni.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Omni.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		MACID0000000000000000F01 /* NuvioTV/Sources/Core/PlatformShims.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/PlatformShims.swift; sourceTree = "<group>"; };
 		MACMN0000000000000000001 /* NuvioTV/Sources/Core/MacHomeMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/MacHomeMenu.swift; sourceTree = "<group>"; };
+		MACCAST000000000000000001 /* NuvioTV/Sources/Core/Player/MacCast.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/Player/MacCast.swift; sourceTree = "<group>"; };
+		MACHELP000000000000000001 /* NuvioTV/Omni.help */ = {isa = PBXFileReference; lastKnownFileType = folder; path = NuvioTV/Omni.help; sourceTree = "<group>"; };
 		MACTC0000000000000000001 /* NuvioTV/Sources/Core/MacTabCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/MacTabCommands.swift; sourceTree = "<group>"; };
 		MACHF0000000000000000001 /* NuvioTV/Sources/Core/MacHomeFocusNavigation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/MacHomeFocusNavigation.swift; sourceTree = "<group>"; };
 		MACTV0000000000000000001 /* NuvioTV/Sources/Core/MacTVCanvas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/MacTVCanvas.swift; sourceTree = "<group>"; };
@@ -798,6 +802,8 @@
 				PP0100020000000000000002 /* NuvioTV/Sources/Core/Player/PostPlayRecommendationController.swift */,
 				C0D30054 /* NuvioTV/Sources/Core/Player/PlaybackWakeLock.swift */,
 				MACMN0000000000000000001 /* NuvioTV/Sources/Core/MacHomeMenu.swift */,
+				MACCAST000000000000000001 /* NuvioTV/Sources/Core/Player/MacCast.swift */,
+				MACHELP000000000000000001 /* NuvioTV/Omni.help */,
 				MACTC0000000000000000001 /* NuvioTV/Sources/Core/MacTabCommands.swift */,
 				MACHF0000000000000000001 /* NuvioTV/Sources/Core/MacHomeFocusNavigation.swift */,
 				MACTV0000000000000000001 /* NuvioTV/Sources/Core/MacTVCanvas.swift */,
@@ -1123,6 +1129,7 @@
 				MACID0000000000000000384 /* Images.xcassets in Resources */,
 				MACID0000000000000000385 /* NuvioTV/Resources/AppLanguageCatalog.json in Resources */,
 				MACID0000000000000000386 /* inter_variable.ttf in Resources */,
+				MACHELP000000000000000002 /* NuvioTV/Omni.help in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1340,6 +1347,7 @@
 			files = (
 				MACID0000000000000000F02 /* NuvioTV/Sources/Core/PlatformShims.swift in Sources */,
 				MACMN0000000000000000002 /* NuvioTV/Sources/Core/MacHomeMenu.swift in Sources */,
+				MACCAST000000000000000002 /* NuvioTV/Sources/Core/Player/MacCast.swift in Sources */,
 				MACTC0000000000000000002 /* NuvioTV/Sources/Core/MacTabCommands.swift in Sources */,
 				MACHF0000000000000000002 /* NuvioTV/Sources/Core/MacHomeFocusNavigation.swift in Sources */,
 				MACTV0000000000000000002 /* NuvioTV/Sources/Core/MacTVCanvas.swift in Sources */,

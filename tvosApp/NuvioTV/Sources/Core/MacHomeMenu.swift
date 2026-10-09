@@ -277,7 +277,14 @@ struct MacHomeMenu: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .modifier(MacMenuRowGlass(isCaret: isCaret, namespace: glassNamespace))
         .contentShape(Rectangle())
-        .onTapGesture { selectedTab = tab }
+        .onTapGesture {
+            // The same path as Return: it closes the menu, abandons a details
+            // page covering the tabs, and treats Profiles as a profile switch.
+            // Setting the tab directly did none of those, so clicking Home from
+            // a show page left the page up, and the menu stayed open.
+            state.highlighted = tab
+            _ = state.handleReturn()
+        }
     }
 }
 

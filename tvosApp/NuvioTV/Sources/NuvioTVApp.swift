@@ -54,7 +54,10 @@ struct NuvioTVApp: App {
             #endif
         }
         #if os(macOS)
-        .commands { MacTabCommands() }
+        .commands {
+            MacTabCommands()
+            MacPlayerCommands()
+        }
         #endif
     }
 }
@@ -3087,7 +3090,7 @@ private struct TVMainTabView: View {
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
     @AppStorage(SettingsKey.discoverLocation) private var discoverLocation = "Search"
-    @AppStorage(SettingsKey.searchStyle) private var searchStyle = "Netflix"
+    @AppStorage(SettingsKey.searchStyle) private var searchStyle = SettingsDefault.searchStyle
     @AppStorage(SettingsKey.profileName) private var settingsProfileName = "Omni User"
     @StateObject private var profileTabAvatar = ProfileTabAvatarRenderer()
     @State private var showingReauthSheet = false
@@ -4122,7 +4125,7 @@ struct TVHomeView: View {
     @AppStorage(SettingsKey.upNextFromFurthestEpisode) private var upNextFromFurthestEpisode = true
     @AppStorage(SettingsKey.showUnairedNextUp) private var showUnairedNextUp = true
     @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
-    @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
+    @AppStorage(SettingsKey.homeLayout) private var homeLayout = SettingsDefault.homeLayout
     @AppStorage(SettingsKey.heroCatalogs) private var heroCatalogsData = Data()
     @AppStorage(SettingsKey.posterLabels) private var posterLabels = false
     @AppStorage(SettingsKey.tmdbEnabled) private var tmdbEnabled = false
@@ -4242,6 +4245,9 @@ struct TVHomeView: View {
     /// Where each row was last left, so moving back into one resumes it rather
     /// than restarting at its first card.
     @State private var macLastCardBySection: [String: String] = [:]
+    /// The rows' scroll offset when the featured carousel last took focus, so
+    /// scrolling past it with the mouse can be told from where it started.
+    @State private var macFeatureScrollBaseline: CGFloat = 0
     /// Captured from the rows' ScrollViewReader so the move handler can scroll
     /// an off-screen row in before focusing it.
     @State private var macScrollProxy: ScrollViewProxy?
@@ -4975,6 +4981,9 @@ struct TVHomeView: View {
                                         .id(section.id)
                                         }
                                     }
+                                    #if os(macOS)
+                                    .scrollTargetLayout()
+                                    #endif
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(
                                         .top,
@@ -5005,6 +5014,14 @@ struct TVHomeView: View {
                                         .accessibilityHidden(true)
                                 }
                                 .modifier(TVHomeScrollTracker(parallax: homeParallax))
+                                #if os(macOS)
+                                // The rows scroll under the hero, which does not
+                                // move, so a wheel or trackpad stopping mid-row
+                                // left that row's top sliced off at the hero's edge.
+                                // Keys always pin a row's top there; let a mouse
+                                // scroll come to rest the same way.
+                                .scrollTargetBehavior(.viewAligned)
+                                #endif
                                 #if os(tvOS)
                                 // Liquid Glass lowers the rows as focus comes down
                                 // from the featured carousel, and the focus engine
@@ -5104,6 +5121,18 @@ struct TVHomeView: View {
                     .onChange(of: store.sections.count) { _, _ in
                         seedMacHomeFocusIfNeeded()
                     }
+                    // Down from the carousel hands focus to the first row, and
+                    // that is what swaps Continue Watching out of the hero for the
+                    // card below. Scrolling with a mouse or trackpad moved the rows
+                    // but left focus, and so the carousel, where they were.
+                    .onChange(of: macFocusedCardID) { _, key in
+                        if key == MacHomeFocus.featureCardKey {
+                            macFeatureScrollBaseline = homeParallax.offset
+                        }
+                    }
+                    .onChange(of: homeParallax.offset) { _, offset in
+                        macLeaveFeatureOnScrollIfNeeded(offset: offset)
+                    }
                     // R drops the caret's title out of Continue Watching. tvOS
                     // offers this by holding Select, which raises the block's
                     // `.contextMenu`; macOS binds that to right-click, and a
@@ -5181,7 +5210,7 @@ struct TVHomeView: View {
                 armReturnFocusAnimationSuppression()
             }
             // Classic was never a distinct layout; collapse legacy values to Modern.
-            if homeLayout == "Classic" { homeLayout = "Modern" }
+            if homeLayout == "Classic" { homeLayout = SettingsDefault.homeLayout }
             refreshContinueWatching()
             refreshWatchedTitles()
             scheduleContinueWatchingRefresh()
@@ -6808,6 +6837,26 @@ struct TVHomeView: View {
                 && $0.id != TVHomeSection.upcomingId
                 && $0.collectionFolders.isEmpty
         }.map(\.id))
+    }
+
+    /// Scrolled well past the carousel: focus goes to the first row, as Down
+    /// would take it, but without Down's scroll, since the viewer is scrolling.
+    private func macLeaveFeatureOnScrollIfNeeded(offset: CGFloat) {
+        guard isActive, !isFullScreenOverlayPresented,
+              macFocusedCardID == MacHomeFocus.featureCardKey,
+              offset - macFeatureScrollBaseline > 60,
+              let next = MacHomeFocus.nextCardKey(
+                from: MacHomeFocus.featureCardKey,
+                direction: .down,
+                sections: macNavigableSections,
+                lastCardBySection: macLastCardBySection,
+                gridSectionIds: macGridSectionIds
+              ) else { return }
+        MacDiagnostics.log("homeFocus.scrollPastFeature offset=\(Int(offset)) to=\(next)")
+        macFocusedCardID = next
+        if let section = MacHomeFocus.sectionId(of: next) {
+            macLastCardBySection[section] = next
+        }
     }
 
     private func handleMacHomeMove(_ direction: MoveCommandDirection, scrollProxy: ScrollViewProxy?) {
@@ -8649,7 +8698,7 @@ let TVHomeRowPrefetchThreshold = 18
 /// making this line sit too high.
 private struct TVCollectionFolderHeroView: View {
     let folder: TVCollectionFolderItem
-    @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
+    @AppStorage(SettingsKey.homeLayout) private var homeLayout = SettingsDefault.homeLayout
 
     private var emoji: String? {
         let raw = folder.coverEmoji?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -8709,7 +8758,7 @@ private struct TVHeroView: View {
     /// episode's own overview instead of the series blurb.
     var continueItem: ContinueWatchingItem? = nil
     let onSelect: () -> Void
-    @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
+    @AppStorage(SettingsKey.homeLayout) private var homeLayout = SettingsDefault.homeLayout
 
     var body: some View {
         let _ = TVHomeDebugTrace.log("hero.render meta=\(meta.id)")
@@ -8821,7 +8870,7 @@ private struct TVFeatureHeroView: View {
 
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
-    @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
+    @AppStorage(SettingsKey.homeLayout) private var homeLayout = SettingsDefault.homeLayout
     @AppStorage(SettingsKey.theme) private var theme = SettingsAccent.white.rawValue
     @AppStorage(SettingsKey.heroAutoScroll) private var autoScroll = false
     @AppStorage(SettingsKey.trailersEnabled) private var trailersEnabled = true

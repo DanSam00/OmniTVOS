@@ -123,6 +123,28 @@ private enum SettingsCategory: String, CaseIterable, Identifiable {
     }
 }
 
+/// Defaults that differ by platform, shared by every `@AppStorage` reading the key.
+enum SettingsDefault {
+    /// Grid View on the Mac, where the rows' focus-driven scrolling suits a
+    /// keyboard better than a mouse; Modern everywhere else.
+    static var homeLayout: String {
+        #if os(macOS)
+        "Grid View"
+        #else
+        "Modern"
+        #endif
+    }
+
+    /// Classic on the TV-style builds; iOS has no Search Style setting.
+    static var searchStyle: String {
+        #if os(macOS) || os(tvOS)
+        "Classic"
+        #else
+        "Netflix"
+        #endif
+    }
+}
+
 enum SettingsKey {
     static let profileName = "nuvio.tv.settings.profile.name"
     static let profilePinEnabled = "nuvio.tv.settings.profile.pinEnabled"
@@ -348,6 +370,12 @@ enum SettingsKey {
     static let deviceLocal = Set([
         traktClientID, traktClientSecret, simklClientID, aiSubtitlesGeminiAPIKey
     ])
+
+    /// Settings each platform keeps for itself, out of account and iCloud sync
+    /// alike. The home layout defaults to Grid View on the Mac, which suits a
+    /// mouse, and Modern elsewhere, so a pick on one device must not switch
+    /// the others.
+    static let perPlatform: Set<String> = [homeLayout]
 
     static let all = [
         profileName, profilePinEnabled, profileAutoSelectLast, profileRequireSelectionAfterBackground, kidsProfile,
@@ -3136,7 +3164,7 @@ private struct HomeLayoutLivePreview: View {
 private struct LayoutDiscoverySettingsView: View {
     let accentColor: Color
 
-    @AppStorage(SettingsKey.homeLayout) private var homeLayout = "Modern"
+    @AppStorage(SettingsKey.homeLayout) private var homeLayout = SettingsDefault.homeLayout
     @AppStorage(SettingsKey.heroEnabled) private var heroEnabled = true
     @AppStorage(SettingsKey.homeFeature) private var homeFeature = true
     @AppStorage(SettingsKey.heroAutoScroll) private var heroAutoScroll = false
@@ -3147,7 +3175,7 @@ private struct LayoutDiscoverySettingsView: View {
     @AppStorage(SettingsKey.posterLabels) private var posterLabels = false
     @AppStorage(SettingsKey.catalogAddonNames) private var catalogAddonNames = true
     @AppStorage(SettingsKey.discoverLocation) private var discoverLocation = "Search"
-    @AppStorage(SettingsKey.searchStyle) private var searchStyle = "Netflix"
+    @AppStorage(SettingsKey.searchStyle) private var searchStyle = SettingsDefault.searchStyle
     @AppStorage(SettingsKey.continueWatchingSort) private var continueWatchingSort = "Default"
     @AppStorage(SettingsKey.upNextFromFurthestEpisode) private var upNextFromFurthestEpisode = true
     @AppStorage(SettingsKey.showUnairedNextUp) private var showUnairedNextUp = true
@@ -3163,6 +3191,22 @@ private struct LayoutDiscoverySettingsView: View {
 
     /// Classic was never a distinct layout (behaved like Modern).
     private let layouts = ["Modern", "Compact", "Grid View"]
+
+    /// The Mac says which layout suits which input, since it has both a mouse
+    /// and a keyboard; the TVs have only the remote.
+    private var layoutSubtitle: String {
+        #if os(macOS)
+        L10n.string(
+            "mac_layout_layout_subtitle",
+            fallback: "Modern uses larger posters, **ideal for keyboard navigation**; Compact tightens row and hero sizing; Grid View, **ideal for mouse navigation**"
+        )
+        #else
+        L10n.string(
+            "tvos_layout_layout_subtitle",
+            fallback: "Modern and Compact use rows; Grid View shows each catalog in a 7 by 3 poster grid"
+        )
+        #endif
+    }
     private let calendarModes = CalendarViewMode.allCases.map(\.rawValue)
     // Search is the only screen that currently hosts the full Discover surface.
     // Do not offer Home/Library as dead selections that merely hide Discover.
@@ -3191,17 +3235,14 @@ private struct LayoutDiscoverySettingsView: View {
 
                 SettingsOptionRow(
                     title: L10n.string("tvos_layout_layout", fallback: "Layout"),
-                    subtitle: L10n.string(
-                        "tvos_layout_layout_subtitle",
-                        fallback: "Modern and Compact use rows; Grid View shows each catalog in a 7 by 3 poster grid"
-                    ),
+                    subtitle: layoutSubtitle,
                     selection: $homeLayout,
                     options: layouts,
                     accentColor: accentColor
                 )
                 .settingsEntryAnchor()
                 .onAppear {
-                    if homeLayout == "Classic" { homeLayout = "Modern" }
+                    if homeLayout == "Classic" { homeLayout = SettingsDefault.homeLayout }
                 }
 
                 SettingsToggleRow(
@@ -3437,7 +3478,7 @@ private struct LayoutDiscoverySettingsView: View {
                 )
                 .onAppear {
                     if !searchStyles.contains(searchStyle) {
-                        searchStyle = "Netflix"
+                        searchStyle = SettingsDefault.searchStyle
                     }
                 }
                 #endif
@@ -14201,12 +14242,20 @@ private struct SettingsRowText: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
 
-            Text(subtitle)
+            Text(Self.styled(subtitle))
                 .font(.system(size: 17, weight: .medium))
                 .foregroundColor(.white.opacity(0.56))
                 .lineLimit(2)
                 .minimumScaleFactor(0.82)
         }
+    }
+
+    /// A description may bold a phrase with `**…**`. Only those are read as
+    /// Markdown, so a stray `*` or `_` in any other description stays literal.
+    private static func styled(_ text: String) -> AttributedString {
+        guard text.contains("**"),
+              let parsed = try? AttributedString(markdown: text) else { return AttributedString(text) }
+        return parsed
     }
 }
 

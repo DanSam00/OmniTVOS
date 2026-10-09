@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="description" content="Fixes for no streams, buffering, missing Continue Watching, casting and sign-in problems.">
+  <meta name="keywords" content="troubleshooting, problem, not working, no streams, no sources, buffering, stalling, slow, error, crash, continue watching missing, different on devices, resume point, cast not working, airplay not working, chromecast not found, local network, signed out, session expired, keyboard not working, logs, reset">
+  <meta name="robots" content="index">
+  <title>Troubleshooting</title>
+  <link rel="stylesheet" href="help.css">
+</head>
+<body>
+<nav class="back"><a href="index.html">‹ Omni Help</a></nav>
+<h1>Troubleshooting</h1>
+<p class="lead">Fixes for no streams, buffering, missing Continue Watching, casting and sign-in problems.</p>
+
+<h2>No streams for a title</h2>
+<ul>
+  <li>Install at least one stream add-on (<a href="addons.html">Add-ons</a>) and check its configuration; many need a debrid service linked.</li>
+  <li>Turn off <span class="path">Playback ▸ Smart Playback ▸ Cached Only</span> if it's on.</li>
+  <li>Brand-new or obscure titles may simply have no sources yet.</li>
+</ul>
+
+<h2>A stream keeps buffering</h2>
+<p>Omni switches to a smaller source by itself after repeated long stalls. To choose one yourself, press <kbd>S</kbd> and pick a lower resolution or a smaller file. A larger <span class="path">Playback ▸ Buffer Profile</span> can help on unsteady connections.</p>
+
+<h2>Continue Watching is empty, or differs between devices</h2>
+<ul>
+  <li>Check you're signed in to the same Nuvio account and profile on each device.</li>
+  <li>Check each device uses the same Continue Watching source (Nuvio sync, Trakt or Simkl) in <span class="path">Settings ▸ Integrations</span>, and is connected to it.</li>
+  <li>Use <b>Sync Now</b> on the Trakt or Simkl page to refresh.</li>
+</ul>
+
+<h2>Can't find a Chromecast or AirPlay device</h2>
+<ul>
+  <li>Make sure both are on the same network.</li>
+  <li>Allow Omni in <span class="path">System Settings ▸ Privacy &amp; Security ▸ Local Network</span>.</li>
+  <li>Some streams play only from this Mac and can't be cast. See <a href="airplay-cast.html">AirPlay and Chromecast</a>.</li>
+</ul>
+
+<h2>"Your session expired"</h2>
+<p>Choose <span class="path">Settings ▸ Account &amp; Profiles ▸ Reconnect Account</span> and sign in again.</p>
+
+<h2>Keys don't seem to do anything</h2>
+<p>Click once inside the Omni window so it's the active app, then try again. Press <kbd>Esc</kbd> to close anything that may be open. In the player, <kbd>?</kbd> shows the keys.</p>
+
+<h2>Something else</h2>
+<p>Omni keeps a log at <code>~/Library/Logs/Omni/omni.log</code>, which helps when reporting a problem. As a last resort, <span class="path">Settings ▸ Advanced ▸ Reset Settings</span> restores the defaults without touching your account.</p>
+
+</body>
+</html>

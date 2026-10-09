@@ -3077,6 +3077,9 @@ public final class AetherEngine: ObservableObject {
         }
         loadedURL = url
         loadedOptions = options
+        // A new title starts from its own audio; a refusing receiver re-earns the re-encode. A reload of
+        // the same session (the receiver retry itself, a route swap) keeps it.
+        if !sessionPreservingReloadInFlight { airPlayForcesAudioBridge = false }
         // #377: register the host's concurrency ceiling for this origin before anything fetches
         // from it. Keyed on the origin rather than the load, so the subtitle side reader and any
         // later reopen of the same source are bound by it too.
@@ -4940,6 +4943,9 @@ public final class AetherEngine: ObservableObject {
     /// and won't auto-switch, DrHurt). An SDR master is kept so its subtitle renditions travel (#227).
     /// Loopback native path only; a remote-HLS source is already receiver-reachable, so it's left untouched.
     private(set) var airPlayActive = false
+    /// macOS: set after an AirPlay receiver refused the stream, so the retry re-encodes the audio. Cleared when
+    /// AirPlay ends, so playing on the Mac goes back to the source audio (Atmos included).
+    var airPlayForcesAudioBridge = false
     private var externalPlaybackObservation: NSKeyValueObservation?
 
     /// True when the picture is on something other than this device's own layer: a wireless receiver or
@@ -5125,6 +5131,14 @@ public final class AetherEngine: ObservableObject {
         let wantAirPlay = active && !wired
         guard wantAirPlay != airPlayActive else { return }
         airPlayActive = wantAirPlay
+        #if os(iOS) || os(macOS)
+        // Back on the device: the source audio again, not the re-encode a refusing receiver needed.
+        if !wantAirPlay { airPlayForcesAudioBridge = false }
+        // The host draws subtitles as an overlay on its own view, which a receiver never sees. Hand the
+        // active one to the stream as a native rendition while AirPlaying, and take it back after. Landing
+        // mid-reload, the request is latched and applied once the rebuilt item has its selection (#170).
+        setNativeSubtitleRendering(wantAirPlay)
+        #endif
         // Reload so the load path rebuilds the playback URL on the LAN IP (active) or back on 127.0.0.1
         // (inactive). The remote-HLS bypass is exempt only while it plays the origin URL, which a receiver
         // reaches by itself; with a #316 subtitle proxy mounted it stands on the engine's own loopback
@@ -5139,6 +5153,47 @@ public final class AetherEngine: ObservableObject {
         Task { try? await reloadAtCurrentPosition() }
     }
 
+    #if os(iOS) || os(macOS)
+    /// Sent when an AirPlay receiver refused the stream and playback came back to this device, with the
+    /// receiver's reason, for the host to tell the viewer.
+    public let airPlayReceiverRefused = PassthroughSubject<String, Never>()
+
+    /// What the receiver retry re-encodes to, for the log: AAC where the build has an encoder for it.
+    static var receiverCompatAudioLabel: String {
+        avcodec_find_encoder(AV_CODEC_ID_AAC) != nil ? "AAC" : "FLAC"
+    }
+
+    /// A receiver that cannot play the stream fails the item it was handed. Measured on an LG TV's
+    /// AirPlay receiver (2026-10-08): its browser-based player rejects an fMP4 carrying E-AC-3
+    /// ("addSourceBuffer ... 'video/mp4;codecs=avc1.640028, ec-3' is unsupported") and the item fails
+    /// with -11870 / -12927. This device plays that stream fine, so rather than end the session, retry
+    /// once with the audio re-encoded, then take the picture back: stop external playback on the player
+    /// and reload here at the same point.
+    /// - Returns: true when the failure was the receiver's and has been handled.
+    func recoverFromAirPlayReceiverFailure(_ info: PlaybackErrorInfo) -> Bool {
+        guard airPlayActive, let player = currentAVPlayer else { return false }
+        // First refusal: the receiver may simply not take the source's audio codec (LG: E-AC-3). Try once
+        // more on the receiver with the audio re-encoded before giving the picture back to this device.
+        if !airPlayForcesAudioBridge {
+            airPlayForcesAudioBridge = true
+            EngineLog.emit("[AirPlay] the receiver could not play this stream (\(info.message)); "
+                           + "retrying on it with the audio re-encoded to \(Self.receiverCompatAudioLabel)", category: .engine)
+            Task { try? await reloadAtCurrentPosition() }
+            return true
+        }
+        airPlayForcesAudioBridge = false
+        EngineLog.emit("[AirPlay] the receiver could not play this stream (\(info.message)); "
+                       + "bringing playback back to this device", category: .engine)
+        // Ending external playback on the player is what returns the route; the host turns it back on
+        // the next time the viewer opens the AirPlay picker.
+        player.allowsExternalPlayback = false
+        airPlayActive = false
+        airPlayReceiverRefused.send(info.message)
+        Task { try? await reloadAtCurrentPosition() }
+        return true
+    }
+    #endif
+
     /// Re-read external playback after a session-preserving reload and act on it if it really changed (#227).
     /// The player flag alone is not trustworthy at this instant: the rebuilt item may not have re-engaged the
     /// receiver yet, which would read as "AirPlay ended" and start the next reload of the same loop. The audio
@@ -5146,6 +5201,23 @@ public final class AetherEngine: ObservableObject {
     func reconcileExternalPlaybackAfterReload() {
         guard externalPlaybackEdgeHeld else { return }
         externalPlaybackEdgeHeld = false
+        #if os(macOS)
+        // macOS has no audio-route read that survives the item teardown, so the
+        // player flag is the only signal, and right after the rebuild it can
+        // still read false while the receiver re-engages. Give it a moment
+        // before believing an "ended", or each reload would start the next.
+        if airPlayActive, !externalPlaybackHoldsThePicture {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                guard let self else { return }
+                let active = self.externalPlaybackHoldsThePicture
+                EngineLog.emit("[AirPlay] reconciling after the reload (macOS, settled): active=\(active)",
+                               category: .engine)
+                self.handleExternalPlaybackChange(active: active)
+            }
+            return
+        }
+        #endif
         let active = externalPlaybackHoldsThePicture
         EngineLog.emit("[AirPlay] reconciling the held edge after the reload: active=\(active) "
                        + "(player=\(isExternalPlaybackActiveNow) "
@@ -5184,7 +5256,9 @@ public final class AetherEngine: ObservableObject {
     /// `nativeSubtitleRenditionsServed` promises hosts.
     func airPlayAdjustedPlayback(url: URL, session: HLSVideoEngine) -> (url: URL, subtitleRenditionsServed: Bool) {
         airPlayServedMasterToReceiver = false
-        #if os(iOS)
+        // macOS AirPlays an AVPlayer to an Apple TV the same way, and the receiver
+        // can no more reach the Mac's 127.0.0.1 than the iPhone's.
+        #if os(iOS) || os(macOS)
         guard airPlayActive else { return (url, session.servingMasterPlaylist) }
         let receiverUID = Self.currentAirPlayReceiverUID()
         let refusedBefore = receiverUID.map { airPlayReceiversRefusingHDRMaster.contains($0) } ?? false

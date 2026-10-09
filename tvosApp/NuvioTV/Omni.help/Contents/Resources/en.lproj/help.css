@@ -1,0 +1,18 @@
+:root { color-scheme: light dark; --accent: #3a7bd5; --muted: #6b6b70; --line: rgba(128,128,128,.28); --kbd: rgba(128,128,128,.16); }
+body { font: 14px/1.55 -apple-system, "SF Pro Text", sans-serif; margin: 0; padding: 28px 34px 48px; max-width: 760px; }
+h1 { font-size: 26px; margin: 0 0 6px; }
+h2 { font-size: 18px; margin: 28px 0 8px; padding-top: 6px; border-top: 1px solid var(--line); }
+h3 { font-size: 15px; margin: 18px 0 6px; }
+p.lead { color: var(--muted); margin-top: 0; font-size: 15px; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+kbd { font: 12px/1 ui-monospace, "SF Mono", monospace; background: var(--kbd); border: 1px solid var(--line); border-radius: 5px; padding: 2px 6px; white-space: nowrap; }
+table { border-collapse: collapse; width: 100%; margin: 8px 0 14px; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; }
+.note { border-left: 3px solid var(--accent); padding: 8px 12px; margin: 14px 0; background: rgba(58,123,213,.08); border-radius: 0 6px 6px 0; }
+.path { font-weight: 600; }
+ul.toc { list-style: none; padding: 0; columns: 2; column-gap: 28px; }
+ul.toc li { margin: 0 0 10px; break-inside: avoid; }
+ul.toc li span { display: block; color: var(--muted); font-size: 13px; }
+nav.back { margin-bottom: 14px; font-size: 13px; }

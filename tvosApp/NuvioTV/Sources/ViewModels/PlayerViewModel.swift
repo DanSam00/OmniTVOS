@@ -4470,7 +4470,7 @@ enum BufferingDowngradePlanner {
     }
 }
 
-#if os(iOS)
+#if os(iOS) || os(macOS)
 /// What a Google Cast receiver needs to play the current stream itself: the
 /// receiver fetches the URL directly, so this is the source, not the engine's
 /// local loopback.

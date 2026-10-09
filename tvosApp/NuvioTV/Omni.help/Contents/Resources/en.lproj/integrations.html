@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="description" content="Connect Trakt, Simkl, Stremio, TMDB, MDBList, AI subtitles, debrid services and your own media servers.">
+  <meta name="keywords" content="integrations, trakt, simkl, stremio, tmdb, themoviedb, mdblist, ratings, imdb, rotten tomatoes, metacritic, letterboxd, debrid, real-debrid, realdebrid, torbox, premiumize, api key, smb, network share, nas, jellyfin, media server, ai subtitles, translation, gemini, openrouter, scrobble, continue watching source, watch history">
+  <meta name="robots" content="index">
+  <title>Integrations</title>
+  <link rel="stylesheet" href="help.css">
+</head>
+<body>
+<nav class="back"><a href="index.html">‹ Omni Help</a></nav>
+<h1>Integrations</h1>
+<p class="lead">Connect Trakt, Simkl, Stremio, TMDB, MDBList, AI subtitles, debrid services and your own media servers.</p>
+
+<p>All of these are in <span class="path">Settings ▸ Integrations</span>.</p>
+
+<h2 id="tracking">Trakt and Simkl</h2>
+<p>Trakt and Simkl keep a record of what you watch (scrobbling), and either can be the source of your Continue Watching row.</p>
+<ol>
+  <li>Choose <b>Trakt</b> or <b>Simkl Account</b>.</li>
+  <li><b>Trakt:</b> scan the QR code with your phone, or open <b>trakt.tv/activate</b> and enter the code shown.</li>
+  <li><b>Simkl:</b> scan the QR code, or open <b>simkl.com/pin</b> and enter the PIN shown.</li>
+</ol>
+<p>Once connected, choose which service drives Continue Watching and what to sync. <b>Sync Now</b> refreshes from the service immediately. From Simkl's page you can also transfer your existing watch history, library and progress to Simkl.</p>
+<div class="note">Seeing different Continue Watching on different devices? Make sure each device is connected to the same service and uses the same Continue Watching source.</div>
+
+<h2 id="stremio">Stremio</h2>
+<p>Sign in with your Stremio email and password, then choose <b>Import Library</b> to bring over your library and watch history, or <b>Sync From Stremio</b> to refresh it. Importing only reads from Stremio; nothing is written back. Signing out keeps the imported titles.</p>
+
+<h2 id="tmdb">TMDB</h2>
+<p>TMDB adds richer details: better artwork, cast and crew, production companies, networks, season posters, collections and More Like This.</p>
+<ol>
+  <li>Create a free API key at <b>themoviedb.org/settings/api</b>.</li>
+  <li>Choose <span class="path">Metadata Providers ▸ TMDB</span>, turn on <b>Enable TMDB</b> and paste the key.</li>
+  <li>Choose which parts to use under <b>Modules</b>, and the language under <b>Localization</b>.</li>
+</ol>
+
+<h2 id="mdblist">MDBList ratings</h2>
+<p>Shows ratings from IMDb, TMDB, Rotten Tomatoes, Metacritic, Trakt, Letterboxd and audience scores. Get a free key at <b>mdblist.com/preferences</b>, then choose <span class="path">Metadata Providers ▸ MDBList</span>, turn on <b>Enable MDBList Ratings</b>, paste the key and pick the providers to show.</p>
+
+<h2 id="ai">AI subtitles</h2>
+<p>Translates subtitles into your language when none exist. Choose <b>AI Subtitle Translation</b>, pick a provider (Google Gemini or OpenRouter) and paste its API key, then turn on <b>Enable AI Translation</b> and choose <b>Translate To</b>. In the player, the translation is in the subtitle settings.</p>
+
+<h2 id="debrid">Debrid</h2>
+<table>
+<tr><th>Service</th><th>How to link</th></tr>
+<tr><td>Real-Debrid</td><td>Scan the QR code and approve on real-debrid.com.</td></tr>
+<tr><td>TorBox</td><td>Scan the QR code, or paste your API key from the TorBox dashboard.</td></tr>
+<tr><td>Premiumize</td><td>Paste the API key from your Premiumize account page.</td></tr>
+</table>
+
+<h2 id="servers">Your own media: SMB shares and Jellyfin</h2>
+<ul>
+  <li><b>SMB:</b> choose <span class="path">SMB ▸ Add Server</span>, enter the address, user name and password, then pick shares and <b>Start Scan</b>. Found films and shows join your library.</li>
+  <li><b>Jellyfin:</b> choose <span class="path">Jellyfin ▸ Add Server</span>, enter the server address and sign in, then choose the libraries to sync.</li>
+</ul>
+
+</body>
+</html>

@@ -101,6 +101,13 @@ struct PlayerView: View {
     #if os(macOS)
     /// The keyboard reference, opened with ? and closed with ? or Escape.
     @State private var showKeyboardHelp = false
+    /// macOS: the Cast device list is up over the player.
+    @State private var isCastPickerOpen = false
+    /// macOS: this player's stream is on a Chromecast and the Mac is its remote.
+    @State private var isCasting = false
+    #if os(macOS)
+    @ObservedObject private var cast = MacCastController.shared
+    #endif
     /// The keyboard caret over the player's own buttons. `@FocusState` never
     /// moves on macOS, so the skip, next-episode and transport buttons were
     /// unreachable from the keyboard.
@@ -192,6 +199,11 @@ struct PlayerView: View {
                     viewModel.showSettingsPanel = true
                 }
             },
+            onAirPlay: {
+                viewModel.revealControls()
+                MacAirPlay.open()
+            },
+            onCast: { isCastPickerOpen.toggle() },
             seekStep: { Double(viewModel.seekStepSeconds) },
             onToggleHelp: { showKeyboardHelp.toggle() },
             isPanelOpen: { viewModel.sidePanel != nil },
@@ -199,6 +211,7 @@ struct PlayerView: View {
             onPanelMoveHorizontal: { viewModel.macPanelMoveHorizontal($0) },
             onPanelActivate: { viewModel.macPanelActivate() },
             onDismissTopmost: {
+                if isCastPickerOpen { isCastPickerOpen = false; return true }
                 if showKeyboardHelp { showKeyboardHelp = false; return true }
                 if viewModel.macDismissTopmost() { return true }
                 // `onExitCommand` needs a focused view to fire, and on macOS
@@ -207,13 +220,24 @@ struct PlayerView: View {
                 return macHandleEscape()
             },
             isHelpVisible: { showKeyboardHelp },
-            isSettingsOpen: { viewModel.showSettingsPanel },
+            // The Cast list and the casting remote take their keys from the
+            // router, as the settings panel does.
+            isSettingsOpen: { viewModel.showSettingsPanel || isCastPickerOpen || isCasting },
             onCaretMove: { macCaretMove($0) },
             onCaretActivate: { macCaretActivate() },
             swallowsTransportKeys: { viewModel.postPlayState.isVisible }
         )
     }
     #endif
+
+    /// The Cast button's action: the device list on macOS, nothing elsewhere.
+    private var openCastPicker: () -> Void {
+        #if os(macOS)
+        return { isCastPickerOpen = true }
+        #else
+        return {}
+        #endif
+    }
 
     var body: some View {
         ZStack {
@@ -451,7 +475,8 @@ struct PlayerView: View {
                 isNextEpisodeFocused: nextEpisodeFocused || cancelAutoPlayFocused,
                 onFocusSkipSegment: { focusSkipSegment() },
                 onFocusNextEpisode: { focusNextEpisode() },
-                macCaret: macControlCaret
+                macCaret: macControlCaret,
+                onCast: openCastPicker
             )
                 .opacity(
                     viewModel.showControls
@@ -503,6 +528,47 @@ struct PlayerView: View {
             } else if viewModel.sidePanel == .sources {
                 PlayerSourcesPanel(viewModel: viewModel)
                     .zIndex(7)
+            }
+            #endif
+
+            #if os(macOS)
+            // The system AirPlay picker the AirPlay button and A open. Mounted
+            // here, not in the control bar: the bar is rebuilt as it shows and
+            // hides, and a picker inside it was gone by the second press.
+            // All but invisible; it sits near the button so the receiver list
+            // opens beside it.
+            MacAirPlayRoutePicker(engine: viewModel.aetherController.engine)
+                .frame(width: 70, height: 70)
+                .opacity(0.02)
+                .allowsHitTesting(false)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                .padding(.trailing, 236)
+                .padding(.bottom, 150)
+                .zIndex(1)
+
+            if isCasting {
+                MacCastingView(
+                    title: viewModel.title,
+                    subtitle: viewModel.subtitle,
+                    backdropURL: viewModel.castableMedia?.backdropURL,
+                    seekStep: viewModel.seekStepSeconds,
+                    onStop: { endCasting(at: cast.stopCasting()) }
+                )
+                .transition(.opacity)
+                .zIndex(8)
+            }
+            if isCastPickerOpen {
+                MacCastPickerPanel(
+                    isCasting: isCasting,
+                    onChoose: { device in castTo(device) },
+                    onStop: {
+                        isCastPickerOpen = false
+                        endCasting(at: cast.stopCasting())
+                    },
+                    onClose: { isCastPickerOpen = false }
+                )
+                .transition(.opacity)
+                .zIndex(9)
             }
 
             #endif
@@ -570,6 +636,39 @@ struct PlayerView: View {
         }
         #if os(macOS)
         .onAppear { macKeyBarrier = MacKeyRouter.shared.pushBarrier() }
+        // The menu stands down while a layer that takes its own keys is up, so
+        // a key that layer lets through cannot reach a menu item instead.
+        .onChange(of: macMenuEnabled, initial: true) { _, enabled in
+            MacPlayerCommandBus.shared.isPlayerActive = enabled
+        }
+        .onDisappear { MacPlayerCommandBus.shared.isPlayerActive = false }
+        .onReceive(MacPlayerCommandBus.shared.actions) { action in performMenuAction(action) }
+        .onReceive(viewModel.aetherController.engine.airPlayReceiverRefused) { _ in
+            viewModel.showCastMessage("That TV couldn't play this video's format over AirPlay, so it's back on the Mac")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: MacAirPlay.soundOnly)) { _ in
+            viewModel.showCastMessage("This stream plays in Omni's own player, so AirPlay can send its sound but not the picture")
+        }
+        .onAppear {
+            cast.startDiscovery()
+            // Still connected from the last title: carry on on the Chromecast.
+            if cast.isConnected { startCastingWhenReady() }
+        }
+        .onChange(of: didReportPlaybackStarted) { _, started in
+            if started, cast.isConnected, !isCasting { startCastingWhenReady() }
+        }
+        .onChange(of: cast.hasMedia) { _, hasMedia in
+            // Finished, or stopped from the TV's own remote.
+            if !hasMedia, isCasting, !cast.isConnecting { endCasting(at: cast.position) }
+        }
+        .onChange(of: cast.isConnected) { _, connected in
+            if !connected, isCasting, !cast.isConnecting { endCasting(at: cast.position) }
+        }
+        .onChange(of: cast.lastError) { _, error in
+            guard let error else { return }
+            viewModel.showCastMessage(error)
+            if isCasting { endCasting(at: cast.position, resume: false) }
+        }
         #endif
         .onDisappear {
             PlaybackStartupTiming.cancel()
@@ -1903,14 +2002,103 @@ extension PlayerView {
         return cards
     }
 
-    /// Mirrors `PlayerControls.transportFocusOrder`.
+    /// The buttons in `PlayerControls.transportRow`, left to right.
     private var macTransportOrder: [PlayerControlFocus] {
         var order: [PlayerControlFocus] = [.play]
         if viewModel.isPictureInPictureSupported && playerShowPiP { order.append(.pip) }
         if viewModel.canShowEpisodesPanel && playerShowEpisodes { order.append(.episodes) }
         if viewModel.canShowSourcesPanel && playerShowSources { order.append(.sources) }
-        order.append(.settings)
+        order.append(contentsOf: [.airplay, .cast, .settings])
         return order
+    }
+
+    // MARK: Cast
+
+    /// Sends this stream to `device` and turns the Mac into its remote.
+    func castTo(_ device: MacCastDevice) {
+        isCastPickerOpen = false
+        guard let media = viewModel.castableMedia else {
+            viewModel.showCastMessage("Nothing is playing to cast yet")
+            return
+        }
+        if let reason = MacCastController.unsupportedReason(media) {
+            viewModel.showCastMessage(reason)
+            return
+        }
+        MacCastController.shared.connect(to: device, media: media)
+        viewModel.pause()
+        isCasting = true
+    }
+
+    /// The title changed while still connected: hand the new one over.
+    func startCastingWhenReady() {
+        let cast = MacCastController.shared
+        guard didReportPlaybackStarted, !isCasting, cast.isConnected,
+              let media = viewModel.castableMedia,
+              MacCastController.unsupportedReason(media) == nil,
+              let name = cast.deviceName,
+              let device = cast.devices.first(where: { $0.name == name }) else { return }
+        cast.connect(to: device, media: media)
+        viewModel.pause()
+        isCasting = true
+    }
+
+    var macMenuEnabled: Bool {
+        !viewModel.showSettingsPanel && !isCastPickerOpen
+    }
+
+    /// The Player menu in the menu bar: the same actions as the keys.
+    func performMenuAction(_ action: MacPlayerAction) {
+        MacDiagnostics.log("player.menu \(action)")
+        // While casting, the Mac is a remote: only what drives the Chromecast.
+        if isCasting {
+            switch action {
+            case .playPause, .back, .forward, .cast, .shortcuts, .leave: break
+            default: return
+            }
+        }
+        switch action {
+        case .playPause:
+            if isCasting { MacCastController.shared.togglePlayPause() } else { viewModel.togglePlayPause() }
+        case .back, .forward:
+            let step = Double(viewModel.seekStepSeconds) * (action == .back ? -1 : 1)
+            if isCasting {
+                MacCastController.shared.skip(by: step)
+            } else {
+                viewModel.revealControls()
+                viewModel.nudgeSeek(step)
+            }
+        case .showControls:
+            viewModel.revealControls()
+        case .episodes:
+            guard viewModel.canShowEpisodesPanel else { return }
+            viewModel.macToggleSidePanel(.episodes)
+        case .sources:
+            guard viewModel.canShowSourcesPanel else { return }
+            viewModel.macToggleSidePanel(.sources)
+        case .settings:
+            viewModel.closeSidePanel()
+            viewModel.showSettingsPanel.toggle()
+        case .pictureInPicture:
+            viewModel.togglePictureInPicture()
+        case .airPlay:
+            viewModel.revealControls()
+            MacAirPlay.open()
+        case .cast:
+            isCastPickerOpen = true
+        case .shortcuts:
+            showKeyboardHelp.toggle()
+        case .leave:
+            onBack()
+        }
+    }
+
+    /// Back to the Mac, at the point the Chromecast reached.
+    func endCasting(at position: Double, resume: Bool = true) {
+        isCasting = false
+        if position > 1, !viewModel.isLiveStream { viewModel.seek(to: position) }
+        if resume { viewModel.play() }
+        viewModel.revealControls()
     }
 
     /// Anything drawn over the controls owns the keys instead, and keeps the
@@ -2032,6 +2220,10 @@ extension PlayerView {
             viewModel.openSidePanel(.sources)
         case .control(.settings):
             viewModel.showSettingsPanel = true
+        case .control(.airplay):
+            MacAirPlay.open()
+        case .control(.cast):
+            isCastPickerOpen = true
         }
         return true
     }

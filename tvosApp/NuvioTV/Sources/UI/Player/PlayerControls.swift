@@ -8,6 +8,9 @@ enum PlayerControlFocus: Hashable {
     case sources
     case settings
     case timeline
+    /// macOS only: the AirPlay and Chromecast buttons.
+    case airplay
+    case cast
 }
 
 struct PlayerControls: View {
@@ -20,6 +23,8 @@ struct PlayerControls: View {
     /// player keeps its own caret and hands the control it is on down here.
     /// Always nil on tvOS.
     var macCaret: PlayerControlFocus? = nil
+    /// macOS: opens the Cast device list over the player.
+    var onCast: () -> Void = {}
 
     @FocusState private var focusedControl: PlayerControlFocus?
 
@@ -323,6 +328,32 @@ struct PlayerControls: View {
                 }
                 .id("sources_button")
             }
+
+            #if os(macOS)
+            glassIconButton(
+                size: 70,
+                iconSize: 28,
+                focusKey: .airplay,
+                isFocused: isShownFocused(.airplay)
+            ) {
+                MacAirPlay.open()
+            } icon: {
+                Image(systemName: "airplayvideo")
+            }
+            .id("airplay_button")
+
+            glassIconButton(
+                size: 70,
+                iconSize: 28,
+                focusKey: .cast,
+                isFocused: isShownFocused(.cast)
+            ) {
+                onCast()
+            } icon: {
+                Image(systemName: "tv.badge.wifi")
+            }
+            .id("cast_button")
+            #endif
 
             glassIconButton(
                 size: 70,
