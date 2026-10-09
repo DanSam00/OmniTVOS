@@ -892,6 +892,8 @@ final class NuvioSyncManager: ObservableObject {
         let delays: [UInt64] = [0, 1, 2, 3, 4, 5]
         var lastError: Error = AuthError(message: "The account session is not ready yet.")
         var attemptedDeviceRegistration = false
+        var emptyPulls = 0
+        var seededFirstProfile = false
 
         for (attempt, delay) in delays.enumerated() {
             if delay > 0 {
@@ -934,6 +936,24 @@ final class NuvioSyncManager: ObservableObject {
                 try ensureStillSyncing()
                 guard !profiles.isEmpty else {
                     lastError = AuthError(message: "Nuvio has not returned the account profiles yet.")
+                    emptyPulls += 1
+                    // A brand-new account has no profiles until a client makes
+                    // one, so waiting for them only ended in this error. Make
+                    // the first one: at once for an account created here, or
+                    // after several empty answers for one made elsewhere.
+                    let isNewHere = authManager.createdAccountUserID == session.userId
+                    if !seededFirstProfile, emptyPulls >= (isNewHere ? 1 : 4) {
+                        seededFirstProfile = true
+                        do {
+                            try await client.pushProfiles(
+                                session: session,
+                                profiles: [Self.firstProfile(email: session.email)]
+                            )
+                            print("Nuvio account had no profiles; created the first one.")
+                        } catch {
+                            lastError = error
+                        }
+                    }
                     continue
                 }
                 return (session, profiles)
@@ -954,6 +974,15 @@ final class NuvioSyncManager: ObservableObject {
             throw AuthError(message: Self.reauthenticationMessage)
         }
         throw lastError
+    }
+
+    /// The first profile of an account that has none, named for the address
+    /// it was made with.
+    static func firstProfile(email: String?) -> Profile {
+        let local = email?.split(separator: "@").first.map(String.init) ?? ""
+        let cleaned = local.split(whereSeparator: { ".-_+".contains($0) }).first.map(String.init) ?? ""
+        let name = cleaned.isEmpty ? "Profile 1" : cleaned.prefix(1).uppercased() + cleaned.dropFirst()
+        return Profile(id: "1", name: String(name.prefix(20)), isAdmin: true)
     }
 
     /// One wording for the state where the account is still configured on this
@@ -1040,11 +1069,37 @@ final class NuvioSyncManager: ObservableObject {
             }
 
             do {
-                let remoteAddons = try await client.pullAddons(
+                var remoteAddons = try await client.pullAddons(
                     session: session,
                     remoteProfileId: addonProfileId
                 )
                 try ensureStillSyncing(profileId: activeProfile.id)
+                // An account signed in on this device gets Omni's default
+                // add-ons beside its own, once per profile. Pushed in full —
+                // the RPC replaces the set — and re-read so the local list is
+                // what the account now holds.
+                let getsDefaults = OmniDefaultAddons.appliesTo(userId: session.userId)
+                if getsDefaults,
+                   !OmniDefaultAddons.isDone(.addons, userId: session.userId, remoteProfileId: addonProfileId) {
+                    if try await seedDefaultAddons(
+                        remoteAddons,
+                        session: session,
+                        remoteProfileId: addonProfileId
+                    ) {
+                        remoteAddons = try await client.pullAddons(
+                            session: session,
+                            remoteProfileId: addonProfileId
+                        )
+                        try ensureStillSyncing(profileId: activeProfile.id)
+                    }
+                    OmniDefaultAddons.markDone(.addons, userId: session.userId, remoteProfileId: addonProfileId)
+                }
+                if getsDefaults,
+                   !OmniDefaultAddons.isDone(.homeRows, userId: session.userId, remoteProfileId: remoteProfileId) {
+                    // Rotten Tomatoes' rows go on this profile's Home once.
+                    TVHomeCatalogOrder.showOnHome(OmniDefaultAddons.homeCatalogKeys)
+                    OmniDefaultAddons.markDone(.homeRows, userId: session.userId, remoteProfileId: remoteProfileId)
+                }
                 lastPulledAddonRows = remoteAddons
                 let (appliedCount, didChange) = client.applyAddons(remoteAddons, localProfileId: activeProfile.id)
                 if didChange {
@@ -1433,6 +1488,33 @@ final class NuvioSyncManager: ObservableObject {
         } catch {
             print("Nuvio sync push failed: \(error.localizedDescription)")
         }
+    }
+
+    /// Appends Omni's defaults the account lacks and pushes the whole list.
+    /// - Returns: whether anything was added.
+    private func seedDefaultAddons(
+        _ remoteAddons: [RemoteAddon],
+        session: AuthSession,
+        remoteProfileId: Int
+    ) async throws -> Bool {
+        let ordered = remoteAddons.sorted { $0.sortOrder < $1.sortOrder }
+        var rows: [[String: Any]] = []
+        var present = Set<String>()
+        for addon in ordered {
+            guard let url = Self.normalizedAddonURL(addon.url), present.insert(url).inserted else { continue }
+            var row: [String: Any] = ["url": url, "sort_order": rows.count, "enabled": addon.enabled]
+            if let name = addon.name, !name.isEmpty { row["name"] = name }
+            rows.append(row)
+        }
+        let existing = rows.count
+        for raw in OmniDefaultAddons.manifestURLs {
+            guard let url = Self.normalizedAddonURL(raw), present.insert(url).inserted else { continue }
+            rows.append(["url": url, "sort_order": rows.count, "enabled": true])
+        }
+        guard rows.count > existing else { return false }
+        try await client.pushAddons(session: session, remoteProfileId: remoteProfileId, rows: rows)
+        print("Nuvio sync added \(rows.count - existing) Omni default add-on(s).")
+        return true
     }
 
     /// Pushes the complete local add-on list to the account. The public RPC is

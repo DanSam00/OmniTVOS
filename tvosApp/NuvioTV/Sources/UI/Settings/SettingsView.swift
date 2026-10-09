@@ -1813,6 +1813,7 @@ private struct AccountSettingsView: View {
     @AppStorage(SettingsKey.iCloudSyncEnabled) private var iCloudSyncEnabled = false
     @State private var editableProfileName = ""
     @State private var showingAvatarPicker = false
+    @Environment(\.openURL) private var openURL
 
     private var accountStatusText: String {
         guard isAuthenticated else {
@@ -1989,6 +1990,20 @@ private struct AccountSettingsView: View {
                     isOn: $iCloudSyncEnabled,
                     accentColor: accentColor
                 )
+                #endif
+
+                #if os(iOS) || os(macOS)
+                SettingsActionRow(
+                    title: L10n.string("settings_account_xperience", fallback: "Customise with Xperience"),
+                    subtitle: L10n.string(
+                        "settings_account_xperience_subtitle",
+                        fallback: "Personalise your account's look and setup at xperience-app.com"
+                    ),
+                    value: L10n.string("action_open", fallback: "Open"),
+                    accentColor: accentColor
+                ) {
+                    if let url = URL(string: "https://xperience-app.com") { openURL(url) }
+                }
                 #endif
 
                 if isAuthenticated {
@@ -9435,15 +9450,28 @@ private struct AddonsSettingsSection: View {
     @State private var addonURLInput = ""
     @State private var addons: [AddonItem] = AddonItem.defaults
     @State private var syncedAddons: [SyncedAddon] = []
+    @Environment(\.openURL) private var openURL
+
+    #if os(iOS) || os(macOS)
+    /// Torrentio is set up on its own site, which builds the manifest link.
+    private static let torrentioSetupURL = URL(string: "https://torrentio.strem.fun/")!
+    private static let findAddonsURL = URL(string: "https://stremio-addons.net/")!
+    #endif
 
     /// The add-on rows in view order, named from the data rather than counted
     /// as they render — which is what lets the list below be lazy.
     private var macAddonRowIDs: [String] {
         var ids = [L10n.string("tvos_settings_add_on_url", fallback: "Add-on URL")]
+        #if os(iOS) || os(macOS)
+        ids.append("addon.torrentio")
+        #endif
         ids += syncedAddons.map { "addon.synced.\($0.id)" }
         ids += addons
             .filter { !isCoveredBySyncedAddon($0) }
             .map { "addon.\($0.id)" }
+        #if os(iOS) || os(macOS)
+        ids.append("addon.discover")
+        #endif
         return ids
     }
 
@@ -9467,6 +9495,21 @@ private struct AddonsSettingsSection: View {
                     onCommit: addAddonFromInput
                 )
                 .settingsEntryAnchor()
+
+                #if os(iOS) || os(macOS)
+                SettingsActionRow(
+                    title: L10n.string("settings_addon_torrentio_setup", fallback: "Set Up Torrentio"),
+                    subtitle: L10n.string(
+                        "settings_addon_torrentio_setup_subtitle",
+                        fallback: "Configure Torrentio on its website, then copy its manifest link into Add-on URL above"
+                    ),
+                    value: L10n.string("action_open", fallback: "Open"),
+                    accentColor: accentColor,
+                    macRowID: "addon.torrentio"
+                ) {
+                    openURL(Self.torrentioSetupURL)
+                }
+                #endif
 
                 ForEach(Array(syncedAddons.enumerated()), id: \.element.id) { index, addon in
                     SyncedAddonSettingsRow(
@@ -9507,6 +9550,21 @@ private struct AddonsSettingsSection: View {
                         }
                     )
                 }
+
+                #if os(iOS) || os(macOS)
+                SettingsActionRow(
+                    title: L10n.string("settings_addon_find_more", fallback: "Find More Add-ons"),
+                    subtitle: L10n.string(
+                        "settings_addon_find_more_subtitle",
+                        fallback: "Browse community add-ons on stremio-addons.net"
+                    ),
+                    value: L10n.string("action_browse", fallback: "Browse"),
+                    accentColor: accentColor,
+                    macRowID: "addon.discover"
+                ) {
+                    openURL(Self.findAddonsURL)
+                }
+                #endif
             }
         }
         .task(id: streamAddonManifestURL + "\n" + streamAddonManifestURLs + "\n" + streamAddonManifestStates) {

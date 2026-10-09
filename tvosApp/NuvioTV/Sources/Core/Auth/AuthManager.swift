@@ -265,14 +265,23 @@ final class AuthManager: ObservableObject {
 
     func signUp(email: String, password: String) async {
         await runEmail { try await self.service.signUpWithEmail(email: email, password: password) }
+        if errorMessage == nil, let userId = currentSession?.userId {
+            createdAccountUserID = userId
+        }
     }
+
+    /// The account this device just created. It has no profiles on Nuvio
+    /// yet, so the first sync gives it one instead of waiting for them.
+    private(set) var createdAccountUserID: String?
 
     private func runEmail(_ op: @escaping () async throws -> AuthSession) async {
         guard ensureConfigured() else { return }
         isBusy = true
         errorMessage = nil
         do {
-            apply(session: try await op())
+            let session = try await op()
+            apply(session: session)
+            OmniDefaultAddons.markSignedIn(userId: session.userId)
         } catch {
             errorMessage = friendly(error)
         }
@@ -388,6 +397,7 @@ final class AuthManager: ObservableObject {
         do {
             let session = try await service.exchangeTvLoginSession(accessToken: anon, code: code, deviceNonce: nonce)
             apply(session: session)
+            OmniDefaultAddons.markSignedIn(userId: session.userId)
             qrStatusMessage = "Signed in successfully"
             clearQrState()
         } catch {

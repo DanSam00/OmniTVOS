@@ -2803,6 +2803,21 @@ struct TVHomeScrollTracker: ViewModifier {
     }
 }
 
+/// Grid View's hero art, which scrolls with the page, held back to a fraction
+/// of that scroll so the rows slide over it. Unanimated: it follows the
+/// scroll view frame by frame.
+struct TVGridHeroParallaxScroll: ViewModifier {
+    let parallax: TVHomeParallax?
+    private static let rate: CGFloat = 0.45
+    /// The hero's height; past it the art is off screen anyway.
+    private static let maxScroll: CGFloat = 820
+
+    func body(content: Content) -> some View {
+        let scrolled = min(max(parallax?.offset ?? 0, 0), Self.maxScroll)
+        content.offset(y: scrolled * Self.rate)
+    }
+}
+
 /// Home's backdrop drifting up behind the rows at a fraction of their
 /// scroll, eased so the focus engine's row-by-row jumps glide.
 struct TVHomeParallaxScroll: ViewModifier {
@@ -4167,6 +4182,9 @@ struct TVHomeView: View {
     /// How far the rows have scrolled, read only by the backdrop's parallax
     /// so a scroll redraws the art, not Home.
     @State private var homeParallax = TVHomeParallax()
+    /// Grid View's scroll position, for its hero art. Kept apart from
+    /// `homeParallax`, whose changes drive the Modern layout's carousel handoff.
+    @State private var gridParallax = TVHomeParallax()
     /// Collection folder currently focused on Home. When set, the hero shows
     /// emoji + folder title instead of title poster meta/description.
     @State private var focusedCollectionFolder: TVCollectionFolderItem?
@@ -5638,6 +5656,7 @@ struct TVHomeView: View {
                             didRequestInitialCardFocus = true
                         },
                         backdropBleed: heroBleed,
+                        scrollParallax: gridParallax,
                         macIsFocused: macGridHeroFocused,
                         // Only while the hero holds the caret: it is the only
                         // time it is on screen, and scroll clipping is off in
@@ -5795,6 +5814,7 @@ struct TVHomeView: View {
             .padding(.bottom, 80)
         }
         .scrollIndicators(.hidden)
+        .modifier(TVHomeScrollTracker(parallax: gridParallax))
         // Lets the hero's backdrop paint past this scroll view's bounds. Only
         // clipping is relaxed — widening the scroll view itself would push its
         // leading edge under the collapsed sidebar, and the focus engine reads
@@ -8262,7 +8282,7 @@ enum TVHomeCatalogOrder {
                 .union(storedDisabledCatalogKeys())
             persist(known, forKey: SettingsKey.homeCatalogKnown)
         }
-        let fresh = Set(keys).subtracting(known)
+        let fresh = Set(keys).subtracting(known).subtracting(shownOnHomeKeys())
         guard !fresh.isEmpty else { return [] }
         // Removed first: a key recorded as known but not removed is a catalog
         // that goes straight onto Home next launch, which is the one outcome
@@ -8273,6 +8293,32 @@ enum TVHomeCatalogOrder {
         MacDiagnostics.log("catalogs.new heldBack=" + String(fresh.count))
         #endif
         return fresh
+    }
+
+    /// Catalogs put on Home before their add-on first loaded (Omni's default
+    /// rows), which the hold-back above must let through.
+    private static let shownOnHomeKey = "omni.home.shownOnHome"
+
+    private static func shownOnHomeKeys() -> Set<String> {
+        guard let data = ProfileSettings.current.data(forKey: shownOnHomeKey),
+              let keys = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+        return Set(keys)
+    }
+
+    /// Puts catalogs on Home: never held back as new, and taken out of the
+    /// removed and disabled lists.
+    static func showOnHome(_ keys: [String]) {
+        holdBackLock.lock()
+        defer { holdBackLock.unlock() }
+        let store = ProfileSettings.current
+        persist(shownOnHomeKeys().union(keys), forKey: shownOnHomeKey)
+        if let data = store.data(forKey: SettingsKey.homeCatalogKnown),
+           let stored = try? JSONDecoder().decode([String].self, from: data) {
+            persist(Set(stored).union(keys), forKey: SettingsKey.homeCatalogKnown)
+        }
+        persist(removedKeys().subtracting(keys), forKey: SettingsKey.homeCatalogRemoved)
+        persist(storedDisabledCatalogKeys().subtracting(keys), forKey: SettingsKey.homeCatalogDisabled)
+        NotificationCenter.default.post(name: changedNotification, object: nil)
     }
 
     /// One-time move of every row that was disabled when removal arrived into
@@ -9433,6 +9479,8 @@ private struct TVGridHeroSlideshowView: View {
     /// widens — the hero's frame, its text, and the focus geometry stay inside
     /// the safe area.
     var backdropBleed: CGFloat = 0
+    /// The page's scroll, which the art lags behind as the rows pass over it.
+    var scrollParallax: TVHomeParallax? = nil
     /// Home's macOS caret is on the hero. There is no focus engine there to
     /// set `focusState`, so this stands in for it.
     var macIsFocused = false
@@ -9471,8 +9519,12 @@ private struct TVGridHeroSlideshowView: View {
             CrossfadingBackdrop(
                 url: item.backgroundUrl ?? item.posterUrl,
                 placeholder: background,
-                alignment: .top
+                alignment: .top,
+                // Slides in from the side being paged to, as Modern's does.
+                gridPosition: CGPoint(x: CGFloat(index), y: 0),
+                parallax: true
             )
+            .equatable()
             .overlay {
                 // The same trailer, rules and settings as the background one in
                 // the other layouts; nil stops it (Home covered, or off).
@@ -9507,6 +9559,9 @@ private struct TVGridHeroSlideshowView: View {
             )
         }
         .padding(.horizontal, -backdropBleed)
+        // The scrims move with the art, or its lower edge would show below
+        // their fade as it lags behind the page.
+        .modifier(TVGridHeroParallaxScroll(parallax: scrollParallax))
     }
 
     var body: some View {

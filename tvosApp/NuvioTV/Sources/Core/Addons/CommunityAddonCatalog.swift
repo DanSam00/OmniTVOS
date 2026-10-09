@@ -196,3 +196,66 @@ private struct RemoteAddonDTO: Decodable {
         )
     }
 }
+
+/// Add-ons every Omni account starts with, on top of whatever Nuvio gives a
+/// new account. Added once per account profile — the first sync in Omni — so
+/// one the user later removes stays removed.
+enum OmniDefaultAddons {
+    static let manifestURLs: [String] = [
+        // Nuvio Live Sports
+        "https://nuviosports.xyz/manifest.json",
+        // More Live Sports
+        "https://sports.highfly.to/eyJpbmNsdWRlU3BvcnRzIjpbImJhc2tldGJhbGwiLCJmb290YmFsbCIsImFtZXJpY2FuLWZvb3RiYWxsIiwibW90b3Itc3BvcnRzIiwiZmlnaHQiLCJiYXNlYmFsbCIsImhvY2tleSIsInRlbm5pcyIsInJ1Z2J5IiwiZ29sZiIsImJpbGxpYXJkcyIsImFmbCIsImRhcnRzIiwiY3JpY2tldCIsIm90aGVyIl19/manifest.json",
+        // Cinemeta
+        "https://v3-cinemeta.strem.io/manifest.json",
+        // AU TV
+        "https://kangaroostreams.hayd.uk/Brisbane/radio/ausports/nz/nzradio/nzsports/uktv/uksports/ustv/ussports/catv/casports/eusports/worldsports/epl/extras/exgrp-ca-dazn/exgrp-int-netflix-events/exgrp-int-dirtvision/exgrp-uk-epl/exgrp-uk-dazn/exgrp-au-kayo-sports/exgrp-uk-tnt-sports/exgrp-uk-sky-sports/exgrp-nz-sky-sport/exgrp-int-f1-tv/exgrp-uk-spfl/exgrp-int-rugby-events/exgrp-au-stan-sports-events/exgrp-ppv-events/manifest.json",
+        // YouTube
+        "https://v3-channels.strem.io/manifest.json",
+        // WatchHub
+        "https://watchhub.strem.io/manifest.json",
+        // Rotten Tomatoes
+        "https://7a82163c306e-rottentomatoes.baby-beamup.club/manifest.json",
+    ]
+
+    /// Rotten Tomatoes' two catalogs, put on Home rather than held back the way
+    /// a new add-on's catalogs otherwise are.
+    static let homeCatalogKeys: [String] = [
+        "pw.ers.rottentomatoes_movie_rtfresh_movie",
+        "pw.ers.rottentomatoes_series_rtfresh_series",
+    ]
+
+    /// One-time steps, recorded per account profile on this device.
+    enum Step: String {
+        /// The add-ons, pushed to the profile that owns them.
+        case addons
+        /// The Rotten Tomatoes rows, put on this profile's Home.
+        case homeRows
+    }
+
+    private static func key(_ step: Step, userId: String, remoteProfileId: Int) -> String {
+        "omni.defaults.\(step.rawValue).\(userId).\(remoteProfileId)"
+    }
+
+    static func isDone(_ step: Step, userId: String, remoteProfileId: Int) -> Bool {
+        UserDefaults.standard.bool(forKey: key(step, userId: userId, remoteProfileId: remoteProfileId))
+    }
+
+    static func markDone(_ step: Step, userId: String, remoteProfileId: Int) {
+        UserDefaults.standard.set(true, forKey: key(step, userId: userId, remoteProfileId: remoteProfileId))
+    }
+
+    /// Accounts signed in on this device since the defaults arrived. Only
+    /// these get them: an account already signed in keeps the add-ons it has.
+    private static func signedInKey(_ userId: String) -> String {
+        "omni.defaults.signedIn.\(userId)"
+    }
+
+    static func markSignedIn(userId: String) {
+        UserDefaults.standard.set(true, forKey: signedInKey(userId))
+    }
+
+    static func appliesTo(userId: String) -> Bool {
+        UserDefaults.standard.bool(forKey: signedInKey(userId))
+    }
+}
