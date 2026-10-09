@@ -31,12 +31,20 @@ struct AuthService {
 
     /// POST /auth/v1/signup
     func signUpWithEmail(email: String, password: String) async throws -> AuthSession {
-        let token: NuvioTokenResponse = try await request(
-            path: "/auth/v1/signup",
-            method: "POST",
-            bearer: apiKey,
-            json: ["email": email, "password": password]
-        )
+        let token: NuvioTokenResponse
+        do {
+            token = try await request(
+                path: "/auth/v1/signup",
+                method: "POST",
+                bearer: apiKey,
+                json: ["email": email, "password": password]
+            )
+        } catch let error as AuthError where error.statusCode == nil
+            && error.message == Self.unexpectedResponseMessage {
+            // With email confirmation on, sign-up succeeds with the new user and
+            // no session, which read as "Unexpected response from server".
+            throw AuthError(message: AuthError.confirmEmailMessage(email: email))
+        }
         return try authSession(from: token)
     }
 
@@ -269,12 +277,20 @@ struct AuthService {
         do {
             return try decoder.decode(T.self, from: data)
         } catch {
-            throw AuthError(message: "Unexpected response from server")
+            throw AuthError(message: Self.unexpectedResponseMessage)
         }
     }
 
+    static let unexpectedResponseMessage = "Unexpected response from server"
+
     private static func serverErrorMessage(data: Data, status: Int) -> String {
         if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            // Signing in before confirming: say what to do, not GoTrue's code.
+            let code = (obj["error_code"] as? String ?? obj["code"] as? String ?? "").lowercased()
+            let text = (obj["msg"] as? String ?? obj["error_description"] as? String ?? obj["message"] as? String ?? "").lowercased()
+            if code == "email_not_confirmed" || text.contains("email not confirmed") {
+                return AuthError.confirmEmailMessage(email: nil)
+            }
             for key in ["error_description", "msg", "message", "error", "error_code"] {
                 if let s = obj[key] as? String, !s.isEmpty { return s }
             }

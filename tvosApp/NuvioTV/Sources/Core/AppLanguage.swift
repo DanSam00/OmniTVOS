@@ -296,12 +296,13 @@ enum L10n {
                 : AppLocaleManager.shared.language.tag)
         }
         if let value = activeTable[key], !value.isEmpty {
-            return value
+            return DeviceName.adapting(value)
         }
-        return fallback
+        return DeviceName.adapting(fallback)
     }
 
     /// Formats Android-style templates (`%1$s`, `%d`) with the active locale.
+    /// (Device wording is adapted by `string`.)
     static func format(_ key: String, fallback: String, _ args: CVarArg...) -> String {
         var template = string(key, fallback: fallback)
         for index in 1...9 {
@@ -488,5 +489,40 @@ private struct AppLocaleViewModifier: ViewModifier {
         default:
             return .leftToRight
         }
+    }
+}
+
+/// What to call the device the app is running on, for text written when Omni
+/// was an Apple TV app only ("stored only on this Apple TV").
+enum DeviceName {
+    static var current: String {
+        #if os(tvOS)
+        return "Apple TV"
+        #elseif os(macOS)
+        return "Mac"
+        #else
+        return UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
+        #endif
+    }
+
+    /// Rewrites the English phrases that name the Apple TV as the device in
+    /// hand, on the Mac and iPhone. Product names ("Apple TV+", an AirPlay
+    /// "Apple TV") are left alone: only phrases about this device change.
+    static func adapting(_ text: String) -> String {
+        #if os(tvOS)
+        return text
+        #else
+        guard text.contains("Apple TV") else { return text }
+        let device = current
+        return text
+            .replacingOccurrences(of: "across Apple TVs", with: "across your devices")
+            .replacingOccurrences(of: "across all Apple TVs", with: "across all your devices")
+            .replacingOccurrences(of: "this Apple TV's", with: "this \(device)'s")
+            .replacingOccurrences(of: "this Apple TV", with: "this \(device)")
+            .replacingOccurrences(of: "This Apple TV", with: "This \(device)")
+            .replacingOccurrences(of: "the Apple TV keyboard or a paired iPhone keyboard", with: "the keyboard")
+            .replacingOccurrences(of: "the Apple TV keyboard", with: "the keyboard")
+            .replacingOccurrences(of: "with your Apple TV", with: "across your devices")
+        #endif
     }
 }

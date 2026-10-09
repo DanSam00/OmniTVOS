@@ -122,4 +122,11 @@ struct AuthError: LocalizedError {
     }
 
     var errorDescription: String? { message }
+
+    /// Nuvio asks new accounts to confirm their email before they can sign in.
+    static func confirmEmailMessage(email: String?) -> String {
+        let target = email.map { " to \($0)" } ?? ""
+        return "Confirm your email first: open the link Nuvio sent\(target) when the account was created, "
+            + "then sign in here. Check spam if it hasn't arrived."
+    }
 }

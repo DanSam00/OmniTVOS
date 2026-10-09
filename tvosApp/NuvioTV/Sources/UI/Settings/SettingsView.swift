@@ -161,7 +161,7 @@ enum SettingsKey {
     /// copying them.
     static let credentials = [
         traktClientID, traktClientSecret, simklClientID, simklAccessToken, simklRefreshToken,
-        tmdbApiKey, mdbListApiKey, debridApiKey,
+        iptvSources, tmdbApiKey, mdbListApiKey, debridApiKey,
         torboxAccessToken, premiumizeAccessToken, realDebridAccessToken,
         aiSubtitlesGeminiAPIKey,
     ]
@@ -367,6 +367,9 @@ enum SettingsKey {
     /// AUTH V2's refresh token: access tokens last seven days, this one 180,
     /// sliding forward on each use. Mirrored like the access token.
     static let simklRefreshToken = "nuvio.tv.settings.integrations.simklRefreshToken"
+    /// IPTV sources (M3U playlists, Xtream logins) as JSON. On this device
+    /// only: not in `all`, so account sync never carries an Xtream password.
+    static let iptvSources = "omni.settings.integrations.iptvSources"
 
     /// API app credentials must remain on the Apple TV and never enter the
     /// account settings payload.
@@ -4180,6 +4183,8 @@ private struct IntegrationSettingsView: View {
             SMBSettingsSection(accentColor: accentColor)
 
             JellyfinSettingsSection(accentColor: accentColor)
+
+            IPTVSettingsSection(accentColor: accentColor)
         }
         .onAppear {
             traktViewModel.reload()
@@ -4905,7 +4910,7 @@ private struct AISubtitleOptionsSheet: View {
         isKeyStored = AISubtitleKeyStore.save(trimmed, for: selectedProvider)
         keyStorageError = isKeyStored || trimmed.isEmpty
             ? nil
-            : "This Apple TV could not save the \(selectedProvider.rawValue) API key securely."
+            : "This \(DeviceName.current) could not save the \(selectedProvider.rawValue) API key securely."
         if !hasAPIKey { isEnabled = false }
     }
 
@@ -6306,7 +6311,7 @@ private struct SimklPINLoginSheet: View {
 
             if viewModel.mode == .connected {
                 Text(viewModel.username.map { "Signed in as \($0)" }
-                    ?? "This Apple TV is linked to Simkl.")
+                    ?? "This \(DeviceName.current) is linked to Simkl.")
                     .font(.system(size: 23, weight: .medium))
                     .foregroundColor(.white.opacity(0.66))
                     .multilineTextAlignment(.center)
@@ -8134,7 +8139,8 @@ private struct SMBSettingsSection: View {
                 title: L10n.string("smb_add_server", fallback: "Add Server"),
                 subtitle: L10n.string("smb_add_server_subtitle", fallback: "Connect a share by host or IP address"),
                 value: "",
-                accentColor: accentColor
+                accentColor: accentColor,
+                macRowID: "smb.addServer"
             ) {
                 isAddingServer = true
             }
@@ -8697,6 +8703,248 @@ private struct SMBShareSelectionSheet: View {
 
 }
 
+// MARK: - IPTV (M3U playlists and Xtream logins)
+
+private struct IPTVSettingsSection: View {
+    let accentColor: Color
+
+    @State private var sources: [IPTVSource] = IPTVSourceStore.sources()
+    @State private var editing: IPTVSource?
+    @State private var addingKind: IPTVSource.Kind?
+
+    var body: some View {
+        SettingsGroup(
+            title: L10n.string("iptv_group_title", fallback: "IPTV"),
+            subtitle: L10n.string("iptv_group_subtitle", fallback: "Your provider's live channels, from an M3U playlist or an Xtream login, in the Live TV guide and in Search.")
+        ) {
+            SettingsActionRow(
+                title: L10n.string("iptv_add_m3u", fallback: "Add M3U Playlist"),
+                subtitle: L10n.string("iptv_add_m3u_subtitle", fallback: "A playlist link (.m3u or .m3u8) from your provider"),
+                value: "",
+                accentColor: accentColor,
+                macRowID: "iptv.addM3U"
+            ) {
+                addingKind = .m3u
+            }
+            SettingsActionRow(
+                title: L10n.string("iptv_add_xtream", fallback: "Add Xtream Login"),
+                subtitle: L10n.string("iptv_add_xtream_subtitle", fallback: "Server address, username and password from your provider"),
+                value: "",
+                accentColor: accentColor,
+                macRowID: "iptv.addXtream"
+            ) {
+                addingKind = .xtream
+            }
+            ForEach(sources) { source in
+                SettingsActionRow(
+                    title: source.name,
+                    subtitle: "\(source.kind == .m3u ? "M3U" : "Xtream") · \(source.summary) · "
+                        + "\(IPTVLibrary.shared.cachedChannels(sourceID: source.id).count) channels",
+                    value: L10n.string("action_edit", fallback: "Edit"),
+                    accentColor: accentColor,
+                    macRowID: "iptv.source.\(source.id)"
+                ) {
+                    editing = source
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: IPTVSourceStore.changedNotification)) { _ in
+            sources = IPTVSourceStore.sources()
+        }
+        .sheet(item: $editing) { source in
+            IPTVSourceEditSheet(source: source, kind: source.kind, accentColor: accentColor)
+                .modifier(ClearPresentationBackgroundIfAvailable())
+        }
+        .sheet(item: Binding(
+            get: { addingKind.map(IPTVKindBox.init) },
+            set: { addingKind = $0?.kind }
+        )) { box in
+            IPTVSourceEditSheet(source: nil, kind: box.kind, accentColor: accentColor)
+                .modifier(ClearPresentationBackgroundIfAvailable())
+        }
+    }
+}
+
+private struct IPTVKindBox: Identifiable {
+    let kind: IPTVSource.Kind
+    var id: String { kind.rawValue }
+}
+
+private struct IPTVSourceEditSheet: View {
+    let source: IPTVSource?
+    let kind: IPTVSource.Kind
+    let accentColor: Color
+
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage(SettingsKey.amoled) private var amoled = false
+    @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
+
+    @State private var name: String
+    @State private var url: String
+    @State private var username: String
+    @State private var password: String
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+    @State private var loadProgress: IPTVLoadProgress?
+    @State private var saveTask: Task<Void, Never>?
+
+    init(source: IPTVSource?, kind: IPTVSource.Kind, accentColor: Color) {
+        self.source = source
+        self.kind = kind
+        self.accentColor = accentColor
+        _name = State(initialValue: source?.name ?? "")
+        _url = State(initialValue: source?.url ?? "")
+        _username = State(initialValue: source?.username ?? "")
+        _password = State(initialValue: source?.password ?? "")
+    }
+
+    var body: some View {
+        ZStack {
+            Color.nuvioBackground(amoled: amoled, body: bodyColor).ignoresSafeArea()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    Text(source == nil
+                        ? (kind == .m3u
+                            ? L10n.string("iptv_add_m3u", fallback: "Add M3U Playlist")
+                            : L10n.string("iptv_add_xtream", fallback: "Add Xtream Login"))
+                        : L10n.string("iptv_edit_source", fallback: "Edit IPTV Source"))
+                        .font(.system(size: 36, weight: .bold))
+                        .foregroundColor(.white)
+
+                    SettingsGroup(
+                        title: L10n.string("smb_connection", fallback: "Connection"),
+                        subtitle: kind == .m3u
+                            ? L10n.string("iptv_m3u_connection_subtitle", fallback: "The playlist link your provider gave you")
+                            : L10n.string("iptv_xtream_connection_subtitle", fallback: "The details your provider gave you for Xtream Codes apps")
+                    ) {
+                        SettingsNativeTextFieldRow(
+                            title: L10n.string("smb_display_name", fallback: "Name"),
+                            subtitle: L10n.string("iptv_name_subtitle", fallback: "Shown on Home and in Settings"),
+                            placeholder: "My IPTV",
+                            text: $name
+                        )
+                        SettingsNativeTextFieldRow(
+                            title: kind == .m3u
+                                ? L10n.string("iptv_playlist_url", fallback: "Playlist URL")
+                                : L10n.string("iptv_server", fallback: "Server"),
+                            subtitle: kind == .m3u
+                                ? "e.g. http://provider.example/get.php?…&type=m3u_plus"
+                                : "e.g. http://provider.example:8080",
+                            placeholder: kind == .m3u ? "http://…" : "http://…:8080",
+                            text: $url
+                        )
+                        if kind == .xtream {
+                            SettingsNativeTextFieldRow(
+                                title: L10n.string("smb_username", fallback: "Username"),
+                                subtitle: "",
+                                placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
+                                text: $username
+                            )
+                            SettingsNativeTextFieldRow(
+                                title: L10n.string("smb_password", fallback: "Password"),
+                                subtitle: L10n.string("iptv_password_subtitle", fallback: "Kept on this device; not synced to your account"),
+                                placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
+                                text: $password,
+                                isSecure: true
+                            )
+                        }
+                        if let errorMessage {
+                            Text(errorMessage)
+                                .font(.system(size: 15, weight: .regular))
+                                .foregroundColor(.red.opacity(0.85))
+                        }
+                    }
+
+                    // A provider's full playlist can take minutes: show how far
+                    // it has got and what it is doing, under the fields.
+                    if isSaving, let loadProgress {
+                        VStack(alignment: .leading, spacing: 10) {
+                            if let fraction = loadProgress.fraction {
+                                ProgressView(value: fraction)
+                                    .tint(accentColor)
+                            } else {
+                                ProgressView()
+                                    .progressViewStyle(.linear)
+                                    .tint(accentColor)
+                            }
+                            Text(loadProgress.stage)
+                                .font(.system(size: 17, weight: .medium))
+                                .foregroundColor(.white.opacity(0.7))
+                        }
+                        .padding(.horizontal, 4)
+                        .animation(.easeOut(duration: 0.2), value: loadProgress)
+                    }
+
+                    HStack {
+                        SMBDialogButton(title: L10n.string("action_cancel", fallback: "Cancel"), isPrimary: false) {
+                            saveTask?.cancel()
+                            dismiss()
+                        }
+                        if let source {
+                            SMBDialogButton(title: L10n.string("action_remove", fallback: "Remove"), isPrimary: false) {
+                                IPTVSourceStore.remove(id: source.id)
+                                NuvioSyncManager.current?.noteHomeCatalogSettingsChangedLocally()
+                                dismiss()
+                            }
+                        }
+                        Spacer()
+                        SMBDialogButton(
+                            title: isSaving
+                                ? L10n.string("iptv_loading_channels", fallback: "Loading channels…")
+                                : L10n.string("action_save", fallback: "Save"),
+                            isPrimary: true,
+                            enabled: canSave && !isSaving
+                        ) {
+                            save()
+                        }
+                    }
+                    .focusSection()
+                }
+                .padding(40)
+            }
+        }
+    }
+
+    private var canSave: Bool {
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        return kind == .m3u || (!username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !password.isEmpty)
+    }
+
+    /// Loads the channels before keeping the source, so a wrong link or login
+    /// is reported here rather than as an empty Home.
+    private func save() {
+        var updated = source ?? IPTVSource(name: "", kind: kind, url: "")
+        updated.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.url = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        updated.username = kind == .xtream ? username.trimmingCharacters(in: .whitespacesAndNewlines) : nil
+        updated.password = kind == .xtream ? password : nil
+        isSaving = true
+        errorMessage = nil
+        loadProgress = IPTVLoadProgress(stage: "Connecting to the provider…", fraction: nil)
+        saveTask = Task { @MainActor in
+            do {
+                let playlist = try await IPTVLibrary.shared.playlist(for: updated, force: true) { update in
+                    Task { @MainActor in loadProgress = update }
+                }
+                var all = IPTVSourceStore.sources().filter { $0.id != updated.id }
+                all.append(updated)
+                IPTVSourceStore.save(all)
+                NuvioSyncManager.current?.noteHomeCatalogSettingsChangedLocally()
+                isSaving = false
+                _ = playlist
+                dismiss()
+            } catch {
+                isSaving = false
+                loadProgress = nil
+                guard !Task.isCancelled else { return }
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+}
+
 // MARK: - Jellyfin (self-hosted media servers)
 
 private struct JellyfinSettingsSection: View {
@@ -8717,7 +8965,8 @@ private struct JellyfinSettingsSection: View {
                 title: L10n.string("jellyfin_add_server", fallback: "Add Server"),
                 subtitle: L10n.string("jellyfin_add_server_subtitle", fallback: "Connect a server by URL"),
                 value: "",
-                accentColor: accentColor
+                accentColor: accentColor,
+                macRowID: "jellyfin.addServer"
             ) {
                 isAddingServer = true
             }
@@ -13969,6 +14218,10 @@ private struct SettingsActionRow: View {
     let subtitle: String
     let value: String
     let accentColor: Color
+    /// The Mac keyboard's id for this row; the title when nil. Titles repeat
+    /// across sections (SMB's and Jellyfin's "Add Server"), and two rows with
+    /// one id lit together and trapped the caret on the first.
+    var macRowID: String? = nil
     let action: () -> Void
 
     @FocusState private var isFocused: Bool
@@ -13995,7 +14248,7 @@ private struct SettingsActionRow: View {
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
         .entryLockable()
-        .macSettingsRow(title, action: action)
+        .macSettingsRow(macRowID ?? title, action: action)
     }
 }
 

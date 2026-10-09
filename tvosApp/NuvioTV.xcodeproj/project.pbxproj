@@ -39,6 +39,8 @@
 		A21300000000000000000009 /* NuvioTV/Sources/Core/Jellyfin/JellyfinClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A21200000000000000000009 /* NuvioTV/Sources/Core/Jellyfin/JellyfinClient.swift */; };
 		A2130000000000000000000A /* NuvioTV/Sources/Core/Jellyfin/JellyfinCredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2120000000000000000000A /* NuvioTV/Sources/Core/Jellyfin/JellyfinCredentialStore.swift */; };
 		A2130000000000000000000B /* NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2120000000000000000000B /* NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryIndex.swift */; };
+		IPTV00000000000000000201 /* NuvioTV/Sources/UI/IPTV/IPTVGuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = IPTV00000000000000000002 /* NuvioTV/Sources/UI/IPTV/IPTVGuideView.swift */; };
+		IPTV00000000000000000101 /* NuvioTV/Sources/Core/IPTV/IPTVLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = IPTV00000000000000000001 /* NuvioTV/Sources/Core/IPTV/IPTVLibrary.swift */; };
 		A2130000000000000000000C /* NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2120000000000000000000C /* NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryResolver.swift */; };
 		A2130000000000000000000D /* NuvioTV/Sources/Core/Jellyfin/JellyfinServerConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2120000000000000000000D /* NuvioTV/Sources/Core/Jellyfin/JellyfinServerConfig.swift */; };
 		A2130000000000000000000E /* NuvioTV/Sources/Core/Jellyfin/JellyfinServerStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2120000000000000000000E /* NuvioTV/Sources/Core/Jellyfin/JellyfinServerStore.swift */; };
@@ -166,6 +168,8 @@
 		MACID0000000000000000077 /* NuvioTV/Sources/Core/Jellyfin/JellyfinClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A21200000000000000000009 /* NuvioTV/Sources/Core/Jellyfin/JellyfinClient.swift */; };
 		MACID0000000000000000078 /* NuvioTV/Sources/Core/Jellyfin/JellyfinCredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2120000000000000000000A /* NuvioTV/Sources/Core/Jellyfin/JellyfinCredentialStore.swift */; };
 		MACID0000000000000000079 /* NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2120000000000000000000B /* NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryIndex.swift */; };
+		IPTV00000000000000000202 /* NuvioTV/Sources/UI/IPTV/IPTVGuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = IPTV00000000000000000002 /* NuvioTV/Sources/UI/IPTV/IPTVGuideView.swift */; };
+		IPTV00000000000000000102 /* NuvioTV/Sources/Core/IPTV/IPTVLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = IPTV00000000000000000001 /* NuvioTV/Sources/Core/IPTV/IPTVLibrary.swift */; };
 		MACID000000000000000007A /* NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2120000000000000000000C /* NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryResolver.swift */; };
 		MACID000000000000000007B /* NuvioTV/Sources/Core/Jellyfin/JellyfinServerConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2120000000000000000000D /* NuvioTV/Sources/Core/Jellyfin/JellyfinServerConfig.swift */; };
 		MACID000000000000000007C /* NuvioTV/Sources/Core/Jellyfin/JellyfinServerStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2120000000000000000000E /* NuvioTV/Sources/Core/Jellyfin/JellyfinServerStore.swift */; };
@@ -289,6 +293,8 @@
 		IOSID000000000000000000A /* NuvioTV/Sources/Core/Jellyfin/JellyfinClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A21200000000000000000009 /* NuvioTV/Sources/Core/Jellyfin/JellyfinClient.swift */; };
 		IOSID000000000000000000B /* NuvioTV/Sources/Core/Jellyfin/JellyfinCredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2120000000000000000000A /* NuvioTV/Sources/Core/Jellyfin/JellyfinCredentialStore.swift */; };
 		IOSID000000000000000000C /* NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2120000000000000000000B /* NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryIndex.swift */; };
+		IPTV00000000000000000203 /* NuvioTV/Sources/UI/IPTV/IPTVGuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = IPTV00000000000000000002 /* NuvioTV/Sources/UI/IPTV/IPTVGuideView.swift */; };
+		IPTV00000000000000000103 /* NuvioTV/Sources/Core/IPTV/IPTVLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = IPTV00000000000000000001 /* NuvioTV/Sources/Core/IPTV/IPTVLibrary.swift */; };
 		IOSID000000000000000000D /* NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2120000000000000000000C /* NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryResolver.swift */; };
 		IOSID000000000000000000E /* NuvioTV/Sources/Core/Jellyfin/JellyfinServerConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2120000000000000000000D /* NuvioTV/Sources/Core/Jellyfin/JellyfinServerConfig.swift */; };
 		IOSID000000000000000000F /* NuvioTV/Sources/Core/Jellyfin/JellyfinServerStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2120000000000000000000E /* NuvioTV/Sources/Core/Jellyfin/JellyfinServerStore.swift */; };
@@ -488,6 +494,8 @@
 		A21200000000000000000009 /* NuvioTV/Sources/Core/Jellyfin/JellyfinClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/Jellyfin/JellyfinClient.swift; sourceTree = "<group>"; };
 		A2120000000000000000000A /* NuvioTV/Sources/Core/Jellyfin/JellyfinCredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/Jellyfin/JellyfinCredentialStore.swift; sourceTree = "<group>"; };
 		A2120000000000000000000B /* NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryIndex.swift; sourceTree = "<group>"; };
+		IPTV00000000000000000002 /* NuvioTV/Sources/UI/IPTV/IPTVGuideView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/UI/IPTV/IPTVGuideView.swift; sourceTree = "<group>"; };
+		IPTV00000000000000000001 /* NuvioTV/Sources/Core/IPTV/IPTVLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/IPTV/IPTVLibrary.swift; sourceTree = "<group>"; };
 		A2120000000000000000000C /* NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryResolver.swift; sourceTree = "<group>"; };
 		A2120000000000000000000D /* NuvioTV/Sources/Core/Jellyfin/JellyfinServerConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/Jellyfin/JellyfinServerConfig.swift; sourceTree = "<group>"; };
 		A2120000000000000000000E /* NuvioTV/Sources/Core/Jellyfin/JellyfinServerStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/Jellyfin/JellyfinServerStore.swift; sourceTree = "<group>"; };
@@ -1226,6 +1234,8 @@
 				A21300000000000000000009 /* NuvioTV/Sources/Core/Jellyfin/JellyfinClient.swift in Sources */,
 				A2130000000000000000000A /* NuvioTV/Sources/Core/Jellyfin/JellyfinCredentialStore.swift in Sources */,
 				A2130000000000000000000B /* NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryIndex.swift in Sources */,
+				IPTV00000000000000000201 /* NuvioTV/Sources/UI/IPTV/IPTVGuideView.swift in Sources */,
+				IPTV00000000000000000101 /* NuvioTV/Sources/Core/IPTV/IPTVLibrary.swift in Sources */,
 				A2130000000000000000000C /* NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryResolver.swift in Sources */,
 				A2130000000000000000000D /* NuvioTV/Sources/Core/Jellyfin/JellyfinServerConfig.swift in Sources */,
 				A2130000000000000000000E /* NuvioTV/Sources/Core/Jellyfin/JellyfinServerStore.swift in Sources */,
@@ -1375,6 +1385,8 @@
 				MACID0000000000000000077 /* NuvioTV/Sources/Core/Jellyfin/JellyfinClient.swift in Sources */,
 				MACID0000000000000000078 /* NuvioTV/Sources/Core/Jellyfin/JellyfinCredentialStore.swift in Sources */,
 				MACID0000000000000000079 /* NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryIndex.swift in Sources */,
+				IPTV00000000000000000202 /* NuvioTV/Sources/UI/IPTV/IPTVGuideView.swift in Sources */,
+				IPTV00000000000000000102 /* NuvioTV/Sources/Core/IPTV/IPTVLibrary.swift in Sources */,
 				MACID000000000000000007A /* NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryResolver.swift in Sources */,
 				MACID000000000000000007B /* NuvioTV/Sources/Core/Jellyfin/JellyfinServerConfig.swift in Sources */,
 				MACID000000000000000007C /* NuvioTV/Sources/Core/Jellyfin/JellyfinServerStore.swift in Sources */,
@@ -1499,6 +1511,8 @@
 				IOSID000000000000000000A /* NuvioTV/Sources/Core/Jellyfin/JellyfinClient.swift in Sources */,
 				IOSID000000000000000000B /* NuvioTV/Sources/Core/Jellyfin/JellyfinCredentialStore.swift in Sources */,
 				IOSID000000000000000000C /* NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryIndex.swift in Sources */,
+				IPTV00000000000000000203 /* NuvioTV/Sources/UI/IPTV/IPTVGuideView.swift in Sources */,
+				IPTV00000000000000000103 /* NuvioTV/Sources/Core/IPTV/IPTVLibrary.swift in Sources */,
 				IOSID000000000000000000D /* NuvioTV/Sources/Core/Jellyfin/JellyfinLibraryResolver.swift in Sources */,
 				IOSID000000000000000000E /* NuvioTV/Sources/Core/Jellyfin/JellyfinServerConfig.swift in Sources */,
 				IOSID000000000000000000F /* NuvioTV/Sources/Core/Jellyfin/JellyfinServerStore.swift in Sources */,

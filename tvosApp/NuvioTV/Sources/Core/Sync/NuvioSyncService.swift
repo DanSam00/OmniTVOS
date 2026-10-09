@@ -581,7 +581,7 @@ final class NuvioSyncManager: ObservableObject {
                     // delayed or broken server read returned only the old
                     // default row. The user can still select it immediately;
                     // a later retry will reconcile once Nuvio confirms it.
-                    self.profileSyncError = "Profile saved on this Apple TV, but Nuvio has not confirmed it yet."
+                    self.profileSyncError = "Profile saved on this \(DeviceName.current), but Nuvio has not confirmed it yet."
                     print("Nuvio profile save was not yet confirmed; keeping the local profile list.")
                     return
                 }
@@ -595,7 +595,7 @@ final class NuvioSyncManager: ObservableObject {
                 self.isApplyingRemoteProfiles = false
                 self.isApplyingRemote = false
                 guard applied else {
-                    throw AuthError(message: "The saved profiles could not be applied on this Apple TV.")
+                    throw AuthError(message: "The saved profiles could not be applied on this \(DeviceName.current).")
                 }
                 self.profileSyncError = nil
                 print("Nuvio sync saved and confirmed \(remoteProfiles.count) profile(s).")
@@ -992,7 +992,7 @@ final class NuvioSyncManager: ObservableObject {
             isApplyingRemoteProfiles = false
             isApplyingRemote = false
             guard profilesApplied else {
-                throw AuthError(message: "The downloaded profiles could not be applied on this Apple TV.")
+                throw AuthError(message: "The downloaded profiles could not be applied on this \(DeviceName.current).")
             }
             profileSyncError = nil
             profileListPulledUserId = accountUserId()
@@ -1156,7 +1156,7 @@ final class NuvioSyncManager: ObservableObject {
                     syncStartedAt: progressPullStartedAt
                 )
                 guard progressReconcile.saved else {
-                    throw AuthError(message: "Watch progress could not be saved on this Apple TV.")
+                    throw AuthError(message: "Watch progress could not be saved on this \(DeviceName.current).")
                 }
                 if !progressReconcile.removedKeys.isEmpty,
                    WatchProgressLedger.records().isEmpty {
@@ -2150,7 +2150,7 @@ fileprivate final class NuvioAPIClient {
                 "p_client_name": "Nuvio tvOS",
                 "p_client_version": clientVersion,
                 "p_platform": platform,
-                "p_device_name": deviceName.isEmpty ? "Apple TV" : deviceName
+                "p_device_name": deviceName.isEmpty ? DeviceName.current : deviceName
             ]
         )
     }

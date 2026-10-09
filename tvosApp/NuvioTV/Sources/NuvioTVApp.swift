@@ -151,6 +151,8 @@ enum TVTab: String, CaseIterable, Identifiable {
     case profile = "Profile"
     case home = "Home"
     case search = "Search"
+    /// The IPTV programme guide.
+    case guide = "Live TV"
     case library = "Library"
     case calendar = "Calendar"
     case settings = "Settings"
@@ -166,6 +168,8 @@ enum TVTab: String, CaseIterable, Identifiable {
             return L10n.string("nav_home", fallback: "Home")
         case .search:
             return L10n.string("nav_search", fallback: "Search")
+        case .guide:
+            return L10n.string("nav_live_tv", fallback: "Live TV")
         case .library:
             return L10n.string("nav_library", fallback: "Library")
         case .calendar:
@@ -180,6 +184,7 @@ enum TVTab: String, CaseIterable, Identifiable {
         case .profile: return "person.crop.circle"
         case .home: return "house"
         case .search: return "magnifyingglass"
+        case .guide: return "tv"
         case .library: return "rectangle.stack"
         case .calendar: return "calendar"
         case .settings: return "gearshape"
@@ -470,6 +475,10 @@ struct ContentView: View {
             }
         }
         #endif
+        // The last IPTV source removed takes the Live TV tab with it.
+        .onReceive(IPTVAvailability.shared.$hasSources) { has in
+            if !has, selectedTab == .guide { selectedTab = .home }
+        }
         // Apply selected app language (locale + L10n catalog) and refresh UI on change.
         .appliesAppLocale()
         .onChange(of: profileViewModel.activeProfile?.id) { _, _ in
@@ -3312,6 +3321,11 @@ private struct TVMainTabView: View {
     /// The Calendar tab's content, shared by the tvOS `TabView` and the
     /// macOS stack below.
     @ViewBuilder
+    private var guideTabContent: some View {
+        IPTVGuideView(isActive: selectedTab == .guide, onOpenChannel: onNavigateToDetails)
+            .id(activeProfile?.id ?? "none")
+    }
+
     private var calendarTabContent: some View {
         CalendarView(onContentClick: onNavigateToDetails, isActive: selectedTab == .calendar)
             .id(activeProfile?.id ?? "none")
@@ -3352,6 +3366,7 @@ private struct TVMainTabView: View {
         ZStack {
             macTab(.home) { homeTabContent }
             macTab(.search) { searchTabContent }
+            macTab(.guide) { guideTabContent }
             macTab(.library) { libraryTabContent }
             macTab(.calendar) { calendarTabContent }
             macTab(.settings) { settingsTabContent }
@@ -3386,6 +3401,7 @@ private struct TVMainTabView: View {
         ZStack(alignment: .topLeading) {
             tvTab(.home) { homeTabContent }
             tvTab(.search) { searchTabContent }
+            tvTab(.guide) { guideTabContent }
             tvTab(.library) { libraryTabContent }
             tvTab(.calendar) { calendarTabContent }
             tvTab(.settings) { settingsTabContent }
@@ -3649,7 +3665,13 @@ private struct TVSideMenu: View {
     /// Left does not keep it out of reach.
     @State private var isSummoned = false
 
-    private static let tabs: [TVTab] = [.profile, .home, .search, .library, .calendar, .settings]
+    @ObservedObject private var iptv = IPTVAvailability.shared
+
+    /// Live TV only while the profile has an IPTV source.
+    private var tabs: [TVTab] {
+        let all: [TVTab] = [.profile, .home, .search, .guide, .library, .calendar, .settings]
+        return iptv.hasSources ? all : all.filter { $0 != .guide }
+    }
 
     private var isOpen: Bool { focusedTab != nil }
 
@@ -3704,7 +3726,7 @@ private struct TVSideMenu: View {
     @ViewBuilder
     private var column: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(Self.tabs) { tab in
+            ForEach(tabs) { tab in
                 // Closed, only the current tab's row is drawn, icon alone.
                 // The same row stays when the menu opens, so focus is not
                 // moved off it as the others appear.

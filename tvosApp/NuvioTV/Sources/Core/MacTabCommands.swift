@@ -23,7 +23,12 @@ final class MacTabCommandBus: ObservableObject {
     /// the macOS `TabView` has no page behind it — so choosing it switches
     /// profiles rather than selecting anything; see the request handler in
     /// `ContentView`.
-    static let availableTabs: [TVTab] = [.profile, .home, .search, .library, .calendar, .settings]
+    /// Live TV only while the profile has an IPTV source.
+    @MainActor
+    static var availableTabs: [TVTab] {
+        let all: [TVTab] = [.profile, .home, .search, .guide, .library, .calendar, .settings]
+        return IPTVAvailability.shared.hasSources ? all : all.filter { $0 != .guide }
+    }
 
     private init() {}
 
@@ -101,10 +106,13 @@ struct MacTabCommands: Commands {
     private static let tabs: [(TVTab, KeyEquivalent)] = [
         (.home, "1"),
         (.search, "2"),
-        (.library, "3"),
-        (.calendar, "4"),
-        (.settings, "5"),
+        (.guide, "3"),
+        (.library, "4"),
+        (.calendar, "5"),
+        (.settings, "6"),
     ]
+
+    @ObservedObject private var iptv = IPTVAvailability.shared
 
     var body: some Commands {
         CommandGroup(before: .toolbar) {
@@ -113,6 +121,7 @@ struct MacTabCommands: Commands {
                     MacTabCommandBus.shared.request(tab)
                 }
                 .keyboardShortcut(key, modifiers: .command)
+                .disabled(tab == .guide && !iptv.hasSources)
             }
             Divider()
         }

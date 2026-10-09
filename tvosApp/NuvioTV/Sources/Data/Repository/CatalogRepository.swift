@@ -659,6 +659,7 @@ final class CinemetaCatalogRepository: CatalogRepository {
         if let jellyfinMeta = await JellyfinLibraryIndex.shared.meta(forContentId: id) {
             return jellyfinMeta
         }
+        if let iptvMeta = await Self.iptvMeta(id) { return iptvMeta }
         let cached = cachedMetadata(for: id)
         if let cached, isCachedFullMetadata(id: id) {
             return await TmdbDetailsService.localizedMetadata(for: cached)
@@ -671,12 +672,40 @@ final class CinemetaCatalogRepository: CatalogRepository {
         if let jellyfinMeta = await JellyfinLibraryIndex.shared.meta(forContentId: id) {
             return jellyfinMeta
         }
+        if let iptvMeta = await Self.iptvMeta(id) { return iptvMeta }
         // A catalog can report `type: movie` while its nonempty videos prove
         // that it is a series. Keep that inference while replacing the cache,
         // otherwise refresh falls back to the wrong Cinemeta endpoint.
         let cachedIsSeriesHint = cachedMetadata(for: id)?.isSeries
         removeCachedMetadata(for: id)
         return try await loadMetadata(id: id, type: type, cachedIsSeriesHint: cachedIsSeriesHint)
+    }
+
+    /// An IPTV channel's page comes from its playlists, loading them first
+    /// if the app was opened straight onto it (Continue Watching), with what
+    /// is on now and next from the provider's guide.
+    private static func iptvMeta(_ id: String) async -> NuvioMeta? {
+        guard id.hasPrefix("iptv:") || id.hasPrefix("iptvch:") else { return nil }
+        if IPTVLibrary.shared.meta(forContentID: id) == nil {
+            _ = await IPTVLibrary.shared.allChannels()
+        }
+        guard let group = IPTVLibrary.shared.group(forContentID: id) else {
+            return IPTVLibrary.shared.meta(forContentID: id)
+        }
+        let guide = await IPTVGuide.shared.nowAndNext(for: group)
+        let time = DateFormatter()
+        time.timeStyle = .short
+        time.dateStyle = .none
+        var lines: [String] = []
+        if let now = guide.now {
+            lines.append("Now: \(now.title) (\(time.string(from: now.start))–\(time.string(from: now.end)))")
+        }
+        if let next = guide.next {
+            lines.append("Next: \(next.title) (\(time.string(from: next.start)))")
+        }
+        let sources = group.variants.count == 1 ? "1 source" : "\(group.variants.count) sources"
+        lines.append("Live · \(group.category) · \(sources)")
+        return group.meta(description: lines.joined(separator: "\n"))
     }
 
     private func loadMetadata(id: String, type: String, cachedIsSeriesHint: Bool? = nil) async throws -> NuvioMeta {
@@ -1241,7 +1270,8 @@ final class CinemetaCatalogRepository: CatalogRepository {
                 }
             }
         }
-        guard !catalogs.isEmpty else { return [] }
+        let iptvMatches = await IPTVLibrary.shared.search(needle)
+        guard !catalogs.isEmpty else { return iptvMatches }
 
         let found: [[NuvioMeta]] = await withTaskGroup(of: [NuvioMeta].self) { group in
             // Matched by name here even when the add-on searched: the AU IPTV
@@ -1276,7 +1306,7 @@ final class CinemetaCatalogRepository: CatalogRepository {
             return all
         }
         var seen = Set<String>()
-        return found.flatMap { $0 }.filter { seen.insert($0.id).inserted }.prefix(60).map { $0 }
+        return (iptvMatches + found.flatMap { $0 }).filter { seen.insert($0.id).inserted }.prefix(80).map { $0 }
     }
 
     /// Search's Live TV: the live content types plus Stremio's plain `tv`,

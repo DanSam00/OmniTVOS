@@ -84,6 +84,20 @@ final class StreamsRepository: ObservableObject {
         )
     }
 
+    /// An IPTV channel plays its own streams, one per variant the playlists
+    /// list (HD, 4K, backup…); no add-on is asked.
+    private func iptvStreamGroup(videoId: String) -> AddonStreamGroup? {
+        guard videoId.hasPrefix("iptv:") || videoId.hasPrefix("iptvch:") else { return nil }
+        let streams = IPTVLibrary.shared.streams(forContentID: videoId)
+        guard !streams.isEmpty else { return nil }
+        return AddonStreamGroup(
+            addonId: "omni.iptv",
+            displayName: "IPTV",
+            streams: streams,
+            isLoading: false
+        )
+    }
+
     private func jellyfinStreamGroup(videoId: String) -> AddonStreamGroup? {
         let contentId = Self.baseContentId(from: videoId)
         let episode = Self.seasonEpisode(fromVideoId: videoId)
@@ -200,8 +214,11 @@ final class StreamsRepository: ObservableObject {
     // MARK: - Discovery
 
     private func runDiscovery(requestKey: String, type: String, videoId: String) async {
-        let ownedGroups = [localStreamGroup(videoId: videoId), jellyfinStreamGroup(videoId: videoId)]
-            .compactMap { $0 }
+        let ownedGroups = [
+            localStreamGroup(videoId: videoId),
+            jellyfinStreamGroup(videoId: videoId),
+            iptvStreamGroup(videoId: videoId),
+        ].compactMap { $0 }
         state = StreamsDiscoveryState(
             requestKey: requestKey,
             revision: state.revision &+ 1,

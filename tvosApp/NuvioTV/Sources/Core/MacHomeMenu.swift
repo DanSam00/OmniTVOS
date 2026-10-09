@@ -1,5 +1,6 @@
 #if os(macOS)
 import SwiftUI
+import Combine
 
 /// Shared state for the macOS menu column.
 ///
@@ -22,7 +23,15 @@ final class MacMenuState: ObservableObject {
     /// title — the tvOS tab carries the name too.
     @Published var profileName: String?
 
-    private init() {}
+    private var availabilityWatch: AnyCancellable?
+
+    private init() {
+        // Live TV comes and goes with the profile's IPTV sources.
+        availabilityWatch = IPTVAvailability.shared.$hasSources
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+    }
 
     /// Tabs the macOS build actually has; mirrors the fences in
     /// `TVMainTabView.tabs`.

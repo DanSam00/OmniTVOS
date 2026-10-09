@@ -22,15 +22,29 @@ struct PhoneMainTabView: View {
     let onVerifyProfilePin: (String, String) async -> Bool
 
     @StateObject private var homeLoader = PhoneHomeLoader()
+    @ObservedObject private var iptv = IPTVAvailability.shared
     @State private var selection: TVTab = .home
+    /// Tabs opened so far. A page is built the first time it is chosen and
+    /// then kept, hidden, so it holds its place as the system tabs did.
+    @State private var visited: Set<TVTab> = [.home]
+    @State private var isKeyboardShown = false
+
+    /// The system tab bar holds five tabs on a phone and folds the rest into
+    /// a "More" list, which showed Calendar twice once Live TV arrived; this
+    /// bar holds them all. Live TV only while there is an IPTV source.
+    private var barTabs: [TVTab] {
+        iptv.hasSources
+            ? [.home, .guide, .library, .calendar, .settings]
+            : [.home, .library, .calendar, .settings]
+    }
 
     private var homeKey: String {
         "\(activeProfile?.id ?? "none")|\(homeCatalogRevision)"
     }
 
     var body: some View {
-        TabView(selection: $selection) {
-            Tab(TVTab.home.title, systemImage: TVTab.home.symbol, value: TVTab.home) {
+        ZStack {
+            page(.home) {
                 NavigationStack {
                     PhoneHomeView(
                         loader: homeLoader,
@@ -41,23 +55,29 @@ struct PhoneMainTabView: View {
                     )
                 }
             }
-            Tab(TVTab.search.title, systemImage: TVTab.search.symbol, value: TVTab.search, role: .search) {
+            page(.search) {
                 NavigationStack {
                     PhoneSearchView { onOpenDetails($0.id, $0.type) }
                 }
             }
-            Tab(TVTab.library.title, systemImage: TVTab.library.symbol, value: TVTab.library) {
+            page(.guide) {
+                NavigationStack {
+                    IPTVGuideView(isActive: true) { onOpenDetails($0, $1) }
+                        .id(activeProfile?.id ?? "none")
+                }
+            }
+            page(.library) {
                 NavigationStack {
                     PhoneLibraryView(viewModel: libraryViewModel) { onOpenDetails($0, $1) }
                 }
             }
-            Tab(TVTab.calendar.title, systemImage: TVTab.calendar.symbol, value: TVTab.calendar) {
+            page(.calendar) {
                 NavigationStack {
                     PhoneCalendarView { onOpenDetails($0, $1) }
                         .id(activeProfile?.id ?? "none")
                 }
             }
-            Tab(TVTab.settings.title, systemImage: TVTab.settings.symbol, value: TVTab.settings) {
+            page(.settings) {
                 NavigationStack {
                     // The full settings, shared with tvOS and macOS.
                     SettingsView(
@@ -84,6 +104,21 @@ struct PhoneMainTabView: View {
                 }
             }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if !isKeyboardShown {
+                PhoneTabBar(tabs: barTabs, selection: $selection)
+            }
+        }
+        .onChange(of: selection) { _, tab in visited.insert(tab) }
+        .onReceive(iptv.$hasSources) { has in
+            if !has, selection == .guide { selection = .home }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            isKeyboardShown = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            isKeyboardShown = false
+        }
         .tint(.white)
         .preferredColorScheme(.dark)
         .onAppear { homeLoader.load(key: homeKey) }
@@ -102,6 +137,104 @@ struct PhoneMainTabView: View {
         // Cast devices can take a while to answer; looking from launch means
         // the player's Cast button already lists them.
         .task { PhoneCastController.shared.startDiscovery() }
+    }
+
+    @ViewBuilder
+    private func page<Content: View>(_ tab: TVTab, @ViewBuilder content: () -> Content) -> some View {
+        if visited.contains(tab) || selection == tab {
+            let shown = selection == tab
+            content()
+                .opacity(shown ? 1 : 0)
+                .allowsHitTesting(shown)
+                .accessibilityHidden(!shown)
+        }
+    }
+}
+
+// MARK: - Tab bar
+
+/// A floating bar in the style of the iOS 26 tab bar, with Search apart in
+/// its own circle. Labels go when the tabs would not fit with them.
+struct PhoneTabBar: View {
+    let tabs: [TVTab]
+    @Binding var selection: TVTab
+    @Namespace private var pill
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ViewThatFits(in: .horizontal) {
+                items(labeled: true)
+                items(labeled: false)
+            }
+            .padding(4)
+            .phoneBarBackground(Capsule())
+
+            Button { selection = .search } label: {
+                Image(systemName: TVTab.search.symbol)
+                    .font(.system(size: 20, weight: .semibold))
+                    .frame(width: 56, height: 56)
+                    .foregroundStyle(.white)
+                    .background {
+                        if selection == .search { Circle().fill(Color.white.opacity(0.16)).padding(4) }
+                    }
+            }
+            .buttonStyle(.plain)
+            .phoneBarBackground(Circle())
+            .accessibilityLabel(TVTab.search.title)
+            .accessibilityAddTraits(selection == .search ? .isSelected : [])
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 2)
+        .sensoryFeedback(.selection, trigger: selection)
+    }
+
+    private func items(labeled: Bool) -> some View {
+        HStack(spacing: 0) {
+            ForEach(tabs) { tab in
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { selection = tab }
+                } label: {
+                    VStack(spacing: 2) {
+                        Image(systemName: tab.symbol)
+                            .font(.system(size: labeled ? 18 : 20, weight: .semibold))
+                            .frame(height: 24)
+                        if labeled {
+                            Text(tab.title)
+                                .font(.system(size: 10, weight: .semibold))
+                                .lineLimit(1)
+                                .fixedSize()
+                        }
+                    }
+                    .foregroundStyle(selection == tab ? Color.white : Color.white.opacity(0.75))
+                    .padding(.horizontal, 10)
+                    .frame(height: 48)
+                    .frame(maxWidth: .infinity)
+                    .background {
+                        if selection == tab {
+                            Capsule()
+                                .fill(Color.white.opacity(0.16))
+                                .matchedGeometryEffect(id: "pill", in: pill)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(tab.title)
+                .accessibilityAddTraits(selection == tab ? .isSelected : [])
+            }
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func phoneBarBackground<S: Shape>(_ shape: S) -> some View {
+        if #available(iOS 26.0, *) {
+            glassEffect(.regular, in: shape)
+        } else {
+            background(.ultraThinMaterial, in: shape)
+                .overlay(shape.stroke(Color.white.opacity(0.12), lineWidth: 1))
+        }
     }
 }
 

@@ -186,8 +186,13 @@ final class AuthManager: ObservableObject {
                 return try await service.refresh(refreshToken: session.refreshToken)
             } catch {
                 // Only the server refusing the refresh token is fatal: a TV that
-                // is merely offline must not be told to sign in again.
-                if let authError = error as? AuthError, Self.isCredentialRejection(authError) {
+                // is merely offline must not be told to sign in again. And only
+                // while that session is still the one in use: an old session's
+                // refresh, started at launch, that is refused after the viewer
+                // has already signed in again must not flag the new session.
+                // That raised the QR sign-in again after choosing a profile.
+                if let authError = error as? AuthError, Self.isCredentialRejection(authError),
+                   self?.currentSession?.refreshToken == session.refreshToken {
                     self?.sessionNeedsReauthentication = true
                     print("Nuvio session cannot be renewed (\(authError.message)). Sign in again to resume sync.")
                 }
@@ -208,6 +213,9 @@ final class AuthManager: ObservableObject {
     }
 
     private func apply(session: AuthSession) {
+        // A refresh still running for the session this replaces would hand its
+        // nil to whoever awaits it next; requests made from here use this one.
+        if currentSession?.refreshToken != session.refreshToken { refreshTask = nil }
         currentSession = session
         // A working session, however it was obtained, retires the warning.
         sessionNeedsReauthentication = false
