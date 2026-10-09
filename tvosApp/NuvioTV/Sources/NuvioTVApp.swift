@@ -2675,6 +2675,14 @@ struct CrossfadingBackdrop: View {
     /// Slide between titles (Home). Elsewhere the art only crossfades and
     /// isn't overscanned.
     var parallax = false
+    /// The `gridPosition` row that is a carousel. Moving along it pages the
+    /// art as the iPhone's hero does — each slide's art travels the full
+    /// width while the picture inside moves at half that — instead of the
+    /// short nudge and crossfade the rows get.
+    var pagedRow: CGFloat? = nil
+    /// Slides in that carousel, so stepping from the last to the first
+    /// carries on forward rather than sweeping back.
+    var pageCount = 0
 
     @State private var image: UIImage?
     @State private var loadedURL: String?
@@ -2684,21 +2692,24 @@ struct CrossfadingBackdrop: View {
     @State private var imageShift: CGFloat = 0
     @State private var outgoingShift: CGFloat = 0
     @State private var lastGridPosition: CGPoint?
+    /// The change on screen is a carousel page rather than a nudge.
+    @State private var isPaging = false
     /// How far the art travels, as a fraction of the width.
     private static let slideDistance: CGFloat = 0.04
+    /// How far a paged picture moves inside its travelling window.
+    private static let pageDepth: CGFloat = 0.5
+    private static let pageDuration: Double = 0.55
 
     var body: some View {
         GeometryReader { proxy in
             ZStack {
                 placeholder
                 if let outgoingImage {
-                    backdropImage(outgoingImage, size: proxy.size)
-                        .offset(x: outgoingShift * proxy.size.width)
+                    pane(outgoingImage, shift: outgoingShift, size: proxy.size)
                         .opacity(outgoingOpacity)
                 }
                 if let image {
-                    backdropImage(image, size: proxy.size)
-                        .offset(x: imageShift * proxy.size.width)
+                    pane(image, shift: imageShift, size: proxy.size)
                         .opacity(imageOpacity)
                         .id(loadedURL)
                 }
@@ -2728,16 +2739,43 @@ struct CrossfadingBackdrop: View {
                 outgoingOpacity = 1
             }
             var slideDirection: CGFloat = 0
+            var paging = false
             if let position, let last = lastGridPosition, position.y == last.y, position.x != last.x {
                 slideDirection = position.x > last.x ? 1 : -1
+                if let pagedRow, position.y == pagedRow {
+                    paging = true
+                    let lastIndex = CGFloat(pageCount - 1)
+                    if pageCount > 2, last.x == lastIndex, position.x == 0 { slideDirection = 1 }
+                    if pageCount > 2, last.x == 0, position.x == lastIndex { slideDirection = -1 }
+                }
             }
             lastGridPosition = position
+            if !parallax { slideDirection = 0 }
+            paging = paging && slideDirection != 0 && previousImage != nil
             image = loaded
             loadedURL = url
+            isPaging = paging
+
+            if paging {
+                // Both opaque: the new slide's art pushes the old one off.
+                outgoingOpacity = 1
+                imageOpacity = 1
+                imageShift = slideDirection
+                outgoingShift = 0
+                withAnimation(.easeInOut(duration: Self.pageDuration)) {
+                    imageShift = 0
+                    outgoingShift = -slideDirection
+                }
+                try? await Task.sleep(nanoseconds: UInt64(Self.pageDuration * 1_000_000_000))
+                guard !Task.isCancelled, loadedURL == url else { return }
+                outgoingImage = nil
+                outgoingOpacity = 0
+                return
+            }
+
             imageOpacity = previousImage == nil ? 1 : 0
             // Overscaled slightly in `backdropImage`, so the shifted art
             // never shows its edge.
-            if !parallax { slideDirection = 0 }
             imageShift = previousImage == nil ? 0 : slideDirection * Self.slideDistance
             outgoingShift = 0
 
@@ -2752,6 +2790,23 @@ struct CrossfadingBackdrop: View {
             guard !Task.isCancelled, loadedURL == url else { return }
             outgoingImage = nil
             outgoingOpacity = 0
+        }
+    }
+
+    /// One picture at `shift` widths from its place. Paging moves a window by
+    /// the whole shift and the picture inside it back by half, as the
+    /// iPhone's carousel does; otherwise the picture itself nudges.
+    @ViewBuilder
+    private func pane(_ uiImage: UIImage, shift: CGFloat, size: CGSize) -> some View {
+        if isPaging {
+            backdropImage(uiImage, size: size)
+                .offset(x: -shift * size.width * Self.pageDepth)
+                .frame(width: size.width, height: size.height)
+                .clipped()
+                .offset(x: shift * size.width)
+        } else {
+            backdropImage(uiImage, size: size)
+                .offset(x: shift * size.width)
         }
     }
 
@@ -2776,6 +2831,19 @@ extension CrossfadingBackdrop: Equatable {
             && lhs.alignment == rhs.alignment
             && lhs.gridPosition == rhs.gridPosition
             && lhs.parallax == rhs.parallax
+            && lhs.pagedRow == rhs.pagedRow
+            && lhs.pageCount == rhs.pageCount
+    }
+}
+
+/// Which side a hero carousel's next slide comes in from, as on the iPhone:
+/// forward from the trailing edge, back from the leading, and the step from
+/// the last slide to the first still forward.
+enum HeroPageEdge {
+    static func edge(from old: Int, to new: Int, count: Int) -> Edge {
+        if count > 2, old == count - 1, new == 0 { return .trailing }
+        if count > 2, old == 0, new == count - 1 { return .leading }
+        return new >= old ? .trailing : .leading
     }
 }
 
@@ -4411,7 +4479,9 @@ struct TVHomeView: View {
                         placeholder: backdropColor,
                         alignment: focusedCollectionFolder != nil ? .topTrailing : .center,
                         gridPosition: backdropGridPosition,
-                        parallax: true
+                        parallax: true,
+                        pagedRow: -1,
+                        pageCount: featureItems.count
                     )
                     .equatable()
                     .frame(width: proxy.size.width, height: proxy.size.height)
@@ -4440,7 +4510,9 @@ struct TVHomeView: View {
                             placeholder: backdropColor,
                             alignment: .topTrailing,
                             gridPosition: backdropGridPosition,
-                        parallax: true
+                            parallax: true,
+                            pagedRow: -1,
+                            pageCount: featureItems.count
                         )
                         .equatable()
                         .frame(width: backdropWidth, height: backdropHeight, alignment: .topTrailing)
@@ -9062,6 +9134,9 @@ private struct TVFeatureHeroView: View {
         return min(max(selectedIndex, 0), items.count - 1)
     }
 
+    /// The slide last drawn, so the next one knows which side to push from.
+    @State private var shownIndex = 0
+
     private var activeItem: ContinueWatchingItem? {
         items.indices.contains(index) ? items[index] : nil
     }
@@ -9120,7 +9195,7 @@ private struct TVFeatureHeroView: View {
             } else if let activeItem {
                 content(activeItem)
                     .id(activeItem.meta.id)
-                    .transition(.opacity)
+                    .transition(.push(from: HeroPageEdge.edge(from: shownIndex, to: index, count: items.count)))
             }
 
             if isCarouselMode, items.count > 1 {
@@ -9277,6 +9352,7 @@ private struct TVFeatureHeroView: View {
                 lastInteraction = Date()
             }
         }
+        .onChange(of: index) { _, new in shownIndex = new }
         .onChange(of: items.count) { _, count in
             if count == 0 { selectedIndex = 0 }
             else if selectedIndex >= count { selectedIndex = count - 1 }
@@ -9507,6 +9583,9 @@ private struct TVGridHeroSlideshowView: View {
 
     private var activeItem: NuvioMeta? { items.indices.contains(index) ? items[index] : nil }
 
+    /// The slide last drawn, so the next one knows which side to push from.
+    @State private var shownIndex = 0
+
     /// Backdrop + scrims. Drawn as a `background` so it can be widened past the
     /// hero without changing the hero's own frame — the focus engine routes a
     /// left press off that frame, and a hero reaching x=0 sits under the
@@ -9520,9 +9599,11 @@ private struct TVGridHeroSlideshowView: View {
                 url: item.backgroundUrl ?? item.posterUrl,
                 placeholder: background,
                 alignment: .top,
-                // Slides in from the side being paged to, as Modern's does.
+                // Pages like the iPhone carousel: the new slide pushes in.
                 gridPosition: CGPoint(x: CGFloat(index), y: 0),
-                parallax: true
+                parallax: true,
+                pagedRow: 0,
+                pageCount: items.count
             )
             .equatable()
             .overlay {
@@ -9569,7 +9650,7 @@ private struct TVGridHeroSlideshowView: View {
             if let activeItem {
                 gridHeroContent(activeItem)
                     .id(activeItem.id)
-                    .transition(.opacity)
+                    .transition(.push(from: HeroPageEdge.edge(from: shownIndex, to: index, count: items.count)))
             }
 
             if items.count > 1 {
@@ -9640,6 +9721,7 @@ private struct TVGridHeroSlideshowView: View {
                 if !isFocused, !isTrailerPlaying { setIndex((index + 1) % items.count) }
             }
         }
+        .onChange(of: index) { _, new in shownIndex = new }
         .onChange(of: items.count) { _, count in
             if count == 0 { selectedIndex = 0 }
             else if selectedIndex >= count { selectedIndex = count - 1 }
