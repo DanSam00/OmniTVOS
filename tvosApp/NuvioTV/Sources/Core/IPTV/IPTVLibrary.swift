@@ -239,6 +239,16 @@ final class IPTVLibrary: @unchecked Sendable {
         return channelsByContentID[id]
     }
 
+    /// Whether a URL is one of the loaded playlists' streams, judged by host,
+    /// so the player can explain a provider's refusal in IPTV terms.
+    func ownsStream(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        lock.lock(); defer { lock.unlock() }
+        return playlists.values.contains { playlist in
+            playlist.channels.prefix(20).contains { URL(string: $0.streamURL)?.host?.lowercased() == host }
+        }
+    }
+
     func group(forContentID id: String) -> IPTVChannelGroup? {
         lock.lock(); defer { lock.unlock() }
         return groupsByID[id]

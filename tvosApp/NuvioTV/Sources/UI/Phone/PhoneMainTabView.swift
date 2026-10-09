@@ -288,7 +288,13 @@ struct PhoneSearchView: View {
             .padding(.vertical, 8)
         }
         .navigationTitle(TVTab.search.title)
-        .searchable(text: $viewModel.searchText, prompt: "Movies and shows")
+        // Pinned under the title. Left automatic, iOS 26 puts the field at
+        // the bottom of the screen, where the tab bar covers it.
+        .searchable(
+            text: $viewModel.searchText,
+            placement: .navigationBarDrawer(displayMode: .always),
+            prompt: "Movies and shows"
+        )
         .searchFocused($isSearchFocused)
         .onReceive(NotificationCenter.default.publisher(for: Self.debugFocusNotification)) { _ in
             isSearchFocused = true

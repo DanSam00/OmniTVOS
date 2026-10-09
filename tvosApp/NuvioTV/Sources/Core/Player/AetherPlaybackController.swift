@@ -1666,6 +1666,11 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
     private var externalSubtitleURLsByTrackID: [Int: String] = [:]
     private var currentHTTPHeaders: [String: String] = [:]
     private var didReportTerminalError = false
+    /// The last request, so an IPTV refusal can be retried without the caller.
+    private var lastLoadRequest: PlaybackLoadRequest?
+    /// The IPTV stream already retried once after a 403, so a second refusal
+    /// is reported rather than retried again.
+    private var iptvRetriedURL: URL?
     private var sourceProbe: SourceProbe?
     #if os(iOS) || os(macOS)
     private let engineLogBridgeInstalled: Void = AetherPlaybackController.engineLogBridge
@@ -2299,6 +2304,38 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
             isPlayerEnded = true
             isAtEndOfFile = true
         case .error(let message):
+            // An IPTV provider that allows one stream at a time answers 403
+            // while it still counts the channel just closed. Wait, try once
+            // more, and say what is going on instead of a bare status code.
+            if message.contains("HTTP 403"), let request = lastLoadRequest,
+               IPTVLibrary.shared.ownsStream(request.videoURL) {
+                if iptvRetriedURL != request.videoURL {
+                    iptvRetriedURL = request.videoURL
+                    isPlayerLoading = true
+                    isPlayerPlaying = false
+                    currentErrorMessage = ""
+                    let generation = loadGeneration
+                    #if os(macOS)
+                    MacDiagnostics.log("player.iptv403 retrying once in 6s")
+                    #elseif os(iOS)
+                    PhoneLogFile.log("player.iptv403 retrying once in 6s")
+                    #endif
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(nanoseconds: 6_000_000_000)
+                        guard let self, self.loadGeneration == generation,
+                              self.lastLoadRequest == request else { return }
+                        self.load(request, generation: generation)
+                    }
+                    return
+                }
+                isPlayerLoading = false
+                isPlayerPlaying = false
+                isPlayerEnded = false
+                currentErrorMessage = "The IPTV provider refused this stream (HTTP 403). Most providers allow one stream at a time: stop it on other devices, or wait a minute and try again."
+                // MPV would be refused the same way; leave the message up.
+                didReportTerminalError = true
+                return
+            }
             isPlayerLoading = false
             isPlayerPlaying = false
             isPlayerEnded = false
@@ -2454,6 +2491,8 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
         foregroundReloadTask = nil
         resetAISubtitleStartupHold()
         loadGeneration = generation
+        if request.videoURL != iptvRetriedURL { iptvRetriedURL = nil }
+        lastLoadRequest = request
         subtitleDelaySeconds = request.subtitleDelaySeconds
         didReportTerminalError = false
         isPlayerLoading = true

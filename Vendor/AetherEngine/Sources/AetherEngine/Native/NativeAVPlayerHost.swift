@@ -179,6 +179,11 @@ final class NativeAVPlayerHost {
     /// state (the loopback's live-reload watchdog, VOD). Set per load from `load(readinessDeadline:)`.
     private var readinessDeadlineSeconds: Double?
     private var readinessDeadlineTask: Task<Void, Never>?
+    /// The diagnostic per-key asset loads for the current item, and that item's asset. Both are
+    /// dropped on unload: left running, the loads held the closed stream's asset and kept fetching
+    /// its playlist, and an IPTV provider allowing one connection refused the next channel (403).
+    private var assetDiagnosticsTask: Task<Void, Never>?
+    private weak var diagnosticAsset: AVURLAsset?
 
     /// #35 (Sodalite) cold-DV-master startup-readiness gate. While the engine drives the bounded
     /// retry loop this is true, so a startup failure (`.failed` with any code, including a
@@ -777,8 +782,10 @@ final class NativeAVPlayerHost {
 
         // Explicitly load each key separately: AVPlayerItem(asset:)+KVO was observed stuck in .unknown (build-123), and separate awaits let DrHurt's "1 success, 3 failures" pattern identify which key -1008 hits.
         let urlStr = url.absoluteString
-        Task { @MainActor in
+        diagnosticAsset = asset
+        assetDiagnosticsTask = Task { @MainActor in
             for key in ["isPlayable", "tracks", "duration"] {
+                guard !Task.isCancelled else { return }
                 do {
                     // Use the value returned by the async load instead of re-reading the deprecated
                     // synchronous accessor (asset.isPlayable / .tracks / .duration).
@@ -791,6 +798,7 @@ final class NativeAVPlayerHost {
                     }
                     EngineLog.emit("[NativeAVPlayerHost] #\(sid) asset.load(\(key)) ok url=\(urlStr) \(detail)", category: .engine)
                 } catch {
+                    if Task.isCancelled { return }
                     let nsErr = error as NSError
                     EngineLog.emit("[NativeAVPlayerHost] #\(sid) asset.load(\(key)) failed: \(nsErr.domain)/\(nsErr.code) '\(nsErr.localizedDescription)' url=\(urlStr)", category: .engine)
                     if let underlying = nsErr.userInfo[NSUnderlyingErrorKey] as? NSError {
@@ -1784,6 +1792,11 @@ final class NativeAVPlayerHost {
         carriageProbeTask?.cancel()
         carriageProbeTask = nil
         carriageProbeEvidence = .pending
+        // The outgoing item's diagnostic loads go with it, and so do its open requests.
+        assetDiagnosticsTask?.cancel()
+        assetDiagnosticsTask = nil
+        if !inPlaceSwap { diagnosticAsset?.cancelLoading() }
+        diagnosticAsset = nil
         // #334: the deadline belongs to the outgoing item too.
         readinessDeadlineTask?.cancel()
         readinessDeadlineTask = nil
