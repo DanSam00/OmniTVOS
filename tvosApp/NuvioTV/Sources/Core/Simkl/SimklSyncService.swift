@@ -656,6 +656,7 @@ private struct SimklAuthorizedClient {
     }
 
     func delete(path: String, query: [URLQueryItem] = []) async throws -> Int {
+        SimklSyncLoader.forgetActivities(token: token)
         let result = try await client.delete(
             path: path,
             clientID: clientID,
@@ -680,6 +681,8 @@ private struct SimklAuthorizedClient {
         query: [URLQueryItem] = [],
         body: B
     ) async throws -> (status: Int, data: Data) {
+        // A write moves the account's activity stamps; the next read must see it.
+        SimklSyncLoader.forgetActivities(token: token)
         let result = try await client.post(
             path: path,
             clientID: clientID,
@@ -699,10 +702,35 @@ private struct SimklAuthorizedClient {
 }
 
 private enum SimklSyncLoader {
+    /// How long one `sync/activities` answer serves. Home asked on every
+    /// appearance — some 200 times a day per device — and Omni's Simkl app
+    /// has a per-user daily request limit, which once reached left Continue
+    /// Watching empty everywhere. Writes from this app clear it (see
+    /// `SimklAuthorizedClient`), so its own changes still show at once.
+    private static let activitiesMaxAge: TimeInterval = 180
+    private static let activitiesLock = NSLock()
+    nonisolated(unsafe) private static var cachedActivities: [String: (fetched: Date, value: SimklActivitiesResponse)] = [:]
+
     static func activities(
         using service: SimklAuthorizedClient
     ) async throws -> SimklActivitiesResponse {
-        try await service.get(SimklActivitiesResponse.self, path: "sync/activities")
+        activitiesLock.lock()
+        let cached = cachedActivities[service.token]
+        activitiesLock.unlock()
+        if let cached, Date().timeIntervalSince(cached.fetched) < activitiesMaxAge {
+            return cached.value
+        }
+        let value = try await service.get(SimklActivitiesResponse.self, path: "sync/activities")
+        activitiesLock.lock()
+        cachedActivities[service.token] = (Date(), value)
+        activitiesLock.unlock()
+        return value
+    }
+
+    static func forgetActivities(token: String) {
+        activitiesLock.lock()
+        cachedActivities[token] = nil
+        activitiesLock.unlock()
     }
 
     static func libraryItems(
@@ -1713,17 +1741,27 @@ struct SimklProgressService {
             stage("end", "result=nil why=no-client")
             return nil
         }
-        guard let activities = try? await SimklSyncLoader.activities(using: service) else {
-            stage("end", "result=nil why=activities-failed")
-            return nil
+        // When Simkl will not answer (its daily request limit, or a network
+        // fault) the last paused list it gave still makes the row: an empty
+        // Continue Watching is worse than one a little out of date.
+        let activities: SimklActivitiesResponse?
+        do {
+            activities = try await SimklSyncLoader.activities(using: service)
+            stage("activities")
+        } catch {
+            guard SimklSyncCache.playbacks(in: store) != nil else {
+                stage("end", "result=nil why=activities-failed error=\(error)")
+                return nil
+            }
+            activities = nil
+            stage("activities", "failed, using cached playback error=\(error)")
         }
-        stage("activities")
 
-        let watermark = activities.playbackWatermark
+        let watermark = activities?.playbackWatermark ?? ""
         let playbacks: [SimklPlaybackDTO]
-        if !watermark.isEmpty,
-           SimklSyncCache.playbackWatermark(in: store) == watermark,
-           let cached = SimklSyncCache.playbacks(in: store) {
+        if let cached = SimklSyncCache.playbacks(in: store),
+           activities == nil
+            || (!watermark.isEmpty && SimklSyncCache.playbackWatermark(in: store) == watermark) {
             playbacks = cached
         } else {
             guard let fetched = try? await service.get(
@@ -1742,7 +1780,7 @@ struct SimklProgressService {
         // display-only suggestions Nuvio Sync builds from the provider's
         // watched episode history. Refresh that history before reading the
         // cache so a first Home load is not one refresh behind.
-        if SimklSyncCache.historyWatermark(in: store) != activities.all {
+        if let activities, SimklSyncCache.historyWatermark(in: store) != activities.all {
             _ = await SimklHistoryService.syncWatchedHistory(store: store)
             stage("history", "synced=true")
         } else {
