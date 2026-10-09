@@ -173,6 +173,7 @@ class NetflixSearchViewModel: ObservableObject {
         case .all: results = allResults
         case .movie: results = allResults.filter { $0.type == "movie" }
         case .series: results = allResults.filter { $0.type == "series" }
+        case .live: results = allResults.filter { CinemetaCatalogRepository.isLiveSearchType($0.type) }
         }
     }
 

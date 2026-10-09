@@ -115,7 +115,10 @@ enum SMBLibraryResolver {
 
     private static func bestMatch(for query: QueryKey) async -> NuvioMeta? {
         let repository = CinemetaCatalogRepository()
-        guard let candidates = try? await repository.search(query: query.title), !candidates.isEmpty else {
+        // Files on a share are films and episodes, never channels.
+        guard let candidates = try? await repository.search(query: query.title)
+            .filter({ !CinemetaCatalogRepository.isLiveSearchType($0.type) }),
+              !candidates.isEmpty else {
             return nil
         }
         return candidates

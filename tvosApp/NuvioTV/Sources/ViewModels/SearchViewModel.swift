@@ -3,7 +3,7 @@ import Combine
 
 /// Content-type filter for the search screen.
 enum SearchContentType: String, CaseIterable, Identifiable {
-    case all, movie, series
+    case all, movie, series, live
     var id: String { rawValue }
 
     var title: String {
@@ -14,6 +14,8 @@ enum SearchContentType: String, CaseIterable, Identifiable {
             return L10n.string("type_movies", fallback: L10n.string("type_movie", fallback: "Movies"))
         case .series:
             return L10n.string("type_series_plural", fallback: L10n.string("type_series", fallback: "Series"))
+        case .live:
+            return L10n.string("search_type_live_tv", fallback: "Live TV")
         }
     }
 }
@@ -186,6 +188,7 @@ class SearchViewModel: ObservableObject {
         case .all: results = allResults
         case .movie: results = allResults.filter { $0.type == "movie" }
         case .series: results = allResults.filter { $0.type == "series" }
+        case .live: results = allResults.filter { CinemetaCatalogRepository.isLiveSearchType($0.type) }
         }
     }
 

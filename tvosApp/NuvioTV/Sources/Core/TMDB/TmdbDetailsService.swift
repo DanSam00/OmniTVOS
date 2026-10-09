@@ -778,6 +778,93 @@ enum TmdbDetailsService {
             }
     }
 
+    /// Search by person, for profiles with TMDB connected: the films and shows
+    /// of the people whose name matches `query` (cast, and directing, writing,
+    /// producing or creating), most popular first. Cinemeta's own search only
+    /// half-matches people. Appearances as themselves and talk, news and
+    /// reality shows are left out; they swamped an actor's real work.
+    static func searchPeopleTitles(query: String, limit: Int = 40) async -> [NuvioMeta] {
+        guard isEnabled, let apiKey else { return [] }
+        let wanted = SearchRanking.normalized(query)
+        let words = wanted.split(separator: " ").map(String.init)
+        guard words.count >= 2 || wanted.count >= 4 else { return [] }
+
+        var components = URLComponents(url: apiBase.appendingPathComponent("search/person"), resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "api_key", value: apiKey),
+            URLQueryItem(name: "query", value: query),
+            URLQueryItem(name: "include_adult", value: "false"),
+            URLQueryItem(name: "language", value: preferredLanguage),
+        ]
+        guard let url = components.url,
+              let (data, response) = try? await data(for: url),
+              (response as? HTTPURLResponse).map({ (200...299).contains($0.statusCode) }) == true,
+              let found = try? JSONDecoder().decode(TmdbPersonSearchResponse.self, from: data) else { return [] }
+        // Only people whose name holds every word typed: "house of the
+        // dragon" must not pull in someone called Dragon.
+        let people = found.results
+            .filter { person in
+                let name = Set(SearchRanking.normalized(person.name ?? "").split(separator: " ").map(String.init))
+                return Set(words).isSubset(of: name)
+            }
+            .sorted { ($0.popularity ?? 0) > ($1.popularity ?? 0) }
+        // The name typed exactly: that person alone. Otherwise the two most
+        // popular partial matches.
+        let chosen = people.first.map { SearchRanking.normalized($0.name ?? "") == wanted } == true
+            ? Array(people.prefix(1))
+            : Array(people.prefix(2))
+        guard !chosen.isEmpty else { return [] }
+
+        let crewJobs: Set<String> = ["director", "writer", "screenplay", "producer", "executive producer", "creator", "novel"]
+        let skippedGenres: Set<Int> = [10763, 10764, 10767]   // news, reality, talk
+        var credits: [TmdbListItem] = []
+        for person in chosen {
+            var personURL = URLComponents(
+                url: apiBase.appendingPathComponent("person/\(person.id)/combined_credits"),
+                resolvingAgainstBaseURL: false
+            )!
+            personURL.queryItems = [
+                URLQueryItem(name: "api_key", value: apiKey),
+                URLQueryItem(name: "language", value: preferredLanguage),
+            ]
+            guard let creditsURL = personURL.url,
+                  let (creditsData, creditsResponse) = try? await Self.data(for: creditsURL),
+                  (creditsResponse as? HTTPURLResponse).map({ (200...299).contains($0.statusCode) }) == true,
+                  let decoded = try? JSONDecoder().decode(TmdbPersonCreditsResponse.self, from: creditsData) else { continue }
+            // A guest spot in a popular show outranked the actor's own work,
+            // so TV acting counts from three episodes.
+            let acted = decoded.cast.filter { item in
+                let role = (item.character ?? "").lowercased()
+                guard !role.contains("self"), !role.contains("narrator"), !role.isEmpty else { return false }
+                return item.mediaType?.lowercased() != "tv" || (item.episodeCount ?? 0) >= 3
+            }
+            let made = decoded.crew.filter { crewJobs.contains(($0.job ?? "").lowercased()) }
+            credits += (acted + made).filter { item in
+                let type = item.mediaType?.lowercased()
+                return (type == "movie" || type == "tv")
+                    && Set(item.genreIds ?? []).isDisjoint(with: skippedGenres)
+            }
+        }
+
+        var seen = Set<String>()
+        return credits
+            .sorted { ($0.popularity ?? 0) > ($1.popularity ?? 0) }
+            .compactMap { item -> NuvioMeta? in
+                guard seen.insert("\(item.mediaType ?? ""):\(item.id)").inserted,
+                      let title = mapDiscoverItemFast(item, defaultType: "movie") else { return nil }
+                return NuvioMeta(
+                    id: title.id, name: title.name, description: title.overview,
+                    posterUrl: title.posterURL, backgroundUrl: title.backdropURL, logoUrl: nil,
+                    imdbId: nil, tmdbId: item.id, type: title.type,
+                    year: title.year.flatMap { Int($0) }, genres: nil, rating: title.rating,
+                    releaseInfo: title.year, runtime: nil, cast: nil, director: nil, writer: nil,
+                    certification: nil, country: nil, released: nil
+                )
+            }
+            .prefix(limit)
+            .map { $0 }
+    }
+
     // MARK: - Private
 
     private static func isSeries(_ type: String) -> Bool {
@@ -1398,16 +1485,34 @@ private struct TmdbListItem: Decodable {
     let firstAirDate: String?
     let voteAverage: Double?
     let mediaType: String?
+    /// Person credits only: how popular the title is, the crew job, the role
+    /// played, and genre ids (to leave out talk, news and reality shows).
+    var popularity: Double? = nil
+    var job: String? = nil
+    var character: String? = nil
+    var genreIds: [Int]? = nil
+    var episodeCount: Int? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, title, name, overview
+        case id, title, name, overview, popularity, job, character
+        case episodeCount = "episode_count"
         case posterPath = "poster_path"
         case backdropPath = "backdrop_path"
         case releaseDate = "release_date"
         case firstAirDate = "first_air_date"
         case voteAverage = "vote_average"
         case mediaType = "media_type"
+        case genreIds = "genre_ids"
     }
+}
+
+private struct TmdbPersonSearchResponse: Decodable {
+    struct Person: Decodable {
+        let id: Int
+        let name: String?
+        let popularity: Double?
+    }
+    let results: [Person]
 }
 
 private extension Array {

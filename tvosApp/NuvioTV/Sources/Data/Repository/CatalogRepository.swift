@@ -1193,10 +1193,96 @@ final class CinemetaCatalogRepository: CatalogRepository {
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
         async let movies = fetchCatalog(type: "movie", catalogId: "top", skip: nil, search: query, genre: nil)
         async let series = fetchCatalog(type: "series", catalogId: "top", skip: nil, search: query, genre: nil)
+        async let live = searchLiveChannels(query: query)
+        // Profiles with TMDB connected also search people; without it this
+        // returns nothing and Search stays Cinemeta's.
+        async let people = TmdbDetailsService.searchPeopleTitles(query: query)
         let results = try await movies + series
         let localized = await TmdbDetailsService.localizedMetadata(for: results)
+        let channels = await live
+        // A person's title Cinemeta already found stays as Cinemeta's entry.
+        let known = Set(localized.map { "\(SearchRanking.normalized($0.name))|\($0.year ?? 0)" })
+        let byPeople = await people.filter {
+            !known.contains("\(SearchRanking.normalized($0.name))|\($0.year ?? 0)")
+        }
         cacheMetadata(localized)
-        return localized
+        cacheMetadata(channels)
+        return SearchRanking.rank(
+            localized + channels + byPeople,
+            query: query,
+            peopleTitleIDs: Set(byPeople.map(\.id))
+        )
+    }
+
+    /// Live TV for Search: Cinemeta only knows films and series, so channels
+    /// come from the installed add-ons' live catalogs. A catalog that declares
+    /// a `search` extra is asked directly; one that does not (the AU IPTV
+    /// add-on's, for one) is a channel list short enough to fetch whole, once
+    /// per ten minutes, and match by name here.
+    private func searchLiveChannels(query: String) async -> [NuvioMeta] {
+        let needle = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return [] }
+
+        struct LiveCatalog { let base: URL; let type: String; let id: String; let searchable: Bool }
+        var catalogs: [LiveCatalog] = []
+        var seenAddonIds = Set<String>()
+        for manifestURL in Self.configuredStreamAddonManifestURLs {
+            guard !Task.isCancelled else { return [] }
+            guard let manifest = await manifest(for: manifestURL),
+                  manifest.id != Self.cinemetaAddonId,
+                  seenAddonIds.insert(manifest.id).inserted else { continue }
+            let base = manifestURL.deletingLastPathComponent()
+            for catalog in manifest.catalogs ?? [] where Self.isLiveSearchType(catalog.type) {
+                if catalog.declaresSearch {
+                    catalogs.append(LiveCatalog(base: base, type: catalog.type, id: catalog.id, searchable: true))
+                } else if catalog.eligibleForHome, !catalog.requiresGenre {
+                    catalogs.append(LiveCatalog(base: base, type: catalog.type, id: catalog.id, searchable: false))
+                }
+            }
+        }
+        guard !catalogs.isEmpty else { return [] }
+
+        let found: [[NuvioMeta]] = await withTaskGroup(of: [NuvioMeta].self) { group in
+            // Matched by name here even when the add-on searched: the AU IPTV
+            // add-on declares `search` but answers with its whole list.
+            let matches: @Sendable ([NuvioMeta]) -> [NuvioMeta] = { metas in
+                metas.filter {
+                    $0.name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                        .contains(needle)
+                }
+            }
+            for catalog in catalogs {
+                group.addTask {
+                    if catalog.searchable {
+                        return matches((try? await self.fetchCatalog(
+                            sourceBaseURL: catalog.base, type: catalog.type, catalogId: catalog.id,
+                            skip: nil, search: query, genre: nil
+                        )) ?? [])
+                    }
+                    let all = await LiveChannelListCache.shared.channels(
+                        key: "\(catalog.base.absoluteString)|\(catalog.type)|\(catalog.id)"
+                    ) {
+                        (try? await self.fetchCatalog(
+                            sourceBaseURL: catalog.base, type: catalog.type, catalogId: catalog.id,
+                            skip: nil, search: nil, genre: nil
+                        )) ?? []
+                    }
+                    return matches(all)
+                }
+            }
+            var all: [[NuvioMeta]] = []
+            for await batch in group { all.append(batch) }
+            return all
+        }
+        var seen = Set<String>()
+        return found.flatMap { $0 }.filter { seen.insert($0.id).inserted }.prefix(60).map { $0 }
+    }
+
+    /// Search's Live TV: the live content types plus Stremio's plain `tv`,
+    /// which IPTV add-ons use for channels.
+    static func isLiveSearchType(_ type: String) -> Bool {
+        isLiveContentType(type) || type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "tv"
     }
 
     func browseCatalog(
@@ -1521,6 +1607,23 @@ final class CinemetaCatalogRepository: CatalogRepository {
     }
 }
 
+/// Live channel lists fetched whole for Search, kept ten minutes so each
+/// keystroke's search does not refetch them.
+actor LiveChannelListCache {
+    static let shared = LiveChannelListCache()
+    private var entries: [String: (fetched: Date, channels: [NuvioMeta])] = [:]
+    private static let lifetime: TimeInterval = 600
+
+    func channels(key: String, load: @Sendable () async -> [NuvioMeta]) async -> [NuvioMeta] {
+        if let entry = entries[key], Date().timeIntervalSince(entry.fetched) < Self.lifetime {
+            return entry.channels
+        }
+        let channels = await load()
+        if !channels.isEmpty { entries[key] = (Date(), channels) }
+        return channels
+    }
+}
+
 /// Not `private`: the test target reaches the Stremio catalog/metas decoder
 /// through `@testable import` to verify field mapping (e.g. `logo` → logoUrl).
 struct CinemetaCatalogResponse: Decodable {
@@ -1622,6 +1725,12 @@ private struct AddonManifestCatalog: Decodable {
     }
 
     var requiresGenre: Bool { requiredExtraNames.contains("genre") }
+
+    /// The catalog takes a `search` extra, required or not.
+    var declaresSearch: Bool {
+        (extra ?? []).contains { $0.name.lowercased() == "search" }
+            || (extraRequired ?? []).contains { $0.lowercased() == "search" }
+    }
 
     /// First declared genre option, used to satisfy a required-genre catalog.
     var firstGenreOption: String? {
