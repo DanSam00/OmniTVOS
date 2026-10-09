@@ -6,6 +6,11 @@ enum SimklConfig {
     static let developerSettingsURL = "https://simkl.com/settings/developer/"
     static let pinVerificationURL = "https://simkl.com/pin"
     static let redirectURI = "urn:ietf:wg:oauth:2.0:oob"
+    /// Omni's own Simkl API app (simkl.com/settings/developer, "Omni", #8266526).
+    /// Built in so people sign in with just the PIN, without registering an app
+    /// of their own. It identifies the app, not the person, and the PIN flow
+    /// needs no secret, so it is safe to ship.
+    static let builtInClientID = "ebf41598317e4b5003ba658abd0ba7fa03cb28745a25af2c87787943884745e8"
 
     static var clientID: String {
         clientID(in: ProfileSettings.current)
@@ -15,9 +20,13 @@ enum SimklConfig {
         isConfigured(in: ProfileSettings.current)
     }
 
+    /// A Client ID entered on this device wins, so a connection made under it
+    /// keeps working (Simkl tokens belong to the app that issued them);
+    /// otherwise Omni's own.
     static func clientID(in store: UserDefaults) -> String {
-        store.string(forKey: SettingsKey.simklClientID)?
+        let stored = store.string(forKey: SettingsKey.simklClientID)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return stored.isEmpty ? builtInClientID : stored
     }
 
     static func isConfigured(in store: UserDefaults) -> Bool {

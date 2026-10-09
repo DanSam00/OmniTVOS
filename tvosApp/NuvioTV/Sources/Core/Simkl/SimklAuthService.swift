@@ -560,7 +560,7 @@ final class SimklAuthService {
             return pin
         case 403, 412:
             throw SimklServiceError.message(
-                response.errorMessage ?? "Simkl rejected the Client ID. Check the value and try again."
+                response.errorMessage ?? "Simkl turned down the sign-in request. Try again in a moment."
             )
         case 429:
             throw SimklServiceError.message(
@@ -646,7 +646,7 @@ final class SimklAuthService {
                 return .revoked
             case 403, 412:
                 return .failed(
-                    response.errorMessage ?? "Simkl rejected the Client ID. Check the value and try again."
+                    response.errorMessage ?? "Simkl turned down the sign-in request. Try again in a moment."
                 )
             case 429:
                 let next = min((state.pollInterval ?? 5) + 5, 60)

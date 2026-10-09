@@ -3794,10 +3794,8 @@ private struct IntegrationSettingsView: View {
     @StateObject private var simklViewModel: SimklSettingsViewModel
     @AppStorage private var traktClientID: String
     @AppStorage private var traktClientSecret: String
-    @AppStorage private var simklClientID: String
     @State private var traktClientIDDraft: String
     @State private var traktClientSecretDraft: String
-    @State private var simklClientIDDraft: String
     @AppStorage(SettingsKey.tmdbEnabled) private var tmdbEnabled = false
     @AppStorage(SettingsKey.tmdbApiKey) private var tmdbApiKey = ""
     @AppStorage(SettingsKey.mdbListEnabled) private var mdbListEnabled = false
@@ -3923,7 +3921,6 @@ private struct IntegrationSettingsView: View {
         let profileScope = trimmedProfileID.isEmpty ? "default" : trimmedProfileID
         let storedTraktClientID = profileStore.string(forKey: SettingsKey.traktClientID) ?? ""
         let storedTraktClientSecret = profileStore.string(forKey: SettingsKey.traktClientSecret) ?? ""
-        let storedSimklClientID = profileStore.string(forKey: SettingsKey.simklClientID) ?? ""
         _traktViewModel = StateObject(
             wrappedValue: TraktSettingsViewModel(store: profileStore)
         )
@@ -3940,14 +3937,8 @@ private struct IntegrationSettingsView: View {
             SettingsKey.traktClientSecret,
             store: profileStore
         )
-        _simklClientID = AppStorage(
-            wrappedValue: "",
-            SettingsKey.simklClientID,
-            store: profileStore
-        )
         _traktClientIDDraft = State(initialValue: storedTraktClientID)
         _traktClientSecretDraft = State(initialValue: storedTraktClientSecret)
-        _simklClientIDDraft = State(initialValue: storedSimklClientID)
     }
 
     var body: some View {
@@ -4051,17 +4042,10 @@ private struct IntegrationSettingsView: View {
 
             SettingsGroup(
                 title: L10n.string("settings_simkl_title", fallback: "Simkl"),
-                subtitle: L10n.string("tvos_settings_simkl_integration_subtitle", fallback: "Connect a Simkl account with a Client ID and PIN login")
+                subtitle: L10n.string("settings_simkl_integration_subtitle_builtin", fallback: "Sign in with a PIN at simkl.com/pin to track your library, progress and history")
             ) {
-                SettingsTextFieldRow(
-                    title: L10n.string("tvos_settings_simkl_client_id_title", fallback: "Simkl Client ID"),
-                    subtitle: L10n.string("tvos_settings_simkl_client_id_subtitle", fallback: "Create an API app at simkl.com/settings/developer — stored only on this Apple TV"),
-                    placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
-                    text: $simklClientIDDraft
-                )
-
-                SettingsInfoRow(title: L10n.string("tvos_settings_simkl_redirect_uri", fallback: "Simkl Redirect URI"), value: SimklConfig.redirectURI)
-
+                // Omni carries its own Simkl Client ID, so there is no app to
+                // register and nothing to enter: Connect shows the PIN.
                 SimklConnectionSettingsCard(
                     viewModel: simklViewModel,
                     accentColor: accentColor,
@@ -4295,9 +4279,7 @@ private struct IntegrationSettingsView: View {
             && !traktClientSecretDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var simklCredentialsReady: Bool {
-        !simklClientIDDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
+    private var simklCredentialsReady: Bool { SimklConfig.isConfigured(in: ProfileSettings.current) }
 
     private func connectTrakt() {
         traktClientID = traktClientIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4308,7 +4290,6 @@ private struct IntegrationSettingsView: View {
     }
 
     private func connectSimkl() {
-        simklClientID = simklClientIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         simklViewModel.credentialsDidChange()
         guard simklViewModel.credentialsConfigured else { return }
         showingSimklLogin = true
