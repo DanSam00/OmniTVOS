@@ -141,9 +141,18 @@ enum SimklDetailsService {
         queryItems: [URLQueryItem] = []
     ) async -> T? {
         do {
+            // Omni's V2 app takes no request without a user token: send the
+            // profile's own when it is connected, else use the V1 app for these
+            // public lookups (see `SimklConfig.publicLookupClientID`).
+            let state = SimklAuthStore.state(
+                in: ProfileSettings.current,
+                profileScope: ProfileSettings.activeProfileScope
+            )
+            let token = state.isAuthenticated(in: ProfileSettings.current) ? state.accessToken : nil
             let result: SimklHTTPResult<T> = try await client.get(
                 path: path,
-                clientID: SimklConfig.clientID,
+                clientID: token == nil ? SimklConfig.publicLookupClientID : SimklConfig.clientID,
+                accessToken: token,
                 queryItems: queryItems
             )
             guard (200...299).contains(result.statusCode) else { return nil }

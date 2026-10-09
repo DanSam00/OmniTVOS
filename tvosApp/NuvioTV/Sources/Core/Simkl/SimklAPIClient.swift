@@ -6,11 +6,20 @@ enum SimklConfig {
     static let developerSettingsURL = "https://simkl.com/settings/developer/"
     static let pinVerificationURL = "https://simkl.com/pin"
     static let redirectURI = "urn:ietf:wg:oauth:2.0:oob"
-    /// Omni's own Simkl API app (simkl.com/settings/developer, "Omni", #8266526).
-    /// Built in so people sign in with just the PIN, without registering an app
-    /// of their own. It identifies the app, not the person, and the PIN flow
-    /// needs no secret, so it is safe to ship.
-    static let builtInClientID = "ebf41598317e4b5003ba658abd0ba7fa03cb28745a25af2c87787943884745e8"
+    /// Omni's own Simkl API app (simkl.com/settings/developer, "Omni V2", AUTH V2).
+    /// Built in so people sign in with just a code, without registering an app
+    /// of their own. It identifies the app, not the person, and the device
+    /// flow needs no secret, so it is safe to ship.
+    static let builtInClientID = "c7f058a90a448709164d898ea3aa990fe08d5fec483183cccd82a1ebdc33beeb"
+    /// Omni's original AUTH V1 app, kept only for public lookups made without
+    /// a user (Simkl ratings on a show page, IMDb id resolution) for profiles
+    /// not connected to Simkl. A V2 client id answers those 401
+    /// `user_token_required`. Simkl retires V1 apps around April 2027; these
+    /// lookups then need a connected profile.
+    static let publicLookupClientID = "ebf41598317e4b5003ba658abd0ba7fa03cb28745a25af2c87787943884745e8"
+    /// What Omni asks for: reading the library and history, and writing
+    /// scrobbles and progress. Without `media:write` nothing could be saved.
+    static let scope = "media:read media:write"
 
     static var clientID: String {
         clientID(in: ProfileSettings.current)
@@ -20,13 +29,11 @@ enum SimklConfig {
         isConfigured(in: ProfileSettings.current)
     }
 
-    /// A Client ID entered on this device wins, so a connection made under it
-    /// keeps working (Simkl tokens belong to the app that issued them);
-    /// otherwise Omni's own.
+    /// Always Omni's own V2 app. A Client ID saved by an older build is a V1
+    /// app, which AUTH V2 rejects (`invalid_client`); a connection made under
+    /// it is cleared by the Client ID check, and the user signs in again once.
     static func clientID(in store: UserDefaults) -> String {
-        let stored = store.string(forKey: SettingsKey.simklClientID)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return stored.isEmpty ? builtInClientID : stored
+        builtInClientID
     }
 
     static func isConfigured(in store: UserDefaults) -> Bool {
@@ -154,6 +161,33 @@ final class SimklAPIClient {
         return try await performRaw(request)
     }
 
+    /// A form-encoded `POST` without the API's usual query parameters or a
+    /// user token: AUTH V2's `/oauth2/device` and `/oauth2/token`.
+    func postForm<T: Decodable>(
+        path: String,
+        fields: [String: String]
+    ) async throws -> SimklHTTPResult<T> {
+        let normalizedBase = SimklConfig.apiBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let normalizedPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: "\(normalizedBase)/\(normalizedPath)") else {
+            throw SimklServiceError.message("Invalid Simkl URL.")
+        }
+        var form = URLComponents()
+        form.queryItems = fields.map { URLQueryItem(name: $0.key, value: $0.value) }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue(SimklConfig.userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        // `+` must not survive into the body: a form decoder reads it as a space.
+        request.httpBody = form.percentEncodedQuery?
+            .replacingOccurrences(of: "+", with: "%2B")
+            .data(using: .utf8)
+        return try await perform(request)
+    }
+
     func getRaw(
         path: String,
         clientID: String,
@@ -178,9 +212,6 @@ final class SimklAPIClient {
         queryItems: [URLQueryItem],
         body: Data?
     ) throws -> URLRequest {
-        guard !clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw SimklServiceError.message("Enter your Simkl Client ID first.")
-        }
 
         let normalizedBase = SimklConfig.apiBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let normalizedPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -246,10 +277,27 @@ final class SimklAPIClient {
         )
     }
 
-    private func performRaw(_ request: URLRequest) async throws -> SimklHTTPResult<Data> {
+    private func performRaw(_ request: URLRequest, allowsRefresh: Bool = true) async throws -> SimklHTTPResult<Data> {
+        var request = request
+        let bearerPrefix = "Bearer "
+        // AUTH V2 tokens last seven days: swap in a refreshed one before it
+        // runs out, and once more if Simkl turns this one down.
+        if allowsRefresh,
+           let header = request.value(forHTTPHeaderField: "Authorization"), header.hasPrefix(bearerPrefix) {
+            let token = String(header.dropFirst(bearerPrefix.count))
+            let usable = await SimklTokenRefresher.usableToken(for: token)
+            if usable != token { request.setValue(bearerPrefix + usable, forHTTPHeaderField: "Authorization") }
+        }
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw SimklServiceError.message("Invalid Simkl response.")
+        }
+        if allowsRefresh, http.statusCode == 401,
+           let header = request.value(forHTTPHeaderField: "Authorization"), header.hasPrefix(bearerPrefix),
+           let fresh = await SimklTokenRefresher.tokenAfterRejection(of: String(header.dropFirst(bearerPrefix.count))) {
+            var retry = request
+            retry.setValue(bearerPrefix + fresh, forHTTPHeaderField: "Authorization")
+            return try await performRaw(retry, allowsRefresh: false)
         }
         return SimklHTTPResult(
             statusCode: http.statusCode,

@@ -58,6 +58,8 @@ struct SimklCachedStats: Codable, Equatable {
 protocol SimklTokenStorage: AnyObject {
     func accessToken(for profileScope: String) -> String?
     func setAccessToken(_ token: String?, for profileScope: String)
+    func refreshToken(for profileScope: String) -> String?
+    func setRefreshToken(_ token: String?, for profileScope: String)
 }
 
 /// Long-lived Simkl access tokens live in the Keychain, namespaced by profile,
@@ -103,11 +105,46 @@ final class SimklKeychainTokenStorage: SimklTokenStorage {
         }
     }
 
-    private func keychainQuery(for profileScope: String) -> [String: Any] {
+    /// The refresh token, kept and mirrored exactly like the access token.
+    func refreshToken(for profileScope: String) -> String? {
+        var query = keychainQuery(for: profileScope, kind: "refreshToken")
+        query[kSecReturnData as String] = kCFBooleanTrue
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+           let data = item as? Data,
+           let token = String(data: data, encoding: .utf8), !token.isEmpty {
+            return token
+        }
+        let store = ProfileSettings.store(for: profileScope)
+        if let mirrored = store.string(forKey: SettingsKey.simklRefreshToken), !mirrored.isEmpty {
+            setRefreshToken(mirrored, for: profileScope)
+            return mirrored
+        }
+        return nil
+    }
+
+    func setRefreshToken(_ token: String?, for profileScope: String) {
+        SecItemDelete(keychainQuery(for: profileScope, kind: "refreshToken") as CFDictionary)
+        let store = ProfileSettings.store(for: profileScope)
+        if let token, !token.isEmpty {
+            store.set(token, forKey: SettingsKey.simklRefreshToken)
+            if let data = token.data(using: .utf8) {
+                var addQuery = keychainQuery(for: profileScope, kind: "refreshToken")
+                addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+                addQuery[kSecValueData as String] = data
+                SecItemAdd(addQuery as CFDictionary, nil)
+            }
+        } else {
+            store.removeObject(forKey: SettingsKey.simklRefreshToken)
+        }
+    }
+
+    private func keychainQuery(for profileScope: String, kind: String = "accessToken") -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: "accessToken.\(profileScope)"
+            kSecAttrAccount as String: "\(kind).\(profileScope)"
         ]
     }
 }
@@ -115,6 +152,15 @@ final class SimklKeychainTokenStorage: SimklTokenStorage {
 /// In-memory token storage for unit tests.
 final class SimklMemoryTokenStorage: SimklTokenStorage {
     private var tokens: [String: String] = [:]
+    private var refreshTokens: [String: String] = [:]
+
+    func refreshToken(for profileScope: String) -> String? {
+        refreshTokens[profileScope]
+    }
+
+    func setRefreshToken(_ token: String?, for profileScope: String) {
+        refreshTokens[profileScope] = token?.isEmpty == false ? token : nil
+    }
 
     func accessToken(for profileScope: String) -> String? {
         tokens[profileScope]
@@ -125,6 +171,113 @@ final class SimklMemoryTokenStorage: SimklTokenStorage {
             tokens[profileScope] = token
         } else {
             tokens.removeValue(forKey: profileScope)
+        }
+    }
+}
+
+// MARK: - Token refresh (AUTH V2)
+
+/// AUTH V2 access tokens last seven days; the refresh token 180, sliding
+/// forward each time it is used and not rotated. Every Simkl request passes
+/// its token through here (see `SimklAPIClient.performRaw`): a token close to
+/// running out is refreshed first, and a request Simkl answers 401 is retried
+/// once with a refreshed one. Callers keep handing in the token they read, so
+/// none of them had to change.
+enum SimklTokenRefresher {
+    private static let lock = NSLock()
+    /// Access token → the profile it belongs to, learnt as tokens are read
+    /// or saved.
+    private static var scopes: [String: String] = [:]
+    /// Refresh this long before the token runs out.
+    private static let leeway: TimeInterval = 24 * 3600
+
+    static func register(_ token: String, profileScope: String) {
+        lock.lock(); defer { lock.unlock() }
+        scopes[token] = profileScope
+    }
+
+    private static func scope(of token: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return scopes[token]
+    }
+
+    /// The token to send instead of `token`: the profile's current one if it
+    /// was refreshed meanwhile, or a fresh one if it is about to run out.
+    static func usableToken(for token: String) async -> String {
+        guard let scope = scope(of: token) else { return token }
+        let storage = SimklKeychainTokenStorage()
+        if let current = storage.accessToken(for: scope), !current.isEmpty, current != token {
+            register(current, profileScope: scope)
+            return current
+        }
+        let defaults = ProfileSettings.store(for: scope)
+        guard let expiresAt = SimklAuthStore.accessTokenExpiresAt(in: defaults),
+              expiresAt - Date().timeIntervalSince1970 < leeway else { return token }
+        return await Coordinator.shared.refresh(scope: scope) ?? token
+    }
+
+    /// After a 401: a refreshed token to retry with, or nil when there is none.
+    static func tokenAfterRejection(of token: String) async -> String? {
+        guard let scope = scope(of: token) else { return nil }
+        let storage = SimklKeychainTokenStorage()
+        if let current = storage.accessToken(for: scope), !current.isEmpty, current != token {
+            register(current, profileScope: scope)
+            return current
+        }
+        return await Coordinator.shared.refresh(scope: scope)
+    }
+
+    /// One refresh per profile at a time: a sync fires several requests at
+    /// once, and each would otherwise refresh, superseding the others.
+    private actor Coordinator {
+        static let shared = Coordinator()
+        private var inFlight: [String: Task<String?, Never>] = [:]
+
+        func refresh(scope: String) async -> String? {
+            if let task = inFlight[scope] { return await task.value }
+            let task = Task { await SimklTokenRefresher.performRefresh(scope: scope) }
+            inFlight[scope] = task
+            let result = await task.value
+            inFlight[scope] = nil
+            return result
+        }
+    }
+
+    private static func performRefresh(scope: String) async -> String? {
+        let storage = SimklKeychainTokenStorage()
+        let defaults = ProfileSettings.store(for: scope)
+        guard let refreshToken = storage.refreshToken(for: scope), !refreshToken.isEmpty else { return nil }
+        do {
+            let response: SimklHTTPResult<SimklTokenResponse> = try await SimklAPIClient().postForm(
+                path: "oauth2/token",
+                fields: [
+                    "grant_type": "refresh_token",
+                    "client_id": SimklConfig.builtInClientID,
+                    "refresh_token": refreshToken,
+                ]
+            )
+            if (200..<300).contains(response.statusCode),
+               let body = response.value, let token = body.accessToken, !token.isEmpty {
+                SimklAuthStore.saveToken(
+                    token,
+                    refreshToken: body.refreshToken,
+                    expiresIn: body.expiresIn,
+                    clientID: SimklConfig.builtInClientID,
+                    profileScope: scope,
+                    store: defaults,
+                    tokenStorage: storage
+                )
+                return token
+            }
+            // The grant is gone (revoked on simkl.com, or past 180 days):
+            // the profile has to connect again.
+            if response.statusCode == 400 || response.statusCode == 401 {
+                SimklAuthStore.clearAuth(profileScope: scope, store: defaults, tokenStorage: storage)
+            }
+            return nil
+        } catch {
+            // Offline: keep the token and try again on the next request.
+            return nil
         }
     }
 }
@@ -144,6 +297,10 @@ enum SimklAuthStore {
         static let expiresAt = "nuvio.tv.simkl.auth.expiresAt"
         static let pollInterval = "nuvio.tv.simkl.auth.pollInterval"
         static let credentialClientID = "nuvio.tv.simkl.auth.credentialClientID"
+        /// AUTH V2: the device code a sign-in is polled with (15 minutes).
+        static let deviceCode = "nuvio.tv.simkl.auth.deviceCode"
+        /// AUTH V2: when the access token runs out, seconds since 1970.
+        static let accessTokenExpiresAt = "nuvio.tv.simkl.auth.accessTokenExpiresAt"
         /// Non-secret marker that a Keychain token exists for this profile.
         static let hasAccessToken = "nuvio.tv.simkl.auth.hasAccessToken"
         static let cachedStats = "nuvio.tv.simkl.auth.cachedStats"
@@ -159,6 +316,7 @@ enum SimklAuthStore {
     ) -> SimklAuthState {
         let hasMarker = defaults.bool(forKey: Key.hasAccessToken)
         let token = hasMarker ? tokenStorage.accessToken(for: profileScope) : nil
+        if let token { SimklTokenRefresher.register(token, profileScope: profileScope) }
         return SimklAuthState(
             accessToken: token,
             username: defaults.string(forKey: Key.username),
@@ -186,6 +344,7 @@ enum SimklAuthStore {
         }
         defaults.set(response.userCode, forKey: Key.userCode)
         defaults.set(response.verificationURI, forKey: Key.verificationURI)
+        setOptional(response.deviceCode, forKey: Key.deviceCode, defaults: defaults)
         defaults.set(
             Date().timeIntervalSince1970 * 1000.0 + Double(response.expiresIn * 1000),
             forKey: Key.expiresAt
@@ -196,12 +355,25 @@ enum SimklAuthStore {
 
     static func saveToken(
         _ accessToken: String,
+        refreshToken: String? = nil,
+        expiresIn: Int? = nil,
         clientID: String,
         profileScope: String,
         store defaults: UserDefaults,
         tokenStorage: SimklTokenStorage
     ) {
         tokenStorage.setAccessToken(accessToken, for: profileScope)
+        // A refresh returns the same, non-rotating refresh token, or none:
+        // keep the one held unless a new one came.
+        if let refreshToken, !refreshToken.isEmpty {
+            tokenStorage.setRefreshToken(refreshToken, for: profileScope)
+        }
+        if let expiresIn, expiresIn > 0 {
+            defaults.set(Date().timeIntervalSince1970 + Double(expiresIn), forKey: Key.accessTokenExpiresAt)
+        } else {
+            defaults.removeObject(forKey: Key.accessTokenExpiresAt)
+        }
+        SimklTokenRefresher.register(accessToken, profileScope: profileScope)
         defaults.set(true, forKey: Key.hasAccessToken)
         defaults.set(clientID, forKey: Key.credentialClientID)
         NotificationCenter.default.post(name: changedNotification, object: nil)
@@ -242,8 +414,16 @@ enum SimklAuthStore {
         defaults.set(max(seconds, 5), forKey: Key.pollInterval)
     }
 
+    static func deviceCode(in defaults: UserDefaults) -> String? {
+        defaults.string(forKey: Key.deviceCode)
+    }
+
+    static func accessTokenExpiresAt(in defaults: UserDefaults) -> Double? {
+        doubleIfPresent(Key.accessTokenExpiresAt, defaults: defaults)
+    }
+
     static func clearPINFlow(store defaults: UserDefaults) {
-        [Key.userCode, Key.verificationURI, Key.expiresAt, Key.pollInterval].forEach {
+        [Key.userCode, Key.verificationURI, Key.expiresAt, Key.pollInterval, Key.deviceCode].forEach {
             defaults.removeObject(forKey: $0)
         }
     }
@@ -254,11 +434,12 @@ enum SimklAuthStore {
         tokenStorage: SimklTokenStorage
     ) {
         tokenStorage.setAccessToken(nil, for: profileScope)
+        tokenStorage.setRefreshToken(nil, for: profileScope)
         [
             Key.username, Key.accountID, Key.accountPlan, Key.avatarURL,
             Key.userCode, Key.verificationURI, Key.expiresAt, Key.pollInterval,
             Key.credentialClientID, Key.hasAccessToken, Key.cachedStats,
-            Key.settingsWatermark
+            Key.settingsWatermark, Key.deviceCode, Key.accessTokenExpiresAt
         ].forEach { defaults.removeObject(forKey: $0) }
         NotificationCenter.default.post(name: changedNotification, object: nil)
     }
@@ -473,6 +654,28 @@ private struct SimklUserStatsResponse: Decodable {
     }
 }
 
+/// AUTH V2's token response, from the device grant and from a refresh alike.
+struct SimklTokenResponse: Decodable {
+    let accessToken: String?
+    let refreshToken: String?
+    let expiresIn: Int?
+    let scope: String?
+
+    enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case refreshToken = "refresh_token"
+        case expiresIn = "expires_in"
+        case scope
+    }
+}
+
+/// The `error` code of an OAuth error body (`authorization_pending`, ...).
+/// AUTH V2 sends those as HTTP 400/401 with JSON, so the body is read
+/// whatever the status.
+func simklOAuthErrorCode(_ data: Data) -> String? {
+    (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
+}
+
 enum SimklPollResult {
     case pending
     case approved(String?)
@@ -531,6 +734,7 @@ final class SimklAuthService {
 
         let state = currentState()
         if state.hasActivePINFlow(in: store),
+           SimklAuthStore.deviceCode(in: store) != nil,
            let userCode = state.userCode,
            let expiresAt = state.expiresAt {
             return SimklPINCodeResponse(
@@ -541,16 +745,18 @@ final class SimklAuthService {
             )
         }
 
-        let response: SimklHTTPResult<SimklPINCodeResponse> = try await client.get(
-            path: "oauth/pin",
-            clientID: clientID
+        // AUTH V2 device flow: a code for the user to approve at simkl.com/pin,
+        // and a device code to poll the token endpoint with.
+        let response: SimklHTTPResult<SimklPINCodeResponse> = try await client.postForm(
+            path: "oauth2/device",
+            fields: ["client_id": clientID, "scope": SimklConfig.scope]
         )
 
         switch response.statusCode {
         case 200..<300:
             let pin = try response.valueOrThrow()
-            guard !pin.userCode.isEmpty else {
-                throw SimklServiceError.message("Simkl did not return a PIN code.")
+            guard !pin.userCode.isEmpty, !(pin.deviceCode ?? "").isEmpty else {
+                throw SimklServiceError.message("Simkl did not return a sign-in code.")
             }
             // Starting a PIN under a different Client ID must not keep the old token.
             if state.credentialClientID != nil && state.credentialClientID != clientID {
@@ -558,7 +764,11 @@ final class SimklAuthService {
             }
             SimklAuthStore.savePINFlow(pin, clientID: clientID, store: store)
             return pin
-        case 403, 412:
+        case 401:
+            throw SimklServiceError.message(
+                "Simkl does not recognise Omni's sign-in app (invalid_client). Update Omni and try again."
+            )
+        case 400, 403, 412:
             throw SimklServiceError.message(
                 response.errorMessage ?? "Simkl turned down the sign-in request. Try again in a moment."
             )
@@ -596,65 +806,74 @@ final class SimklAuthService {
             return .expired
         }
 
+        guard let deviceCode = SimklAuthStore.deviceCode(in: store), !deviceCode.isEmpty else {
+            // A code started by an older build (V1 PIN) cannot be polled on V2.
+            SimklAuthStore.clearPINFlow(store: store)
+            return .expired
+        }
+
         do {
-            // Poll with user_code — device_code is only a placeholder on Simkl.
-            let encoded = userCode.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? userCode
-            let response: SimklHTTPResult<SimklPINPollResponse> = try await client.get(
-                path: "oauth/pin/\(encoded)",
-                clientID: clientID
+            let response: SimklHTTPResult<SimklTokenResponse> = try await client.postForm(
+                path: "oauth2/token",
+                fields: [
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                    "client_id": clientID,
+                    "device_code": deviceCode,
+                ]
             )
 
             switch response.statusCode {
             case 200..<300:
-                guard let body = response.value else {
-                    return .failed("Simkl returned an empty poll response.")
+                guard let body = response.value, let token = body.accessToken, !token.isEmpty else {
+                    return .failed("Simkl returned an empty sign-in response.")
                 }
-                if body.isOriginalCodeGone {
-                    SimklAuthStore.clearPINFlow(store: store)
-                    return .originalCodeGone
-                }
-                if let token = body.accessToken, !token.isEmpty, body.result?.uppercased() == "OK" {
-                    SimklAuthStore.saveToken(
-                        token,
-                        clientID: clientID,
-                        profileScope: profileScope,
-                        store: store,
-                        tokenStorage: tokenStorage
-                    )
-                    guard currentState().accessToken == token else {
-                        return .failed("Unable to securely save the Simkl login. Try connecting again.")
-                    }
-                    SimklAuthStore.clearPINFlow(store: store)
-                    // Connecting Simkl is the user asking for their playback to
-                    // land in Simkl, and every write is gated on this setting.
-                    // Without it, Settings reads "Connected" while nothing is
-                    // ever scrobbled.
-                    TraktSettingsStore.selectWatchProgressSourceOnConnect(.simkl, in: store)
-                    let username = await fetchUserSettings()
-                    return .approved(username)
-                }
-                if body.result?.uppercased() == "KO" {
-                    return .pending
-                }
-                return .pending
-            case 401:
-                SimklAuthStore.clearAuth(
+                SimklAuthStore.saveToken(
+                    token,
+                    refreshToken: body.refreshToken,
+                    expiresIn: body.expiresIn,
+                    clientID: clientID,
                     profileScope: profileScope,
                     store: store,
                     tokenStorage: tokenStorage
                 )
-                return .revoked
-            case 403, 412:
-                return .failed(
-                    response.errorMessage ?? "Simkl turned down the sign-in request. Try again in a moment."
-                )
+                guard currentState().accessToken == token else {
+                    return .failed("Unable to securely save the Simkl login. Try connecting again.")
+                }
+                SimklAuthStore.clearPINFlow(store: store)
+                // Connecting Simkl is the user asking for their playback to
+                // land in Simkl, and every write is gated on this setting.
+                // Without it, Settings reads "Connected" while nothing is
+                // ever scrobbled.
+                TraktSettingsStore.selectWatchProgressSourceOnConnect(.simkl, in: store)
+                let username = await fetchUserSettings()
+                return .approved(username)
+            case 400:
+                switch simklOAuthErrorCode(response.rawData) {
+                case "authorization_pending":
+                    return .pending
+                case "slow_down":
+                    let next = min((state.pollInterval ?? 5) + 5, 60)
+                    SimklAuthStore.updatePollInterval(next, store: store)
+                    return .rateLimited(next)
+                case "expired_token":
+                    SimklAuthStore.clearPINFlow(store: store)
+                    return .expired
+                case "access_denied":
+                    SimklAuthStore.clearPINFlow(store: store)
+                    return .failed("The sign-in was declined on Simkl.")
+                default:
+                    return .failed(response.errorMessage ?? "Simkl sign-in failed. Try connecting again.")
+                }
+            case 401:
+                SimklAuthStore.clearPINFlow(store: store)
+                return .failed("Simkl does not recognise Omni's sign-in app (invalid_client). Update Omni and try again.")
             case 429:
                 let next = min((state.pollInterval ?? 5) + 5, 60)
                 SimklAuthStore.updatePollInterval(next, store: store)
                 return .rateLimited(next)
             default:
                 return .failed(
-                    response.errorMessage ?? "Simkl PIN polling failed (\(response.statusCode))."
+                    response.errorMessage ?? "Simkl sign-in polling failed (\(response.statusCode))."
                 )
             }
         } catch {
@@ -919,7 +1138,7 @@ final class SimklSettingsViewModel: ObservableObject {
         isLoading = true
         statusMessage = nil
         errorMessage = nil
-        beginLoadingTimeout(stage: "requesting PIN from Simkl (GET /oauth/pin)")
+        beginLoadingTimeout(stage: "requesting a sign-in code from Simkl (POST /oauth2/device)")
         connectionTask?.cancel()
         connectionTask = Task { [weak self] in
             guard let self else { return }

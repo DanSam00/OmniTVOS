@@ -160,7 +160,7 @@ enum SettingsKey {
     /// API keys and service tokens, left out when a new profile opts out of
     /// copying them.
     static let credentials = [
-        traktClientID, traktClientSecret, simklClientID, simklAccessToken,
+        traktClientID, traktClientSecret, simklClientID, simklAccessToken, simklRefreshToken,
         tmdbApiKey, mdbListApiKey, debridApiKey,
         torboxAccessToken, premiumizeAccessToken, realDebridAccessToken,
         aiSubtitlesGeminiAPIKey,
@@ -364,6 +364,9 @@ enum SettingsKey {
     static let iCloudSyncEnabled = "nuvio.tv.settings.advanced.iCloudSyncEnabled"
     static let iCloudLastSyncDate = "nuvio.tv.settings.advanced.iCloudLastSyncDate"
     static let simklAccessToken = "nuvio.tv.settings.integrations.simklAccessToken"
+    /// AUTH V2's refresh token: access tokens last seven days, this one 180,
+    /// sliding forward on each use. Mirrored like the access token.
+    static let simklRefreshToken = "nuvio.tv.settings.integrations.simklRefreshToken"
 
     /// API app credentials must remain on the Apple TV and never enter the
     /// account settings payload.
@@ -391,7 +394,7 @@ enum SettingsKey {
         traktContinueWatchingDaysCap, traktShowMetaComments,
         traktWatchProgressSource, watchProgressSourceChosenByUser,
         traktLibrarySourceMode, traktMoreLikeThisSource,
-        simklClientID, simklAccessToken,
+        simklClientID, simklAccessToken, simklRefreshToken,
         tmdbEnabled, tmdbApiKey, tmdbLanguage,
         tmdbUseTrailers, tmdbUseArtwork, tmdbUseBasicInfo, tmdbUseDetails, tmdbUseCredits,
         tmdbUseProductions, tmdbUseNetworks, tmdbUseEpisodes, tmdbUseSeasonPosters,
@@ -2035,6 +2038,7 @@ private struct AccountSettingsView: View {
         .onAppear { refreshEditableName() }
         .onChange(of: activeProfile) { _, _ in refreshEditableName() }
         .sheet(isPresented: $showingAvatarPicker) {
+            Group {
             if let profile = activeProfile {
                 #if os(iOS)
                 PhoneAvatarPickerSheet(
@@ -2073,6 +2077,8 @@ private struct AccountSettingsView: View {
                 }
                 #endif
             }
+            }
+            .modifier(MacSheetCloseButton())
         }
     }
 
@@ -4192,6 +4198,7 @@ private struct IntegrationSettingsView: View {
             }
         }
         .sheet(item: $debridAccountToConnect) { provider in
+            Group {
             if provider == .premiumize && !PremiumizeOAuthConfiguration.isDeviceOAuthConfigured {
                 PremiumizeApiKeySheet(
                     isConnected: isConnected(.premiumize),
@@ -4204,6 +4211,8 @@ private struct IntegrationSettingsView: View {
                     viewModel: debridConnection
                 )
             }
+            }
+            .modifier(MacSheetCloseButton())
         }
         .sheet(isPresented: $showingTraktLogin, onDismiss: {
             if traktViewModel.mode == .connected {
@@ -6275,6 +6284,14 @@ private struct SimklPINLoginSheet: View {
     let accentColor: Color
     @Environment(\.dismiss) private var dismiss
 
+    /// AUTH V2 accepts the code in the link, so scanning fills it in.
+    private var qrURL: String {
+        guard let code = viewModel.deviceUserCode, !code.isEmpty,
+              var components = URLComponents(string: verificationURI) else { return verificationURI }
+        components.queryItems = (components.queryItems ?? []) + [URLQueryItem(name: "user_code", value: code)]
+        return components.string ?? verificationURI
+    }
+
     private var verificationURI: String {
         let value = viewModel.verificationURI?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -6316,13 +6333,13 @@ private struct SimklPINLoginSheet: View {
                     dismiss()
                 }
             } else if let code = viewModel.deviceUserCode, !code.isEmpty {
-                Text("Scan the QR on your phone, then enter the PIN shown below.")
+                Text("Scan the QR on your phone and approve, or open the address below and enter the code.")
                     .font(.system(size: 23, weight: .medium))
                     .foregroundColor(.white.opacity(0.68))
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
 
-                if let image = QRCode.image(from: verificationURI, scale: 10) {
+                if let image = QRCode.image(from: qrURL, scale: 10) {
                     Image(uiImage: image)
                         .interpolation(.none)
                         .resizable()
@@ -11929,6 +11946,7 @@ private struct CollectionEditorSheet: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear(perform: loadExisting)
         .sheet(item: $sourcePicker) { picker in
+            Group {
             switch picker {
             case .catalogs(let index):
                 CollectionCatalogPickerSheet(
@@ -11945,6 +11963,8 @@ private struct CollectionEditorSheet: View {
                     appendSource(payload, at: index)
                 }
             }
+            }
+            .modifier(MacSheetCloseButton())
         }
     }
 
@@ -14336,6 +14356,41 @@ private extension View {
 
 /// Makes a sheet's system plate transparent so liquid-glass content can frost
 /// over the presenter (Settings). No-op on older OS versions.
+/// A close button in a Settings sheet's top-right corner, on the Mac only.
+///
+/// The Apple TV leaves a sheet with Menu and the iPhone with a swipe; a Mac
+/// sheet has neither, and several (Simkl's account page, which opens itself
+/// after signing in) had no button of their own, so there was no way out with
+/// the mouse. Esc closes it too.
+private struct MacSheetCloseButton: ViewModifier {
+    #if os(macOS)
+    @Environment(\.dismiss) private var dismiss
+    #endif
+
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        content.overlay(alignment: .topTrailing) {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(width: 52, height: 52)
+                    .background(Circle().fill(Color.white.opacity(0.14)))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.cancelAction)
+            .help("Close")
+            .padding(24)
+        }
+        #else
+        content
+        #endif
+    }
+}
+
 private struct ClearPresentationBackgroundIfAvailable: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -14345,6 +14400,8 @@ private struct ClearPresentationBackgroundIfAvailable: ViewModifier {
         } else {
             content
         }
+        #elseif os(macOS)
+        content.modifier(MacSheetCloseButton())
         #else
         content
         #endif
