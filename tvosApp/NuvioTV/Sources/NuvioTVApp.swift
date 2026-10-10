@@ -2698,7 +2698,7 @@ struct CrossfadingBackdrop: View {
     private static let slideDistance: CGFloat = 0.04
     /// How far a paged picture moves inside its travelling window.
     private static let pageDepth: CGFloat = 0.5
-    private static let pageDuration: Double = 0.55
+    private static var pageDuration: Double { HeroPageEdge.duration }
 
     var body: some View {
         GeometryReader { proxy in
@@ -2762,7 +2762,7 @@ struct CrossfadingBackdrop: View {
                 imageOpacity = 1
                 imageShift = slideDirection
                 outgoingShift = 0
-                withAnimation(.easeInOut(duration: Self.pageDuration)) {
+                withAnimation(HeroPageEdge.animation) {
                     imageShift = 0
                     outgoingShift = -slideDirection
                 }
@@ -2840,10 +2840,82 @@ extension CrossfadingBackdrop: Equatable {
 /// forward from the trailing edge, back from the leading, and the step from
 /// the last slide to the first still forward.
 enum HeroPageEdge {
+    /// One clock for a page: the text's push and the art's slide both run on
+    /// it, so they arrive together as the iPhone's swipe moves both at once.
+    static let duration: Double = 0.45
+    static var animation: Animation { .easeInOut(duration: duration) }
+
+    /// Loads the art of the slides beside `index`, so paging to one starts its
+    /// slide at once instead of after a download.
+    static func prefetch(_ urls: [String?], around index: Int) {
+        guard urls.count > 1 else { return }
+        let neighbours = [index + 1, index - 1].map { ($0 + urls.count) % urls.count }
+        for i in Set(neighbours) {
+            guard let raw = urls[i], let url = URL(string: raw) else { continue }
+            Task.detached(priority: .utility) { _ = await BackdropImageCache.shared.image(for: url) }
+        }
+    }
+
     static func edge(from old: Int, to new: Int, count: Int) -> Edge {
         if count > 2, old == count - 1, new == 0 { return .trailing }
         if count > 2, old == 0, new == count - 1 { return .leading }
         return new >= old ? .trailing : .leading
+    }
+}
+
+/// A hero carousel's text, paged like the iPhone's: the next slide comes in
+/// from one side as the current one leaves by the other, on the art's clock.
+///
+/// Driven by hand rather than by a transition. A transition is fixed when
+/// its view is drawn, so a slide shown after paging right still left to the
+/// left when the next press went back.
+struct HeroPager<Content: View>: View {
+    let index: Int
+    let count: Int
+    var alignment: Alignment = .bottomLeading
+    @ViewBuilder let content: (Int) -> Content
+
+    /// Slides on screen, back to front: the leaving one, then the current.
+    @State private var order: [Int] = []
+    /// Each slide's offset, in widths.
+    @State private var shifts: [Int: CGFloat] = [:]
+    @State private var width: CGFloat = 0
+
+    var body: some View {
+        ZStack(alignment: alignment) {
+            ForEach(order.isEmpty ? [index] : order, id: \.self) { slide in
+                content(slide)
+                    .offset(x: (shifts[slide] ?? 0) * width)
+            }
+        }
+        // The hero's whole width, so a slide travels fully off and on screen
+        // rather than by the width of its text.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+        .onAppear { if order.isEmpty { order = [index] } }
+        .onChange(of: index) { old, new in
+            guard old != new else { return }
+            let direction: CGFloat = HeroPageEdge.edge(from: old, to: new, count: count) == .trailing ? 1 : -1
+            var placing = Transaction()
+            placing.disablesAnimations = true
+            withTransaction(placing) {
+                order = [old, new]
+                shifts = [old: 0, new: direction]
+            }
+            DispatchQueue.main.async {
+                withAnimation(HeroPageEdge.animation) {
+                    shifts[new] = 0
+                    shifts[old] = -direction
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + HeroPageEdge.duration) {
+                    guard order.last == new else { return }
+                    withTransaction(placing) {
+                        order = [new]
+                        shifts = [new: 0]
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -3008,7 +3080,14 @@ private struct HomeHeroTrailer: View {
 actor BackdropImageCache {
     static let shared = BackdropImageCache()
 
-    private let cache = NSCache<NSString, UIImage>()
+    /// NSCache is thread-safe, which lets a view read it while it is built.
+    nonisolated(unsafe) private let cache = NSCache<NSString, UIImage>()
+
+    /// The image if it is already decoded, without waiting. A hero slide made
+    /// for paging reads this so its logo slides in with it, not after.
+    nonisolated func cachedImage(for url: URL) -> UIImage? {
+        cache.object(forKey: url.absoluteString as NSString)
+    }
 
     init() {
         // Backdrops are shown at screen size. Retaining a bounded decoded-byte
@@ -4484,6 +4563,11 @@ struct TVHomeView: View {
                         pageCount: featureItems.count
                     )
                     .equatable()
+                    // The slides either side, so paging starts its slide at once.
+                    .task(id: featureIndex) {
+                        HeroPageEdge.prefetch(featureItems.map { preferredBackdropURL(for: $0.meta) }, around: featureIndex)
+                        HeroPageEdge.prefetch(featureItems.map(\.meta.logoUrl), around: featureIndex)
+                    }
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .overlay {
                         // Grid View's backdrop is empty, but the focused title
@@ -4515,6 +4599,11 @@ struct TVHomeView: View {
                             pageCount: featureItems.count
                         )
                         .equatable()
+                        // The slides either side, so paging starts its slide at once.
+                        .task(id: featureIndex) {
+                            HeroPageEdge.prefetch(featureItems.map { preferredBackdropURL(for: $0.meta) }, around: featureIndex)
+                            HeroPageEdge.prefetch(featureItems.map(\.meta.logoUrl), around: featureIndex)
+                        }
                         .frame(width: backdropWidth, height: backdropHeight, alignment: .topTrailing)
                         .modifier(TVHomeParallaxScroll(parallax: homeParallax))
                         // Inside the masks, so the trailer dissolves into the
@@ -7112,9 +7201,9 @@ struct TVHomeView: View {
         let count = gridHeroItems.count
         let slide = min(max(gridHeroIndex, 0), max(count - 1, 0))
         if direction == .right, slide < count - 1 {
-            withAnimation(.easeInOut(duration: 0.35)) { gridHeroIndex = slide + 1 }
+            withAnimation(HeroPageEdge.animation) { gridHeroIndex = slide + 1 }
         } else if direction == .left, slide > 0 {
-            withAnimation(.easeInOut(duration: 0.35)) { gridHeroIndex = slide - 1 }
+            withAnimation(HeroPageEdge.animation) { gridHeroIndex = slide - 1 }
         } else if direction == .left {
             MacMenuState.shared.open()
         }
@@ -7129,7 +7218,7 @@ struct TVHomeView: View {
         guard count > 1 else { return }
         let next = min(max(index + delta, 0), count - 1)
         guard next != index else { return }
-        withAnimation(.easeInOut(duration: 0.35)) { index = next }
+        withAnimation(HeroPageEdge.animation) { index = next }
     }
 
     private func macPageFeature(_ direction: MoveCommandDirection) {
@@ -7141,9 +7230,9 @@ struct TVHomeView: View {
             return
         }
         if direction == .right {
-            withAnimation(.easeInOut(duration: 0.35)) { featureIndex = (slide + 1) % count }
+            withAnimation(HeroPageEdge.animation) { featureIndex = (slide + 1) % count }
         } else if slide > 0 {
-            withAnimation(.easeInOut(duration: 0.35)) { featureIndex = slide - 1 }
+            withAnimation(HeroPageEdge.animation) { featureIndex = slide - 1 }
         } else {
             MacMenuState.shared.open()
         }
@@ -9134,9 +9223,6 @@ private struct TVFeatureHeroView: View {
         return min(max(selectedIndex, 0), items.count - 1)
     }
 
-    /// The slide last drawn, so the next one knows which side to push from.
-    @State private var shownIndex = 0
-
     private var activeItem: ContinueWatchingItem? {
         items.indices.contains(index) ? items[index] : nil
     }
@@ -9192,10 +9278,12 @@ private struct TVFeatureHeroView: View {
                 overrideContent(overrideMeta)
                     .id(overrideMeta.id)
                     .transition(.opacity)
-            } else if let activeItem {
-                content(activeItem)
-                    .id(activeItem.meta.id)
-                    .transition(.push(from: HeroPageEdge.edge(from: shownIndex, to: index, count: items.count)))
+            } else if activeItem != nil {
+                HeroPager(index: index, count: items.count) { slide in
+                    if items.indices.contains(slide) {
+                        content(items[slide])
+                    }
+                }
             }
 
             if isCarouselMode, items.count > 1 {
@@ -9352,7 +9440,6 @@ private struct TVFeatureHeroView: View {
                 lastInteraction = Date()
             }
         }
-        .onChange(of: index) { _, new in shownIndex = new }
         .onChange(of: items.count) { _, count in
             if count == 0 { selectedIndex = 0 }
             else if selectedIndex >= count { selectedIndex = count - 1 }
@@ -9376,7 +9463,7 @@ private struct TVFeatureHeroView: View {
     }
 
     private func setIndex(_ next: Int) {
-        withAnimation(.easeInOut(duration: 0.35)) { selectedIndex = next }
+        withAnimation(HeroPageEdge.animation) { selectedIndex = next }
     }
 
     /// Everything the auto-advance loop reads that is not live state, so a
@@ -9583,9 +9670,6 @@ private struct TVGridHeroSlideshowView: View {
 
     private var activeItem: NuvioMeta? { items.indices.contains(index) ? items[index] : nil }
 
-    /// The slide last drawn, so the next one knows which side to push from.
-    @State private var shownIndex = 0
-
     /// Backdrop + scrims. Drawn as a `background` so it can be widened past the
     /// hero without changing the hero's own frame — the focus engine routes a
     /// left press off that frame, and a hero reaching x=0 sits under the
@@ -9647,10 +9731,12 @@ private struct TVGridHeroSlideshowView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            if let activeItem {
-                gridHeroContent(activeItem)
-                    .id(activeItem.id)
-                    .transition(.push(from: HeroPageEdge.edge(from: shownIndex, to: index, count: items.count)))
+            if activeItem != nil {
+                HeroPager(index: index, count: items.count, alignment: .bottom) { slide in
+                    if items.indices.contains(slide) {
+                        gridHeroContent(items[slide])
+                    }
+                }
             }
 
             if items.count > 1 {
@@ -9721,7 +9807,10 @@ private struct TVGridHeroSlideshowView: View {
                 if !isFocused, !isTrailerPlaying { setIndex((index + 1) % items.count) }
             }
         }
-        .onChange(of: index) { _, new in shownIndex = new }
+        .task(id: index) {
+            HeroPageEdge.prefetch(items.map { $0.backgroundUrl ?? $0.posterUrl }, around: index)
+            HeroPageEdge.prefetch(items.map(\.logoUrl), around: index)
+        }
         .onChange(of: items.count) { _, count in
             if count == 0 { selectedIndex = 0 }
             else if selectedIndex >= count { selectedIndex = count - 1 }
@@ -9786,7 +9875,7 @@ private struct TVGridHeroSlideshowView: View {
     }
 
     private func setIndex(_ newIndex: Int) {
-        withAnimation(.easeInOut(duration: 0.30)) {
+        withAnimation(HeroPageEdge.animation) {
             selectedIndex = newIndex
         }
     }
@@ -9798,6 +9887,16 @@ private struct CachedHeroLogo: View {
 
     @State private var image: UIImage?
     @State private var loadedURL: String?
+
+    init(url: String, title: String) {
+        self.url = url
+        self.title = title
+        // Already loaded (the carousel fetches its neighbours' logos ahead):
+        // drawn at once, so the logo moves with the rest of the slide.
+        let cached = URL(string: url).flatMap { BackdropImageCache.shared.cachedImage(for: $0) }
+        _image = State(initialValue: cached)
+        _loadedURL = State(initialValue: cached == nil ? nil : url)
+    }
     @State private var outgoingImage: UIImage?
     @State private var outgoingOpacity = 0.0
     @State private var imageOpacity = 1.0
