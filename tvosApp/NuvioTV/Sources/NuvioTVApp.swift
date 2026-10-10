@@ -222,7 +222,9 @@ struct ContentView: View {
     /// how the Android client behaves, and why its switches feel settled.
     private static let profileGateMinimumDuration: TimeInterval = 1.8
     /// Ceiling on the profile-switch cover, whatever Home ends up publishing.
-    private static let profileGateTimeout: TimeInterval = 5
+    /// Long enough for Continue Watching, which Modern's hero waits on and
+    /// which a Simkl or Trakt fetch can take several seconds to answer.
+    private static let profileGateTimeout: TimeInterval = 10
     @State private var selectedTab: TVTab = Self.debugStartTab ?? .home
     #if os(tvOS)
     /// See the menu drawn over Details.
@@ -490,8 +492,17 @@ struct ContentView: View {
         // focused, paged-in card disappeared during the replacement, tvOS moved
         // focus to the row above. `hasLoaded` flips only after the final tree is
         // published, so the first interactive frame is stable.
-        .onChange(of: homeStore.hasLoaded) { _, loaded in
-            guard isPreparingProfile, loaded else { return }
+        .onChange(of: homeStore.hasLoaded) { _, _ in
+            guard isPreparingProfile, isHomeReadyToReveal else { return }
+            profileGateContentReady()
+        }
+        // Modern opens on its hero: the cover also waits for the carousel.
+        .onChange(of: homeStore.isHeroSettled) { _, _ in
+            guard isPreparingProfile, isHomeReadyToReveal else { return }
+            profileGateContentReady()
+        }
+        .onChange(of: homeStore.sections.isEmpty) { _, _ in
+            guard isPreparingProfile, isHomeReadyToReveal else { return }
             profileGateContentReady()
         }
         // Backing out of the switch must not leave the cover behind.
@@ -1033,6 +1044,18 @@ struct ContentView: View {
         }
     }
 
+    /// Rows loaded and, on the TV and Mac, the hero settled too.
+    private var isHomeReadyToReveal: Bool {
+        #if os(iOS)
+        return homeStore.hasLoaded
+        #else
+        // A hero that holds focus only needs the first rows under it; the
+        // rest fill in below without moving focus.
+        guard homeStore.isHeroSettled else { return false }
+        return homeStore.hasLoaded || (homeStore.heroHoldsFocus && !homeStore.sections.isEmpty)
+        #endif
+    }
+
     private var isOnProfileSelection: Bool {
         if case .profileSelection = activeScreen { return true }
         return false
@@ -1077,6 +1100,14 @@ struct ContentView: View {
     private func liftProfileGate() {
         profileGateTask?.cancel()
         profileGateTask = nil
+        #if os(macOS)
+        if isPreparingProfile {
+            MacDiagnostics.log(
+                "profileGate.lift ms=" + String(Int(Date().timeIntervalSince(profileGateStartedAt ?? Date()) * 1000))
+                    + " rows=" + String(homeStore.hasLoaded) + " hero=" + String(homeStore.isHeroSettled)
+            )
+        }
+        #endif
         profileGateStartedAt = nil
         guard isPreparingProfile else { return }
         withAnimation(.easeInOut(duration: 0.22)) {
@@ -4580,7 +4611,11 @@ struct TVHomeView: View {
         .ignoresSafeArea()
     }
 
-    var body: some View {
+    /// Home's view and the first half of its handlers. Split from `body`,
+    /// which as one expression had grown past what the compiler would
+    /// type-check.
+    @ViewBuilder
+    private var homeCore: some View {
         let _ = TVHomeDebugTrace.log("home.body.render active=\(isActive) isEnabled=\(isEnabled)")
         ZStack(alignment: .topLeading) {
             // Match Android's AppTabHost ownership: only the selected tab owns
@@ -4834,6 +4869,8 @@ struct TVHomeView: View {
                                     #endif
                                     if focused { isFeatureFocused = true }
                                 },
+                                shouldRequestInitialFocus: featureRequestsInitialFocus,
+                                onInitialFocusRequested: markInitialCardFocusRequested,
                                 onSelect: { item in
                                     onResumePlayback(item)
                                 },
@@ -4880,7 +4917,7 @@ struct TVHomeView: View {
                         // surface while it is on, so the row would repeat the
                         // same titles directly beneath it.
                         let sections = visibleSections.filter(\.hasContent).filter {
-                            !(featureHeroActive && $0.id == TVHomeSection.continueWatchingId)
+                            !(continueWatchingInHero && $0.id == TVHomeSection.continueWatchingId)
                         }
                         let horizontalEdgeInset = max(
                             0,
@@ -5431,7 +5468,7 @@ struct TVHomeView: View {
         .environment(\.macRowSwipeEnabled, isActive && !isFullScreenOverlayPresented)
         #endif
         .environment(\.homeIsUncovered, isActive && !isFullScreenOverlayPresented)
-        .task(id: "\(contentIdentity.profileId):\(contentIdentity.catalogRevision):\(tmdbHomeSettingsKey)") {
+        .task(id: catalogsTaskID) {
             #if os(macOS)
             // Continue Watching renders from the persisted first page until the
             // builder runs, and the rebuild below only happens after every
@@ -5456,60 +5493,35 @@ struct TVHomeView: View {
             #endif
             await ContinueWatchingStore.refreshMissingEpisodeDetails()
         }
-        .task(id: "\(contentIdentity.profileId):\(collectionsRevision)") {
+        .task(id: collectionsTaskID) {
             await refreshCollectionSections(for: contentIdentity)
         }
-        .task(id: "\(contentIdentity.profileId):smbLocalTitles:\(smbLocalRowEnabled)") {
+        .task(id: smbTitlesTaskID) {
             await loadLocalTitlesSection()
         }
         .onReceive(NotificationCenter.default.publisher(for: SMBLibraryIndex.changedNotification)) { _ in
             guard isActive else { return }
             Task { await loadLocalTitlesSection() }
         }
-        .task(id: "\(contentIdentity.profileId):jellyfinTitles:\(jellyfinLocalRowEnabled)") {
+        .task(id: jellyfinTitlesTaskID) {
             await loadJellyfinSection()
         }
         .onReceive(NotificationCenter.default.publisher(for: JellyfinLibraryIndex.changedNotification)) { _ in
             guard isActive else { return }
             Task { await loadJellyfinSection() }
         }
-        .onAppear {
-            // A TabView may recreate Home instead of keeping it mounted. Arm
-            // before its saved focus is restored so the first layout pass is
-            // already non-animated.
-            if isActive, store.lastFocusedCardID != nil {
-                armReturnFocusAnimationSuppression()
-            }
-            // Classic was never a distinct layout; collapse legacy values to Modern.
-            if homeLayout == "Classic" { homeLayout = SettingsDefault.homeLayout }
-            refreshContinueWatching()
-            refreshWatchedTitles()
-            scheduleContinueWatchingRefresh()
-        }
+        .onAppear(perform: handleHomeAppear)
         // Home stays mounted behind Details/Player, so `onAppear` no longer
         // fires on return. Refresh the Continue Watching row whenever the store
         // changes (progress saved during playback, item finished/removed).
         .onReceive(NotificationCenter.default.publisher(for: ContinueWatchingStore.changedNotification).receive(on: RunLoop.main)) { _ in
-            guard isActive else { return }
-            refreshContinueWatching()
-            #if os(macOS)
-            // Every rebuild resets paging to page one, and rebuilds fire for
-            // more reasons than launch — a watched-state change alone knocked
-            // the row back to two titles. Refill from here so it does not
-            // matter which trigger ran.
-            Task { @MainActor in await macFillContinueWatchingPages() }
-            #endif
+            handleContinueWatchingStoreChange()
         }
         // A removal has to leave the row immediately, including under Trakt/Simkl
         // where the displayed list belongs to the provider and only changes on
         // the next fetch.
         .onReceive(NotificationCenter.default.publisher(for: ContinueWatchingDismissStore.changedNotification).receive(on: RunLoop.main)) { _ in
-            guard isActive else { return }
-            let all = continueWatching + upcomingItems
-            let remaining = all.filter { !ContinueWatchingDismissStore.isDismissed($0) }
-            if remaining.count != all.count {
-                setContinueWatching(remaining)
-            }
+            handleContinueWatchingDismissal()
         }
         .onReceive(NotificationCenter.default.publisher(for: TraktAuthStore.changedNotification).receive(on: RunLoop.main)) { _ in
             guard isActive else { return }
@@ -5524,6 +5536,10 @@ struct TVHomeView: View {
             TVSideMenuState.shared.carouselOwnsLeft = owns
         }
         #endif
+    }
+
+    var body: some View {
+        homeCore
         // TabView can keep Home mounted while Settings is selected, so returning
         // to Home does not reliably produce another onAppear.
         .onChange(of: isActive) { _, active in
@@ -5858,6 +5874,7 @@ struct TVHomeView: View {
                         },
                         backdropBleed: heroBleed,
                         scrollParallax: gridParallax,
+                        episodeLines: gridHeroEpisodeLines,
                         macIsFocused: macGridHeroFocused,
                         // Only while the hero holds the caret: it is the only
                         // time it is on screen, and scroll clipping is off in
@@ -5869,7 +5886,7 @@ struct TVHomeView: View {
                             && (macGridHeroFocused || isGridHeroFocused),
                         onFocusChange: { isGridHeroFocused = $0 }
                     ) { selectedMeta in
-                        navigateToDetailsFromHome(id: selectedMeta.id, type: selectedMeta.type)
+                        activateGridHeroSlide(selectedMeta)
                     }
                     #if os(macOS)
                     .modifier(MacRowSwipe(label: "gridHero", onePerSwipe: true) { delta in
@@ -6315,6 +6332,80 @@ struct TVHomeView: View {
     /// On a fresh load that's the first card; when returning from details it's
     /// the card the user left on (persisted in the store), so focus lands back
     /// exactly where it was — the same behaviour as coming out of the menu.
+    /// The carousel takes Home's first focus: nothing remembered, nothing
+    /// requested yet.
+    private var featureRequestsInitialFocus: Bool {
+        featureHeroActive && store.lastFocusedCardID == nil && !didRequestInitialCardFocus
+    }
+
+    private func markInitialCardFocusRequested() {
+        didRequestInitialCardFocus = true
+    }
+
+    // The bodies of Home's lifecycle handlers, kept out of `body`: inline,
+    // their closures were type-checked with the whole modifier chain, which
+    // grew past what the compiler would finish.
+    private func handleHomeAppear() {
+        // A TabView may recreate Home instead of keeping it mounted. Arm
+        // before its saved focus is restored so the first layout pass is
+        // already non-animated.
+        if isActive, store.lastFocusedCardID != nil {
+            armReturnFocusAnimationSuppression()
+        }
+        // Classic was never a distinct layout; collapse legacy values to Modern.
+        if homeLayout == "Classic" { homeLayout = SettingsDefault.homeLayout }
+        refreshContinueWatching()
+        refreshWatchedTitles()
+        // Only a Featured Carousel (Modern, or Grid's hero) waits on
+        // Continue Watching — unless the saved list is already up.
+        settleHeroIfNothingToWaitFor()
+        scheduleContinueWatchingRefresh()
+    }
+
+    private func handleContinueWatchingStoreChange() {
+        guard isActive else { return }
+        refreshContinueWatching()
+        #if os(macOS)
+        // Every rebuild resets paging to page one, and rebuilds fire for
+        // more reasons than launch — a watched-state change alone knocked
+        // the row back to two titles. Refill from here so it does not
+        // matter which trigger ran.
+        Task { @MainActor in await macFillContinueWatchingPages() }
+        #endif
+    }
+
+    private func handleContinueWatchingDismissal() {
+        guard isActive else { return }
+        let all = continueWatching + upcomingItems
+        let remaining = all.filter { !ContinueWatchingDismissStore.isDismissed($0) }
+        if remaining.count != all.count {
+            setContinueWatching(remaining)
+        }
+    }
+
+    /// Marks the hero settled straight away when Home has no Featured
+    /// Carousel to wait for, or already shows the saved list.
+    private func settleHeroIfNothingToWaitFor() {
+        if !homeFeature || !continueWatching.isEmpty { store.markHeroSettled(holdsFocus: heroTakesInitialFocus) }
+    }
+
+    // Task ids for Home's loaders, named here: interpolated inline they left
+    // the body's modifier chain too long for the type checker.
+    private var catalogsTaskID: String {
+        "\(contentIdentity.profileId):\(contentIdentity.catalogRevision):\(tmdbHomeSettingsKey)"
+    }
+    private var collectionsTaskID: String { "\(contentIdentity.profileId):\(collectionsRevision)" }
+    private var smbTitlesTaskID: String { "\(contentIdentity.profileId):smbLocalTitles:\(smbLocalRowEnabled)" }
+    private var jellyfinTitlesTaskID: String {
+        "\(contentIdentity.profileId):jellyfinTitles:\(jellyfinLocalRowEnabled)"
+    }
+
+    /// A focusable hero is on screen: the Continue Watching carousel, or
+    /// Grid View's hero.
+    private var heroTakesInitialFocus: Bool {
+        featureHeroActive || (homeLayout == "Grid View" && heroEnabled && !gridHeroItems.isEmpty)
+    }
+
     private var initialFocusCardKey: String? {
         guard !didRequestInitialCardFocus else { return nil }
         if let pendingInitialFocusCardKey {
@@ -6323,6 +6414,8 @@ struct TVHomeView: View {
         if let saved = store.lastFocusedCardID {
             return saved
         }
+        // Home opens on its hero: the rows leave the first focus to it.
+        if heroTakesInitialFocus { return nil }
         guard let section = visibleSections.first(where: {
             $0.hasContent && !$0.isLoadingPlaceholder
         }) else { return nil }
@@ -6603,7 +6696,44 @@ struct TVHomeView: View {
     /// Featured titles for Grid View's automatic hero. Start with one item from
     /// each catalog for variety, then fill any remaining carousel slots from
     /// the catalog order without duplicates.
+    /// Grid View's hero shows Continue Watching when Featured Carousel is on
+    /// and there is something to continue; otherwise titles from the catalogs.
+    private var gridHeroUsesContinueWatching: Bool {
+        homeFeature && homeLayout == "Grid View" && !featureItems.isEmpty
+    }
+
+    /// Continue Watching is showing as the hero — Modern's carousel, or Grid
+    /// View's hero with Featured Carousel on — so the row would only repeat it.
+    private var continueWatchingInHero: Bool {
+        featureHeroActive || (gridHeroUsesContinueWatching && heroEnabled)
+    }
+
+    /// "S2 E8 · Title" for each Continue Watching slide in Grid's hero.
+    private var gridHeroEpisodeLines: [String: String] {
+        guard gridHeroUsesContinueWatching else { return [:] }
+        return Dictionary(
+            featureItems.compactMap { item in item.episodeDisplayLine.map { (item.meta.id, $0) } },
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
+
+    /// Opens a Grid hero slide: a Continue Watching slide resumes, as the
+    /// Modern carousel does (an unaired Up Next opens its page instead).
+    private func activateGridHeroSlide(_ meta: NuvioMeta) {
+        if gridHeroUsesContinueWatching,
+           let item = featureItems.first(where: { $0.meta.id == meta.id }) {
+            if item.isUpNextEntry && !item.hasAired && !item.isAiringToday {
+                navigateToDetailsFromHome(id: item.meta.id, type: item.meta.type)
+            } else {
+                onResumePlayback(item)
+            }
+            return
+        }
+        navigateToDetailsFromHome(id: meta.id, type: meta.type)
+    }
+
     private var gridHeroItems: [NuvioMeta] {
+        if gridHeroUsesContinueWatching { return featureItems.map(\.meta) }
         let catalogSections = visibleSections.filter {
             $0.id != TVHomeSection.continueWatchingId && $0.id != TVHomeSection.upcomingId && $0.collectionFolders.isEmpty
         }
@@ -7040,8 +7170,7 @@ struct TVHomeView: View {
         if cardKey == MacHomeFocus.gridHeroCardKey {
             let slides = gridHeroItems
             guard slides.indices.contains(gridHeroIndex) else { return }
-            let meta = slides[gridHeroIndex]
-            navigateToDetailsFromHome(id: meta.id, type: meta.type)
+            activateGridHeroSlide(slides[gridHeroIndex])
             return
         }
         guard let sectionId = MacHomeFocus.sectionId(of: cardKey) else { return }
@@ -7107,7 +7236,7 @@ struct TVHomeView: View {
     /// stand-in row holding one card (see `MacHomeFocus.cardKeys`).
     private var macNavigableSections: [TVHomeSection] {
         let rows = visibleSections.filter(\.hasContent).filter {
-            !(featureHeroActive && $0.id == TVHomeSection.continueWatchingId)
+            !(continueWatchingInHero && $0.id == TVHomeSection.continueWatchingId)
         }
         if homeLayout == "Grid View" {
             // The grid drops loading placeholders and puts its own hero
@@ -7967,8 +8096,14 @@ struct TVHomeView: View {
     private func refreshContinueWatching() {
         guard !usesRemoteProgress else {
             if displayedProgressSource != selectedProgressSource {
-                setContinueWatching([])
+                // The list this source gave last time, until it answers again.
+                let cached = ContinueWatchingLaunchCache.load(
+                    profileId: ContinueWatchingStore.activeProfileId ?? "default",
+                    source: selectedProgressSource.rawValue
+                )?.filter(shouldDisplayContinueWatchingItem) ?? []
+                setContinueWatching(cached)
                 displayedProgressSource = selectedProgressSource
+                if !cached.isEmpty { store.markHeroSettled(holdsFocus: heroTakesInitialFocus) }
             }
             #if DEBUG
             logRowWindow("remote progress source (\(selectedProgressSource.rawValue))")
@@ -8049,6 +8184,11 @@ struct TVHomeView: View {
     private func refreshContinueWatchingFromSelectedSource() async {
         continueWatchingRefreshGeneration &+= 1
         let generation = continueWatchingRefreshGeneration
+        // However it ends — rows, none, or a failure — the hero is now what it
+        // will be. A superseded refresh leaves this to the one that replaced it.
+        defer {
+            if generation == continueWatchingRefreshGeneration { store.markHeroSettled(holdsFocus: heroTakesInitialFocus) }
+        }
         let profileID = ContinueWatchingStore.activeProfileId
         let source = selectedProgressSource
         let isSimklRefresh = source == .simkl
@@ -8122,6 +8262,7 @@ struct TVHomeView: View {
         }
         setContinueWatching(visibleItems)
         displayedProgressSource = source
+        ContinueWatchingLaunchCache.save(visibleItems, profileId: profileID ?? "default", source: source.rawValue)
 
         // Continue Watching is visible now. Refresh watched checkmarks afterward
         // so a full history sync never blocks the row during a source switch.
@@ -8924,6 +9065,13 @@ final class TVHomeStore: ObservableObject {
     /// True when any last-known-good tree is available. Cache reuse additionally
     /// requires `loadedContentIdentity` to match the requested profile/revision.
     @Published private(set) var hasLoaded = false
+    /// Modern's hero is the Continue Watching carousel, which arrives after
+    /// the rows. False until that load has answered (or the layout has no
+    /// carousel), so the profile cover can hold Home until its hero is there.
+    @Published private(set) var isHeroSettled = false
+    /// The settled hero takes Home's first focus. The rows' later updates
+    /// then cannot pull focus about, so Home can show before they finish.
+    @Published private(set) var heroHoldsFocus = false
     /// Composite "<sectionId>\u{1}<metaId>" key of the last focused card.
     var lastFocusedCardID: String?
     private var loadedContentIdentity: TVHomeContentIdentity?
@@ -8947,6 +9095,8 @@ final class TVHomeStore: ObservableObject {
             hero = nil
             lastFocusedCardID = nil
             loadedContentIdentity = nil
+            isHeroSettled = false
+            heroHoldsFocus = false
         }
 
         loadGeneration &+= 1
@@ -8981,14 +9131,51 @@ final class TVHomeStore: ObservableObject {
         hasLoaded = loadedContentIdentity != nil
     }
 
+    func markHeroSettled(holdsFocus: Bool) {
+        if !isHeroSettled { isHeroSettled = true }
+        if heroHoldsFocus != holdsFocus { heroHoldsFocus = holdsFocus }
+    }
+
     func reset() {
         loadGeneration &+= 1
         sections = []
         hero = nil
         hasLoaded = false
+        isHeroSettled = false
+        heroHoldsFocus = false
         lastFocusedCardID = nil
         loadedContentIdentity = nil
         loadingContentIdentity = nil
+    }
+}
+
+/// The last Continue Watching list a remote source (Simkl, Trakt) gave, per
+/// profile and source, so Home opens on it at launch — the fetch behind it
+/// takes several seconds — and the newer list replaces it when it lands.
+enum ContinueWatchingLaunchCache {
+    private static var directory: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ContinueWatchingLaunch", isDirectory: true)
+    }
+
+    private static func file(profileId: String, source: String) -> URL {
+        let safe = (profileId + "-" + source).replacingOccurrences(of: "/", with: "_")
+        return directory.appendingPathComponent(safe + ".json")
+    }
+
+    static func load(profileId: String, source: String) -> [ContinueWatchingItem]? {
+        guard let data = try? Data(contentsOf: file(profileId: profileId, source: source)) else { return nil }
+        return try? JSONDecoder().decode([ContinueWatchingItem].self, from: data)
+    }
+
+    static func save(_ items: [ContinueWatchingItem], profileId: String, source: String) {
+        let url = file(profileId: profileId, source: source)
+        let dir = directory
+        DispatchQueue.global(qos: .utility).async {
+            guard let data = try? JSONEncoder().encode(items) else { return }
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try? data.write(to: url, options: .atomic)
+        }
     }
 }
 
@@ -9183,6 +9370,8 @@ private struct TVFeatureHeroView: View {
     var isTrailerPlaying: Bool = false
     var backdropBleed: CGFloat = 0
     var onFocusChange: ((Bool) -> Void)? = nil
+    var shouldRequestInitialFocus = false
+    var onInitialFocusRequested: () -> Void = {}
     let onSelect: (ContinueWatchingItem) -> Void
     var onSelectOverride: ((NuvioMeta) -> Void)? = nil
     /// Hold-Select actions for the slide on screen. The Continue Watching row
@@ -9334,6 +9523,13 @@ private struct TVFeatureHeroView: View {
         .focusable(true)
         .focusEffectDisabledIfAvailable()
         .focused($isFocused)
+        // Home opens on the carousel: it takes the first focus, which the
+        // rows leave to it (see `heroTakesInitialFocus`).
+        .onAppear {
+            guard shouldRequestInitialFocus else { return }
+            onInitialFocusRequested()
+            DispatchQueue.main.async { isFocused = true }
+        }
         #endif
         .onTapGesture {
             if let overrideMeta {
@@ -9655,6 +9851,8 @@ private struct TVGridHeroSlideshowView: View {
     var backdropBleed: CGFloat = 0
     /// The page's scroll, which the art lags behind as the rows pass over it.
     var scrollParallax: TVHomeParallax? = nil
+    /// Episode lines by title id, for Continue Watching slides.
+    var episodeLines: [String: String] = [:]
     /// Home's macOS caret is on the hero. There is no focus engine there to
     /// set `focusState`, so this stands in for it.
     var macIsFocused = false
@@ -9840,6 +10038,13 @@ private struct TVGridHeroSlideshowView: View {
                     .font(.custom("Inter-Bold", size: 46))
                     .foregroundColor(.white)
                     .lineLimit(2)
+            }
+
+            if let episodeLine = episodeLines[item.id] {
+                Text(episodeLine)
+                    .font(.custom("Inter-SemiBold", size: 22))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
             }
 
             HStack(spacing: 18) {

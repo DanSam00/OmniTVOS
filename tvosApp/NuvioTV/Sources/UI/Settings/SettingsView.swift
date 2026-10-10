@@ -3191,6 +3191,16 @@ private struct LayoutDiscoverySettingsView: View {
     @AppStorage(SettingsKey.homeLayout) private var homeLayout = SettingsDefault.homeLayout
     @AppStorage(SettingsKey.heroEnabled) private var heroEnabled = true
     @AppStorage(SettingsKey.homeFeature) private var homeFeature = true
+
+    /// Featured Carousel applies to Modern everywhere, and to Grid View's hero
+    /// on the TV and Mac; the phone's Grid has no carousel to switch.
+    private var showsFeatureToggle: Bool {
+        #if os(iOS)
+        homeLayout != "Grid View"
+        #else
+        true
+        #endif
+    }
     @AppStorage(SettingsKey.heroAutoScroll) private var heroAutoScroll = false
     @AppStorage(SettingsKey.blurUnwatchedArtwork) private var blurUnwatchedArtwork = false
     @AppStorage(SettingsKey.heroCatalogs) private var heroCatalogsData = Data()
@@ -3292,7 +3302,7 @@ private struct LayoutDiscoverySettingsView: View {
                     accentColor: accentColor
                 )
 
-                if heroEnabled && homeLayout != "Grid View" {
+                if heroEnabled && showsFeatureToggle {
                     SettingsToggleRow(
                         title: L10n.string("tvos_layout_feature", fallback: "Featured Carousel"),
                         subtitle: L10n.string(
@@ -3305,7 +3315,9 @@ private struct LayoutDiscoverySettingsView: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
 
-                if homeLayout == "Grid View" {
+                // The catalogs the auto-generated hero draws from; Featured
+                // Carousel replaces them with Continue Watching.
+                if homeLayout == "Grid View" && !(homeFeature && showsFeatureToggle) {
                     HeroCatalogSelectionRow(
                         selectionData: $heroCatalogsData,
                         accentColor: accentColor
