@@ -7196,12 +7196,13 @@ struct TVHomeView: View {
     }
 
     /// Pages Grid View's hero slideshow, the same way as the carousel: Right
-    /// stops at the last slide, and Left at the first opens the menu.
+    /// carries on from the last slide to the first, and Left at the first
+    /// opens the menu.
     private func macPageGridHero(_ direction: MoveCommandDirection) {
         let count = gridHeroItems.count
         let slide = min(max(gridHeroIndex, 0), max(count - 1, 0))
-        if direction == .right, slide < count - 1 {
-            withAnimation(HeroPageEdge.animation) { gridHeroIndex = slide + 1 }
+        if direction == .right, count > 1 {
+            withAnimation(HeroPageEdge.animation) { gridHeroIndex = (slide + 1) % count }
         } else if direction == .left, slide > 0 {
             withAnimation(HeroPageEdge.animation) { gridHeroIndex = slide - 1 }
         } else if direction == .left {
@@ -7214,9 +7215,11 @@ struct TVHomeView: View {
     /// slide is the way out to the menu, as it is at the start of any row.
     /// A swipe over a hero carousel pages it, stopping at either end: unlike
     /// the arrow keys it never wraps round or opens the menu.
+    /// A swipe pages round the carousel without end, as the iPhone's does:
+    /// past the last slide is the first, before the first the last.
     private func macSwipeSlides(_ index: inout Int, count: Int, by delta: Int) {
         guard count > 1 else { return }
-        let next = min(max(index + delta, 0), count - 1)
+        let next = ((index + delta) % count + count) % count
         guard next != index else { return }
         withAnimation(HeroPageEdge.animation) { index = next }
     }
@@ -9787,8 +9790,9 @@ private struct TVGridHeroSlideshowView: View {
                 // alone, so the first slide still exits to the menu.
                 focusState = true
                 DispatchQueue.main.async { focusState = true }
-            case .right where index < items.count - 1:
-                setIndex(index + 1)
+            case .right where items.count > 1:
+                // On from the last slide to the first, as Modern's carousel does.
+                setIndex((index + 1) % items.count)
             default:
                 break
             }
