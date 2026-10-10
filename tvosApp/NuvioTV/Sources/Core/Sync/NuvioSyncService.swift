@@ -220,8 +220,8 @@ final class NuvioSyncManager: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            let raw = notification.object as? [[String: Any]] ?? []
-            Task { @MainActor in self?.pushCollectionsEdit(raw) }
+            guard let edit = notification.object as? CollectionsStore.LocalEdit else { return }
+            Task { @MainActor in self?.pushCollectionsEdit(edit) }
         })
 
         // `AuthManager` restores its persisted session synchronously in init.
@@ -1370,11 +1370,11 @@ final class NuvioSyncManager: ObservableObject {
     /// Pushes a locally edited collections blob to the account (same
     /// `sync_push_collections` contract as Android).
     ///
-    /// Always pull-merges first: a Settings edit on this Apple TV must not
-    /// wipe collections that only exist on Android (created after the last
-    /// full pull, or never decoded locally). Intentional deletes of ids that
-    /// were present in the last pull still go through.
-    private func pushCollectionsEdit(_ raw: [[String: Any]]) {
+    /// Always pull-merges first, and only the collections this edit changed,
+    /// created or deleted replace the account's; the rest keep the account's
+    /// version (see `CollectionsStore.mergeLocalEdit`).
+    private func pushCollectionsEdit(_ edit: CollectionsStore.LocalEdit) {
+        let raw = edit.rows
         guard AuthConfig.isConfigured else { return }
         guard let authManager, authManager.isAuthenticated else { return }
         guard let profileViewModel,
@@ -1398,6 +1398,8 @@ final class NuvioSyncManager: ObservableObject {
                     payload = CollectionsStore.mergeLocalEdit(
                         local: raw,
                         remote: remoteRows,
+                        changedIds: edit.changedIds,
+                        deletedIds: edit.deletedIds,
                         previouslyPulledIds: previouslyPulledIds
                     )
                 }

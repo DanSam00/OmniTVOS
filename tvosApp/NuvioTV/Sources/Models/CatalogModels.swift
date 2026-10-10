@@ -4031,39 +4031,70 @@ enum CollectionsStore {
             print("CollectionsStore.saveLocalEdit: refused — no decodable collections")
             return
         }
+        // What this edit actually touched. The whole list is saved, but only
+        // these rows may replace the account's: pushing every row let one
+        // device's stale copy of a collection overwrite a newer edit made
+        // elsewhere, whenever anything else in the list was changed here.
+        let before = rawCollections()
+        let beforeById = Dictionary(
+            before.compactMap { row in (row["id"] as? String).map { ($0, canonical(row)) } },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let changed = Set(raw.compactMap { row -> String? in
+            guard let id = row["id"] as? String else { return nil }
+            return beforeById[id] == canonical(row) ? nil : id
+        })
+        let deleted = Set(beforeById.keys).subtracting(raw.compactMap { $0["id"] as? String })
         _ = writeData(data, forKey: storageKey)
         NotificationCenter.default.post(name: changedNotification, object: nil)
-        NotificationCenter.default.post(name: locallyEditedNotification, object: raw)
+        NotificationCenter.default.post(
+            name: locallyEditedNotification,
+            object: LocalEdit(rows: raw, changedIds: changed, deletedIds: deleted)
+        )
+    }
+
+    /// One Settings edit: the full list as saved, and which rows it changed.
+    struct LocalEdit {
+        let rows: [[String: Any]]
+        let changedIds: Set<String>
+        let deletedIds: Set<String>
+    }
+
+    private static func canonical(_ row: [String: Any]) -> Data? {
+        try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys])
     }
 
     /// Merge a local edit into the latest remote blob.
-    /// - Local rows win on the same id (edits / creates on this device).
-    /// - Remote-only rows are kept unless their id was known from the last pull
-    ///   and is missing locally (intentional delete on this device).
+    /// - Rows the edit changed or created replace the account's.
+    /// - Rows the edit deleted are dropped.
+    /// - Every other row keeps the account's version, so a stale copy here
+    ///   cannot undo an edit made on another device.
+    /// - A local row the account has never had is kept unless it was seen in
+    ///   an earlier pull (then it was deleted elsewhere, not created here).
     static func mergeLocalEdit(
         local: [[String: Any]],
         remote: [[String: Any]],
+        changedIds: Set<String>,
+        deletedIds: Set<String>,
         previouslyPulledIds: Set<String>
     ) -> [[String: Any]] {
-        let localIds = Set(local.compactMap { $0["id"] as? String })
-        let intentionalDeletes = previouslyPulledIds.subtracting(localIds)
-
-        var byId: [String: [String: Any]] = [:]
-        var order: [String] = []
-
+        let localById = Dictionary(
+            local.compactMap { row in (row["id"] as? String).map { ($0, row) } },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var merged: [[String: Any]] = []
+        var seen = Set<String>()
         for row in remote {
-            guard let id = row["id"] as? String, !id.isEmpty else { continue }
-            if intentionalDeletes.contains(id) { continue }
-            byId[id] = row
-            order.append(id)
+            guard let id = row["id"] as? String, !id.isEmpty,
+                  !deletedIds.contains(id), seen.insert(id).inserted else { continue }
+            merged.append(changedIds.contains(id) ? (localById[id] ?? row) : row)
         }
         for row in local {
-            guard let id = row["id"] as? String, !id.isEmpty else { continue }
-            if byId[id] == nil { order.append(id) }
-            byId[id] = row
+            guard let id = row["id"] as? String, !id.isEmpty, !seen.contains(id) else { continue }
+            guard changedIds.contains(id) || !previouslyPulledIds.contains(id) else { continue }
+            seen.insert(id)
+            merged.append(row)
         }
-
-        let merged = order.compactMap { byId[$0] }
         return merged
     }
 

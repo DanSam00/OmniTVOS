@@ -2919,6 +2919,46 @@ struct HeroPager<Content: View>: View {
     }
 }
 
+extension TVHomeSection {
+    /// One Home row per synced collection, its folders as cards. Shared by
+    /// tvOS, macOS and the iPhone so each shows the same collections.
+    static func collectionRows() -> [TVHomeSection] {
+        let disabledCollectionIds = TVHomeCatalogOrder.disabledCollectionIds()
+        let stored = CollectionsStore.collections()
+        var sections: [TVHomeSection] = []
+        for collection in stored {
+            if disabledCollectionIds.contains(collection.id) {
+                continue
+            }
+            // Keep every folder card — including empty / TMDB / Trakt-only.
+            // Previously those were dropped, so a collection with no add-on
+            // catalogs never appeared on Home even though sync had it.
+            let folders: [TVCollectionFolderItem] = collection.folders.map { folder in
+                TVCollectionFolderItem(
+                    collectionId: collection.id,
+                    folder: folder,
+                    sources: folder.resolvedSources,
+                    viewMode: collection.viewMode,
+                    showAllTab: collection.showAllTab
+                )
+            }
+            if folders.isEmpty {
+                continue
+            }
+            sections.append(
+                TVHomeSection(
+                    id: "\(TVHomeSection.collectionIdPrefix)\(collection.id)",
+                    title: collection.title,
+                    items: [],
+                    isPinnedCollection: collection.pinToTop,
+                    collectionFolders: folders
+                )
+            )
+        }
+        return sections
+    }
+}
+
 /// How far Home's rows have scrolled, for the backdrop's parallax.
 @Observable
 final class TVHomeParallax {
@@ -7379,39 +7419,7 @@ struct TVHomeView: View {
     /// next section (e.g. Popular) peeks under a focused collection the same
     /// way catalog rows do — without flattening folders into title posters.
     private func loadCollectionSections() async -> [TVHomeSection] {
-        let disabledCollectionIds = TVHomeCatalogOrder.disabledCollectionIds()
-        let stored = CollectionsStore.collections()
-        var sections: [TVHomeSection] = []
-        for collection in stored {
-            if disabledCollectionIds.contains(collection.id) {
-                continue
-            }
-            // Keep every folder card — including empty / TMDB / Trakt-only.
-            // Previously those were dropped, so a collection with no add-on
-            // catalogs never appeared on Home even though sync had it.
-            let folders: [TVCollectionFolderItem] = collection.folders.map { folder in
-                TVCollectionFolderItem(
-                    collectionId: collection.id,
-                    folder: folder,
-                    sources: folder.resolvedSources,
-                    viewMode: collection.viewMode,
-                    showAllTab: collection.showAllTab
-                )
-            }
-            if folders.isEmpty {
-                continue
-            }
-            sections.append(
-                TVHomeSection(
-                    id: "\(TVHomeSection.collectionIdPrefix)\(collection.id)",
-                    title: collection.title,
-                    items: [],
-                    isPinnedCollection: collection.pinToTop,
-                    collectionFolders: folders
-                )
-            )
-        }
-        return sections
+        TVHomeSection.collectionRows()
     }
 
     /// Re-resolves collection rows in place after a sync pull / local edit

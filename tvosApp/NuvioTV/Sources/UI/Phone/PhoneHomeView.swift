@@ -4,12 +4,14 @@ import SwiftUI
 /// Loads Home for the phone: the same add-on catalogs, row order and Continue
 /// Watching sources as tvOS `TVHomeView`, without its focus bookkeeping.
 ///
-/// Deliberately simpler than tvOS for now: no skeleton rows, collections,
-/// SMB/Jellyfin rows or partial-load retry. Rows arrive as each add-on answers.
+/// Deliberately simpler than tvOS for now: no skeleton rows, SMB/Jellyfin
+/// rows or partial-load retry. Rows arrive as each add-on answers.
 @MainActor
 final class PhoneHomeLoader: ObservableObject {
     @Published private(set) var sections: [TVHomeSection] = []
     @Published private(set) var continueWatching: [ContinueWatchingItem] = []
+    /// The synced collections, one row of folder cards each, as on the TV.
+    @Published private(set) var collectionRows: [TVHomeSection] = TVHomeSection.collectionRows()
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
 
@@ -26,6 +28,10 @@ final class PhoneHomeLoader: ObservableObject {
                 Task { @MainActor in self?.refreshContinueWatching() }
             })
         }
+        // A sync pull or a Settings edit replaces the collections.
+        observers.append(center.addObserver(forName: CollectionsStore.changedNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.collectionRows = TVHomeSection.collectionRows() }
+        })
     }
 
     deinit {
@@ -37,6 +43,7 @@ final class PhoneHomeLoader: ObservableObject {
         guard force || key != loadedKey else { return }
         loadedKey = key
         refreshContinueWatching()
+        collectionRows = TVHomeSection.collectionRows()
         loadTask?.cancel()
         loadTask = Task { await loadCatalogs() }
     }
@@ -293,6 +300,7 @@ struct PhoneHomeView: View {
     @State private var pageHeight: CGFloat = 0
     @State private var pageWidth: CGFloat = 402
     @State private var browsingSection: TVHomeSection?
+    @State private var browsingFolder: PhoneFolderRoute?
 
     private var style: PhoneHomeStyle { PhoneHomeStyle(layout: homeLayout) }
 
@@ -353,6 +361,10 @@ struct PhoneHomeView: View {
                         continueWatchingRow
                     }
 
+                    // Pinned collections lead, the rest follow the catalogs,
+                    // as on the TV.
+                    ForEach(loader.collectionRows.filter(\.isPinnedCollection)) { collectionRow($0) }
+
                     ForEach(loader.sections) { section in
                         if style.isGrid {
                             gridSection(section)
@@ -361,7 +373,9 @@ struct PhoneHomeView: View {
                         }
                     }
 
-                    if loader.sections.isEmpty {
+                    ForEach(loader.collectionRows.filter { !$0.isPinnedCollection }) { collectionRow($0) }
+
+                    if loader.sections.isEmpty && loader.collectionRows.isEmpty {
                         emptyState
                     }
                 }
@@ -408,6 +422,9 @@ struct PhoneHomeView: View {
         .toolbar(.hidden, for: .navigationBar)
         .navigationDestination(item: $browsingSection) { section in
             PhoneSectionGridView(sectionID: section.id, loader: loader, onOpenDetails: onOpenDetails)
+        }
+        .navigationDestination(item: $browsingFolder) { route in
+            PhoneCollectionFolderView(folder: route.folder, onOpenDetails: onOpenDetails)
         }
         .onChange(of: heroSlides.map(\.id)) { old, ids in
             // The list changes as Home loads (Continue Watching, catalogs).
@@ -708,6 +725,24 @@ struct PhoneHomeView: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, PhoneLayout.gutter)
+    }
+
+    /// A collection: its folders as cards, each opening the folder's catalogs.
+    private func collectionRow(_ section: TVHomeSection) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeader(section)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: style.cardSpacing) {
+                    ForEach(section.collectionFolders) { folder in
+                        Button { browsingFolder = PhoneFolderRoute(folder: folder) } label: {
+                            PhoneCollectionFolderCard(folder: folder, posterWidth: style.posterWidth)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, PhoneLayout.gutter)
+            }
+        }
     }
 
     private func catalogRow(_ section: TVHomeSection) -> some View {
@@ -1104,6 +1139,171 @@ private struct PhoneHeroParallaxArt: View {
                 .overlay { PhoneArtwork(url: url, kind: .backdrop) }
                 .clipped()
         }
+    }
+}
+// MARK: - Collections
+
+/// A folder opened from a collection row.
+struct PhoneFolderRoute: Hashable {
+    let folder: TVCollectionFolderItem
+}
+
+/// A collection folder's card: its cover art, or its emoji, in the folder's
+/// own shape, with the title beneath unless the folder hides it.
+struct PhoneCollectionFolderCard: View {
+    let folder: TVCollectionFolderItem
+    let posterWidth: CGFloat
+
+    private var size: CGSize {
+        switch folder.tileShape {
+        case .poster: return CGSize(width: posterWidth, height: posterWidth * PhoneLayout.posterAspect)
+        case .landscape: return CGSize(width: posterWidth * 1.7, height: posterWidth * 1.7 * 9 / 16)
+        case .square: return CGSize(width: posterWidth * 1.1, height: posterWidth * 1.1)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.08))
+                if let cover = folder.coverImageUrl, !cover.isEmpty {
+                    PhoneArtwork(url: cover, kind: folder.tileShape == .poster ? .poster : .backdrop)
+                } else if let emoji = folder.coverEmoji, !emoji.isEmpty {
+                    Text(emoji).font(.system(size: size.height * 0.4))
+                } else {
+                    Image(systemName: "folder.fill")
+                        .font(.system(size: size.height * 0.3))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: size.width, height: size.height)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            if !folder.hideTitle {
+                Text(folder.title)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .frame(width: size.width, alignment: .leading)
+            }
+        }
+    }
+}
+
+/// A collection folder on the phone: a tab per source (and All, when the
+/// collection offers it) over a poster grid. Loads through the same
+/// `CollectionSourceResolver` as the TV's folder screen.
+struct PhoneCollectionFolderView: View {
+    let folder: TVCollectionFolderItem
+    let onOpenDetails: (NuvioMeta) -> Void
+
+    private struct SourceRow {
+        let label: String
+        let items: [NuvioMeta]
+    }
+
+    @State private var rows: [SourceRow] = []
+    @State private var tab = 0
+    @State private var isLoading = true
+    @State private var errorMessage: String?
+    private let repository: CatalogRepository = CinemetaCatalogRepository()
+    private static let pageSize = 40
+
+    private var showsAll: Bool { folder.showAllTab && rows.count > 1 }
+
+    private var tabs: [String] {
+        (showsAll ? [L10n.string("library_type_all", fallback: "All")] : []) + rows.map(\.label)
+    }
+
+    private var shownItems: [NuvioMeta] {
+        if showsAll, tab == 0 {
+            var seen = Set<String>()
+            return rows.flatMap(\.items).filter { seen.insert($0.id).inserted }
+        }
+        let index = tab - (showsAll ? 1 : 0)
+        return rows.indices.contains(index) ? rows[index].items : []
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                if tabs.count > 1 {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(Array(tabs.enumerated()), id: \.offset) { index, title in
+                                Button { tab = index } label: {
+                                    Text(title)
+                                        .font(.subheadline.weight(tab == index ? .semibold : .regular))
+                                        .lineLimit(1)
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 7)
+                                        .background(
+                                            Capsule().fill(tab == index ? Color.white : Color.white.opacity(0.12))
+                                        )
+                                        .foregroundStyle(tab == index ? Color.black : Color.white)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, PhoneLayout.gutter)
+                    }
+                }
+                if isLoading {
+                    ProgressView().frame(maxWidth: .infinity).padding(.top, 60)
+                } else if shownItems.isEmpty {
+                    Text(errorMessage ?? "Nothing in this folder yet.")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 60)
+                } else {
+                    PhonePosterGrid(items: shownItems, onSelect: onOpenDetails)
+                }
+            }
+            .padding(.vertical, 8)
+        }
+        .navigationTitle(folder.title)
+        .navigationBarTitleDisplayMode(.large)
+        .task(id: folder.id) { await load() }
+    }
+
+    private func load() async {
+        isLoading = true
+        errorMessage = nil
+        let sources = folder.sources
+        guard !sources.isEmpty else {
+            rows = []
+            errorMessage = "This folder has no sources."
+            isLoading = false
+            return
+        }
+        let repository = self.repository
+        let loaded = await withTaskGroup(of: (Int, SourceRow?, String?).self) { group in
+            for (index, source) in sources.enumerated() {
+                group.addTask { @MainActor in
+                    do {
+                        let page = try await CollectionSourceResolver(repository: repository).browse(source)
+                        let items = source.normalizedProvider == "addon"
+                            ? Array(page.items.prefix(Self.pageSize))
+                            : page.items
+                        var seen = Set<String>()
+                        return (index, SourceRow(
+                            label: CollectionSourceResolver.label(for: source),
+                            items: items.filter { seen.insert($0.id).inserted }
+                        ), nil)
+                    } catch {
+                        return (index, nil, error.localizedDescription)
+                    }
+                }
+            }
+            var results: [(Int, SourceRow?, String?)] = []
+            for await result in group { results.append(result) }
+            return results.sorted { $0.0 < $1.0 }
+        }
+        guard !Task.isCancelled else { return }
+        rows = loaded.compactMap(\.1)
+        if rows.allSatisfy({ $0.items.isEmpty }) {
+            errorMessage = loaded.compactMap(\.2).first
+        }
+        tab = 0
+        isLoading = false
     }
 }
 #endif
