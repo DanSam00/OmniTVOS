@@ -76,6 +76,28 @@ enum SimklServiceError: LocalizedError {
     }
 }
 
+/// Spaces Simkl requests out across the whole app. Continue Watching,
+/// history, show pages and watched marks each ran their own requests, some
+/// in parallel, and Simkl flagged the bursts — three or more requests in
+/// one second from one IP — as abusive load that can get a client blocked.
+actor SimklRequestPacer {
+    static let shared = SimklRequestPacer()
+
+    /// At most about two requests a second from this device.
+    private static let spacing: TimeInterval = 0.45
+    private var nextSlot = Date.distantPast
+
+    func waitTurn() async {
+        let now = Date()
+        let slot = max(now, nextSlot)
+        nextSlot = slot.addingTimeInterval(Self.spacing)
+        let wait = slot.timeIntervalSince(now)
+        if wait > 0 {
+            try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+        }
+    }
+}
+
 /// Shared HTTP transport for Simkl. Every request carries the required
 /// `client_id`, `app-name`, `app-version` query params and `User-Agent` header.
 final class SimklAPIClient {
@@ -288,6 +310,7 @@ final class SimklAPIClient {
             let usable = await SimklTokenRefresher.usableToken(for: token)
             if usable != token { request.setValue(bearerPrefix + usable, forHTTPHeaderField: "Authorization") }
         }
+        await SimklRequestPacer.shared.waitTurn()
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw SimklServiceError.message("Invalid Simkl response.")
