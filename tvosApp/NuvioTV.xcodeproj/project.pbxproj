@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		DLMG00000000000000000112 /* NuvioTV/Sources/UI/Downloads/MacDownloadsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DLMG00000000000000000011 /* NuvioTV/Sources/UI/Downloads/MacDownloadsView.swift */; };
 		DLMG00000000000000000102 /* NuvioTV/Sources/Core/Downloads/DownloadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DLMG00000000000000000001 /* NuvioTV/Sources/Core/Downloads/DownloadManager.swift */; };
 		DLMG00000000000000000103 /* NuvioTV/Sources/Core/Downloads/DownloadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = DLMG00000000000000000001 /* NuvioTV/Sources/Core/Downloads/DownloadManager.swift */; };
 		C0D310040000000000000004 /* NuvioTV/Sources/Core/NuvioFormatting.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D300040000000000000004 /* NuvioTV/Sources/Core/NuvioFormatting.swift */; };
@@ -463,6 +464,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		DLMG00000000000000000011 /* NuvioTV/Sources/UI/Downloads/MacDownloadsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/UI/Downloads/MacDownloadsView.swift; sourceTree = "<group>"; };
 		DLMG00000000000000000001 /* NuvioTV/Sources/Core/Downloads/DownloadManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/Downloads/DownloadManager.swift; sourceTree = "<group>"; };
 		C0D300040000000000000004 /* NuvioTV/Sources/Core/NuvioFormatting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/NuvioFormatting.swift; sourceTree = "<group>"; };
 		C0D300050000000000000005 /* NuvioTV/Sources/UI/Home/CollectionFolderBrowseView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/UI/Home/CollectionFolderBrowseView.swift; sourceTree = "<group>"; };
@@ -1358,6 +1360,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DLMG00000000000000000112 /* NuvioTV/Sources/UI/Downloads/MacDownloadsView.swift in Sources */,
 				DLMG00000000000000000102 /* NuvioTV/Sources/Core/Downloads/DownloadManager.swift in Sources */,
 				MACID0000000000000000F02 /* NuvioTV/Sources/Core/PlatformShims.swift in Sources */,
 				MACMN0000000000000000002 /* NuvioTV/Sources/Core/MacHomeMenu.swift in Sources */,

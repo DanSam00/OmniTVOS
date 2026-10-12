@@ -26,7 +26,7 @@ final class MacTabCommandBus: ObservableObject {
     /// Live TV only while the profile has an IPTV source.
     @MainActor
     static var availableTabs: [TVTab] {
-        let all: [TVTab] = [.profile, .home, .search, .guide, .library, .calendar, .settings]
+        let all: [TVTab] = [.profile, .home, .search, .guide, .library, .calendar, .downloads, .settings]
         return IPTVAvailability.shared.hasSources ? all : all.filter { $0 != .guide }
     }
 
@@ -110,6 +110,7 @@ struct MacTabCommands: Commands {
         (.library, "4"),
         (.calendar, "5"),
         (.settings, "6"),
+        (.downloads, "7"),
     ]
 
     @ObservedObject private var iptv = IPTVAvailability.shared
@@ -249,6 +250,12 @@ final class MacKeyRouter: ObservableObject {
 
     private func handle(_ event: NSEvent) -> NSEvent? {
         guard let key = Self.key(for: event) else { return event }
+        // A dialog's keys are the dialog's: Escape on a download or
+        // catch-up prompt dismissed it and also went Back on the page.
+        if event.isForAlertSheet {
+            MacDiagnostics.log("keys.dialog passthrough window=\(String(describing: type(of: (event.window ?? NSApp.keyWindow) as Any)))")
+            return event
+        }
         // A focused text field owns typing, the text cursor and Return. It has
         // no use for Up/Down though, and swallowing those left the caret stuck
         // in the search field with no way down to the results.
@@ -652,6 +659,15 @@ final class MacSettingsRowFocus: ObservableObject {
 /// shortcut would touch all of them. `MacKeyRouter` passes through anything it
 /// does not map, so a plain letter reaches a monitor installed after it —
 /// which is exactly what this is.
+extension NSEvent {
+    /// Aimed at an alert shown as a sheet — how SwiftUI's confirmation
+    /// dialogs and alerts appear on the Mac.
+    var isForAlertSheet: Bool {
+        guard let window = window ?? NSApp.keyWindow else { return false }
+        return window.isSheet && window is NSPanel
+    }
+}
+
 struct MacHotKey: ViewModifier {
     let character: String
     let isEnabled: () -> Bool
@@ -669,8 +685,9 @@ struct MacHotKey: ViewModifier {
                           !event.isARepeat,
                           event.charactersIgnoringModifiers?.lowercased() == character
                     else { return event }
-                    // A focused text field owns its letters.
+                    // A focused text field owns its letters, and a dialog its keys.
                     if let responder = event.window?.firstResponder, responder is NSText { return event }
+                    if event.isForAlertSheet { return event }
                     guard isEnabled() else { return event }
                     MainActor.assumeIsolated { action() }
                     return nil

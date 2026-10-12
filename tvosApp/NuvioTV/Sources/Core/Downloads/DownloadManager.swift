@@ -96,6 +96,30 @@ enum DownloadStreamChooser {
     }
 }
 
+// MARK: - Status text
+
+/// One line on where a download stands, for the iPhone's and the Mac's
+/// download lists and menus.
+enum DownloadStatusText {
+    static func status(record: DownloadRecord, waiting: Bool) -> String? {
+        let size = record.expectedBytes > 0 ? DownloadSettings.label(for: record.expectedBytes) : nil
+        switch record.state {
+        case .completed:
+            return "Downloaded" + (size.map { " · \($0)" } ?? "") + ". Available to watch offline."
+        case .downloading, .queued, .resolving:
+            if waiting { return "Waiting for Wi-Fi. Downloads over mobile data are off in Settings." }
+            let done = DownloadSettings.label(for: max(record.receivedBytes, 1))
+            return "Downloading \(Int(record.progress * 100))%" + (size.map { " · \(done) of \($0)" } ?? "")
+        case .paused:
+            return "Paused at \(Int(record.progress * 100))%."
+        case .failed, .needsSource:
+            return record.errorMessage
+        case .findingSource:
+            return "Finding a source within your size limit…"
+        }
+    }
+}
+
 // MARK: - Records
 
 struct DownloadRecord: Codable, Identifiable {
@@ -309,6 +333,34 @@ final class DownloadManager: NSObject, ObservableObject {
         runSourceFinder()
     }
 
+    /// Queues a movie to download once its source is found in the
+    /// background (the Mac's way; the iPhone picks on the page).
+    func enqueueMovie(meta: NuvioMeta) {
+        let key = Self.key(profileId: profileId, contentId: meta.id)
+        if let existing = records[key], existing.state != .failed, existing.state != .needsSource { return }
+        records[key] = DownloadRecord(
+            id: key,
+            contentId: meta.id,
+            profileId: profileId,
+            meta: meta,
+            season: nil,
+            episode: nil,
+            episodeTitle: nil,
+            stream: nil,
+            localSubtitles: nil,
+            sourceURL: nil,
+            headers: [:],
+            expectedBytes: 0,
+            receivedBytes: 0,
+            state: .findingSource,
+            errorMessage: nil,
+            fileName: nil,
+            createdAt: Date()
+        )
+        saveIndex()
+        runSourceFinder()
+    }
+
     private var isFindingSources = false
 
     /// Works through the episodes still without a source, one at a time —
@@ -329,7 +381,11 @@ final class DownloadManager: NSObject, ObservableObject {
     private func findSource(_ key: String) async {
         guard let record = records[key] else { return }
         let repository = StreamsRepository.downloads
-        _ = await repository.collectStreams(type: "series", videoId: record.contentId)
+        let isMovie = record.season == nil
+        _ = await repository.collectStreams(
+            type: isMovie ? record.meta.type : "series",
+            videoId: isMovie ? record.meta.streamId : record.contentId
+        )
         guard records[key]?.state == .findingSource else { return }
         let store = ProfileSettings.current
         let sort = store.string(forKey: SettingsKey.streamSortOption)
@@ -345,7 +401,7 @@ final class DownloadManager: NSObject, ObservableObject {
         )
         switch DownloadStreamChooser.choose(
             from: ordered,
-            maxBytes: DownloadSettings.maxEpisodeBytes(in: store),
+            maxBytes: isMovie ? DownloadSettings.maxMovieBytes(in: store) : DownloadSettings.maxEpisodeBytes(in: store),
             debridEnabled: debrid
         ) {
         case .auto(let stream):
@@ -361,7 +417,7 @@ final class DownloadManager: NSObject, ObservableObject {
             update(key) {
                 $0.state = .needsSource
                 $0.errorMessage = anyDownloadable
-                    ? "No source fits your episode size limit. Choose one."
+                    ? "No source fits your \(isMovie ? "movie" : "episode") size limit. Choose one."
                     : "No downloadable source found. Choose one."
             }
         }
@@ -598,8 +654,14 @@ final class DownloadManager: NSObject, ObservableObject {
     fileprivate func progress(_ key: String, written: Int64, expected: Int64) {
         guard records[key] != nil else { return }
         let now = Date()
-        // A few updates a second are plenty for a progress ring.
-        if let last = lastProgressPublish[key], now.timeIntervalSince(last) < 0.25 { return }
+        // A few updates a second are plenty for a progress ring. Once a second
+        // on the Mac, where the show page that redraws for it is far larger.
+        #if os(macOS)
+        let interval = 1.0
+        #else
+        let interval = 0.25
+        #endif
+        if let last = lastProgressPublish[key], now.timeIntervalSince(last) < interval { return }
         lastProgressPublish[key] = now
         update(key, save: false) {
             $0.receivedBytes = written
@@ -637,9 +699,24 @@ final class DownloadManager: NSObject, ObservableObject {
 
     // MARK: Storage
 
+    #if os(macOS)
+    /// The folder chosen in Settings, when one has been.
+    nonisolated static let folderKey = "omni.downloads.folder"
+    #endif
+
     nonisolated static var directory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        var url = base.appendingPathComponent("Omni Downloads", isDirectory: true)
+        var url: URL
+        #if os(macOS)
+        if let custom = UserDefaults.standard.string(forKey: folderKey), !custom.isEmpty {
+            url = URL(fileURLWithPath: custom, isDirectory: true)
+        } else {
+            url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("Omni Downloads", isDirectory: true)
+        }
+        #else
+        url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Omni Downloads", isDirectory: true)
+        #endif
         if !FileManager.default.fileExists(atPath: url.path) {
             try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
             // Large and replaceable: kept out of device backups.
@@ -651,6 +728,38 @@ final class DownloadManager: NSObject, ObservableObject {
     }
 
     private static var indexURL: URL { directory.appendingPathComponent("index.json") }
+
+    #if os(macOS)
+    /// Moves every download, its saved subtitles and the index into `folder`
+    /// and keeps downloads there from now on. Nil goes back to the default.
+    func moveDownloads(to folder: URL?) {
+        let fileManager = FileManager.default
+        let old = Self.directory
+        if let folder {
+            UserDefaults.standard.set(folder.path, forKey: Self.folderKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.folderKey)
+        }
+        let new = Self.directory
+        guard old.standardizedFileURL != new.standardizedFileURL else { return }
+        var names = ["index.json"]
+        for record in records.values {
+            if let fileName = record.fileName { names.append(fileName) }
+            names += (record.localSubtitles ?? []).map(\.url)
+            names.append(Self.safeName(record.id) + ".resume")
+        }
+        for name in names {
+            let source = old.appendingPathComponent(name)
+            guard fileManager.fileExists(atPath: source.path) else { continue }
+            let target = new.appendingPathComponent(name)
+            try? fileManager.removeItem(at: target)
+            try? fileManager.moveItem(at: source, to: target)
+        }
+        Self.log("download.folder moved to \(new.path)")
+        saveIndex()
+        objectWillChange.send()
+    }
+    #endif
 
     private static func loadIndex() -> [String: DownloadRecord] {
         guard let data = try? Data(contentsOf: indexURL),

@@ -13867,6 +13867,22 @@ private struct DownloadSettingsGroup: View {
     @ObservedObject private var downloads = DownloadManager.shared
     @State private var confirmingDeleteAll = false
 
+    #if os(macOS)
+    /// Picks a folder and moves every download into it.
+    private func chooseDownloadFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Use This Folder"
+        panel.message = "Choose where Omni saves downloads. Downloads already saved are moved there."
+        panel.directoryURL = DownloadManager.directory
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        downloads.moveDownloads(to: url)
+    }
+    #endif
+
     var body: some View {
         SettingsGroup(
             title: L10n.string("settings_downloads", fallback: "Downloads"),
@@ -13902,6 +13918,18 @@ private struct DownloadSettingsGroup: View {
                 title: L10n.string("settings_downloads_storage", fallback: "Storage Used"),
                 value: DownloadSettings.label(for: max(downloads.storageUsed, 0))
             )
+            #if os(macOS)
+            SettingsActionRow(
+                title: L10n.string("settings_downloads_folder", fallback: "Download Folder"),
+                subtitle: DownloadManager.directory.path
+                    .replacingOccurrences(of: NSHomeDirectory(), with: "~"),
+                value: L10n.string("action_change", fallback: "Change"),
+                accentColor: accentColor,
+                macRowID: "downloads.folder"
+            ) {
+                chooseDownloadFolder()
+            }
+            #endif
             SettingsActionRow(
                 title: L10n.string("settings_downloads_delete_all", fallback: "Delete All Downloads"),
                 subtitle: L10n.string("settings_downloads_delete_all_subtitle", fallback: "Remove every download from this device"),

@@ -1115,21 +1115,7 @@ struct PhoneDownloadIcon: View {
     }
 
     static func statusText(record: DownloadRecord, waiting: Bool) -> String? {
-        let size = record.expectedBytes > 0 ? DownloadSettings.label(for: record.expectedBytes) : nil
-        switch record.state {
-        case .completed:
-            return "Downloaded" + (size.map { " · \($0)" } ?? "") + ". Available to watch offline."
-        case .downloading, .queued, .resolving:
-            if waiting { return "Waiting for Wi-Fi. Downloads over mobile data are off in Settings." }
-            let done = DownloadSettings.label(for: max(record.receivedBytes, 1))
-            return "Downloading \(Int(record.progress * 100))%" + (size.map { " · \(done) of \($0)" } ?? "")
-        case .paused:
-            return "Paused at \(Int(record.progress * 100))%."
-        case .failed, .needsSource:
-            return record.errorMessage
-        case .findingSource:
-            return "Finding a source within your size limit…"
-        }
+        DownloadStatusText.status(record: record, waiting: waiting)
     }
 }
 #endif

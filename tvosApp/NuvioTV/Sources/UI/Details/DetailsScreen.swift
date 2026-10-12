@@ -48,6 +48,12 @@ struct DetailsScreen: View {
     /// that dismisses the menu to this screen as well, and without this the
     /// screen would treat it as Back and return to Home.
     @State private var isEpisodeMenuPresented = false
+    #if os(macOS)
+    /// The title or episode whose download source is being picked in the rail.
+    @State private var macDownloadPick: MacDownloadPick?
+    /// The download options showing: one download's, or a series' seasons.
+    @State private var macDownloadMenu: MacDownloadMenu?
+    #endif
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @AppStorage(SettingsKey.smartStreamSelection) private var smartStreamSelection = false
     @AppStorage(SettingsKey.smartStreamUseTopResult) private var smartStreamUseTopResult = false
@@ -164,19 +170,53 @@ struct DetailsScreen: View {
                     isStreamsPresented: $isStreamPickerPresented,
                     onSelectStream: { stream, player in
                         guard let meta = viewModel.uiState.meta else { return }
+                        #if os(macOS)
+                        // Picking a source to download, not to play.
+                        if let pick = macDownloadPick {
+                            macDownloadPick = nil
+                            isStreamPickerPresented = false
+                            DownloadManager.shared.start(
+                                meta: meta,
+                                stream: stream,
+                                contentId: pick.contentId,
+                                season: pick.episode?.season,
+                                episode: pick.episode?.episode,
+                                episodeTitle: pick.episode?.title
+                            )
+                            return
+                        }
+                        #endif
                         PlaybackStartupTiming.start(title: meta.name)
                         isStreamPickerPresented = false
                         isPreparingPlayback = true
                         playStream(stream, meta: meta, player: player)
                     },
                     streamsSubtitle: macStreamsSubtitle,
-                    includeDebrid: DebridResolver(store: ProfileSettings.current).isEnabled
+                    includeDebrid: DebridResolver(store: ProfileSettings.current).isEnabled,
+                    onDownload: macDownloadHandler
                 )
                 // While the stream picker is open it sits on top as a full-screen
                 // overlay; disable the details content so the focus engine can't
                 // route focus to the (hidden) buttons behind it. macOS shows the
                 // streams in this page's own rail, so it must stay live.
                 #if os(macOS)
+                .confirmationDialog(
+                    macDownloadMenuTitle,
+                    isPresented: Binding(get: { macDownloadMenu != nil }, set: { if !$0 { macDownloadMenu = nil } }),
+                    titleVisibility: .visible
+                ) {
+                    macDownloadMenuActions
+                } message: {
+                    if case .record(let id) = macDownloadMenu,
+                       let record = DownloadManager.shared.record(for: id),
+                       let text = DownloadStatusText.status(record: record, waiting: false) {
+                        Text(text)
+                    }
+                }
+                // Closing the rail without choosing drops the download pick.
+                .onChange(of: isStreamPickerPresented) { _, presented in
+                    if !presented { macDownloadPick = nil }
+                }
                 .disabled(expandedComment != nil || isSmartPlaybackPending || isResolvingDebrid || isPreparingPlayback)
                 #else
                 .disabled(isStreamPickerPresented || expandedComment != nil || isSmartPlaybackPending || isResolvingDebrid || isPreparingPlayback)
@@ -370,10 +410,131 @@ struct DetailsScreen: View {
     /// Names what the rail's streams belong to, so a series does not just say
     /// "Streams" with no indication of which episode.
     private var macStreamsSubtitle: String? {
+        #if os(macOS)
+        if macDownloadPick != nil { return "Choose a source to download" }
+        #endif
         guard let episode = pendingEpisode else { return viewModel.uiState.meta?.name }
         let number = "S\(episode.season)E\(episode.episode)"
         return episode.title.isEmpty ? number : "\(number) · \(episode.title)"
     }
+
+    /// The Mac's download handler for the action row and the D key; nil
+    /// elsewhere, which leaves the button out.
+    private var macDownloadHandler: ((NuvioVideo?) -> Void)? {
+        #if os(macOS)
+        return { macDownload($0) }
+        #else
+        return nil
+        #endif
+    }
+
+    #if os(macOS)
+    /// Downloads the movie or an episode, finding its source in the
+    /// background; a series without an episode offers its seasons. An
+    /// existing download shows its options instead; one that needs a source
+    /// opens the rail to pick it.
+    private func macDownload(_ episode: NuvioVideo?) {
+        guard let meta = viewModel.uiState.meta else { return }
+        let downloads = DownloadManager.shared
+        if episode == nil, meta.isSeries {
+            macDownloadMenu = .series
+            return
+        }
+        let contentId = episode?.id ?? meta.id
+        if let record = downloads.record(for: contentId) {
+            switch record.state {
+            case .needsSource: macPickDownloadSource(meta: meta, episode: episode)
+            case .failed: downloads.resume(contentId)
+            default: macDownloadMenu = .record(contentId)
+            }
+            return
+        }
+        if let episode {
+            downloads.enqueueEpisodes(meta: meta, episodes: [episode])
+        } else {
+            downloads.enqueueMovie(meta: meta)
+        }
+    }
+
+    private func macPickDownloadSource(meta: NuvioMeta, episode: NuvioVideo?) {
+        macDownloadPick = MacDownloadPick(contentId: episode?.id ?? meta.id, episode: episode)
+        if let episode {
+            pendingEpisode = episode
+            pendingEpisodeSubtitle = "S\(episode.season) · E\(episode.episode) · \(episode.title)"
+            startStreamFlow(
+                streamId: canonicalEpisodeStreamId(for: episode, meta: meta),
+                type: "series",
+                reload: true,
+                forceManualPicker: true
+            )
+        } else {
+            pendingEpisode = nil
+            pendingEpisodeSubtitle = ""
+            startStreamFlow(streamId: meta.streamId, type: meta.type, reload: true, forceManualPicker: true)
+        }
+    }
+
+    private var macDownloadMenuTitle: String {
+        guard let meta = viewModel.uiState.meta else { return "" }
+        if case .record(let id) = macDownloadMenu,
+           let record = DownloadManager.shared.record(for: id),
+           let season = record.season, let number = record.episode {
+            return "S\(season) E\(number) · \(record.episodeTitle ?? meta.name)"
+        }
+        return meta.name
+    }
+
+    @ViewBuilder
+    private var macDownloadMenuActions: some View {
+        let downloads = DownloadManager.shared
+        if let meta = viewModel.uiState.meta {
+            switch macDownloadMenu {
+            case .series:
+                let episodes = (meta.videos ?? []).sorted {
+                    ($0.season <= 0 ? Int.max : $0.season, $0.episode) < ($1.season <= 0 ? Int.max : $1.season, $1.episode)
+                }
+                let seasons = Array(Set(episodes.map(\.season))).sorted { ($0 <= 0 ? Int.max : $0) < ($1 <= 0 ? Int.max : $1) }
+                ForEach(seasons, id: \.self) { season in
+                    let list = episodes.filter { $0.season == season }
+                    Button("Download \(season <= 0 ? "Specials" : "Season \(season)") (\(list.count))") {
+                        downloads.enqueueEpisodes(meta: meta, episodes: list)
+                    }
+                }
+                if seasons.count > 1 {
+                    Button("Download All Episodes (\(episodes.count))") {
+                        downloads.enqueueEpisodes(meta: meta, episodes: episodes)
+                    }
+                }
+            case .record(let id):
+                if let record = downloads.record(for: id) {
+                    switch record.state {
+                    case .completed:
+                        Button("Play Download") { MacPlayDownloadModifier.request(record) }
+                        Button("Delete Download", role: .destructive) { downloads.delete(id) }
+                    case .downloading, .queued, .resolving:
+                        Button("Pause Download") { downloads.pause(id) }
+                        Button("Cancel Download", role: .destructive) { downloads.delete(id) }
+                    case .paused:
+                        Button("Resume Download") { downloads.resume(id) }
+                        Button("Cancel Download", role: .destructive) { downloads.delete(id) }
+                    case .findingSource:
+                        Button("Cancel Download", role: .destructive) { downloads.delete(id) }
+                    case .needsSource:
+                        Button("Choose Source") {
+                            macPickDownloadSource(meta: meta, episode: meta.videos?.first { $0.id == id })
+                        }
+                        Button("Remove", role: .destructive) { downloads.delete(id) }
+                    case .failed:
+                        Button("Try Again") { downloads.resume(id) }
+                        Button("Remove", role: .destructive) { downloads.delete(id) }
+                    }
+                }
+            case nil:
+                EmptyView()
+            }
+        }
+    }
+    #endif
 
     private func startStreamFlow(streamId: String, type: String, reload: Bool, forceManualPicker: Bool = false) {
         guard let meta = viewModel.uiState.meta else { return }
@@ -2454,6 +2615,51 @@ struct TvDetailsContent: View {
     var onSelectStream: ((NuvioStream, ExternalPlayer?) -> Void)? = nil
     var streamsSubtitle: String? = nil
     var includeDebrid: Bool = false
+    /// Download the movie (nil) or one episode. Handled by `DetailsScreen`;
+    /// passed on the Mac only.
+    var onDownload: ((NuvioVideo?) -> Void)? = nil
+    #if os(macOS)
+    @ObservedObject private var downloads = DownloadManager.shared
+    #endif
+
+    /// The action row's Download button: the movie, or a season of the series.
+    private var macDownloadAction: (() -> Void)? {
+        guard let onDownload else { return nil }
+        return { onDownload(nil) }
+    }
+
+    /// Where the movie's download stands; a series always offers a season.
+    private var macDownloadSymbol: String {
+        #if os(macOS)
+        guard let meta = uiState.meta, !meta.isSeries,
+              let record = downloads.record(for: meta.id) else { return "arrow.down.to.line" }
+        switch record.state {
+        case .completed: return "checkmark.circle.fill"
+        case .downloading, .queued, .resolving, .findingSource: return "arrow.down.circle.dotted"
+        case .paused: return "pause.circle"
+        case .needsSource: return "questionmark.circle"
+        case .failed: return "exclamationmark.arrow.triangle.2.circlepath"
+        }
+        #else
+        return "arrow.down.to.line"
+        #endif
+    }
+
+    private func macDownloadBadge(for contentId: String) -> (text: String, tint: Color)? {
+        #if os(macOS)
+        guard let record = downloads.record(for: contentId) else { return nil }
+        switch record.state {
+        case .completed: return ("Downloaded", .blue)
+        case .downloading: return ("↓ \(Int(record.progress * 100))%", .blue.opacity(0.7))
+        case .queued, .resolving, .findingSource: return ("Queued", .gray)
+        case .paused: return ("Paused \(Int(record.progress * 100))%", .gray)
+        case .needsSource: return ("Choose source", .orange)
+        case .failed: return ("Download failed", .orange)
+        }
+        #else
+        return nil
+        #endif
+    }
 
     @State private var focusedDetailsSection: TvDetailsFocusSection = .actions
     #if os(macOS)
@@ -2579,6 +2785,8 @@ struct TvDetailsContent: View {
                                         }
                                         #endif
                                     }(),
+                                    onDownloadClick: macDownloadAction,
+                                    downloadSymbol: macDownloadSymbol,
                                     focus: $actionFocus,
                                     entryLocked: focusedDetailsSection != .actions,
                                     playEntryLocked: focusedDetailsSection == .episodes,
@@ -2838,6 +3046,15 @@ struct TvDetailsContent: View {
                 macCatchUpEpisodes = earlier
                 macShowCatchUpPrompt = true
             }
+            // D downloads: the caret's episode in the rail, else the title.
+            .macHotKey("d", isEnabled: { onDownload != nil }) {
+                if macFocus.row == .railList, macRailMode == .episodes,
+                   macSeasonEpisodes.indices.contains(macFocus.index) {
+                    onDownload?(macSeasonEpisodes[macFocus.index])
+                } else {
+                    onDownload?(nil)
+                }
+            }
             .confirmationDialog(
                 L10n.format(
                     "details_catch_up_title",
@@ -2898,6 +3115,7 @@ struct TvDetailsContent: View {
                     case .episodes: macShowEpisodes()
                     case .watchlist: onWatchlistClick()
                     case .watched: onWatchedClick()
+                    case .download: macDownloadAction?()
                     case .trailer: onTrailerClick()
                     case nil: break
                     }
@@ -3378,15 +3596,17 @@ struct TvDetailsContent: View {
             WatchedStore.containsEpisode(meta: $0, season: video.season, episode: video.episode)
         } ?? false
         let hasAired = EpisodeReleasePolicy.hasAired(video.released)
+        // A download's status takes the badge; Watched / Upcoming otherwise.
+        let download = macDownloadBadge(for: video.id)
         return MacRailRow(
             id: video.id,
             thumbnailURL: video.thumbnail.flatMap(URL.init(string:)),
             title: "\(video.episode). \(video.title)",
             subtitle: macReleaseLabel(video.released),
-            badge: isWatched
+            badge: download?.text ?? (isWatched
                 ? L10n.string("details_watched", fallback: "Watched")
-                : (hasAired ? nil : L10n.string("calendar_upcoming", fallback: "Upcoming")),
-            badgeTint: isWatched ? Color.yellow : Color.green.opacity(0.8),
+                : (hasAired ? nil : L10n.string("calendar_upcoming", fallback: "Upcoming"))),
+            badgeTint: download?.tint ?? (isWatched ? Color.yellow : Color.green.opacity(0.8)),
             progress: macContinueProgress(for: video)
         )
     }
@@ -3458,6 +3678,7 @@ struct TvDetailsContent: View {
     }
 
     private var macHasEpisodes: Bool { !(uiState.meta?.videos ?? []).isEmpty }
+
 
     /// The action row's Episodes button: nil on a movie, so it is not drawn.
     private var macEpisodesAction: (() -> Void)? {
@@ -3961,18 +4182,41 @@ private struct TvDetailsLogo: View {
 /// (tvOS doesn't auto-focus the primary button when the details content swaps in
 /// after the async load — see `TvDetailsContent`).
 private enum DetailsActionFocus: Hashable {
-    case play, episodes, watchlist, watched, trailer
+    case play, episodes, watchlist, watched, download, trailer
 }
 
 /// The action row's buttons by position, so the keyboard caret's index and the
 /// button that runs can never disagree. Only macOS navigates by it, but the
 /// shared action row names the type.
-enum MacDetailsActionSlot: Int, CaseIterable {
-    case play, episodes, watchlist, watched, trailer
+#if os(macOS)
+/// A title or episode whose download source is being picked in the rail.
+private struct MacDownloadPick {
+    let contentId: String
+    let episode: NuvioVideo?
+}
 
-    /// The buttons the row actually shows, in order: Episodes only on a series.
+private enum MacDownloadMenu {
+    /// One download's options, by content id.
+    case record(String)
+    /// A series: download a season, or every episode.
+    case series
+}
+#endif
+
+enum MacDetailsActionSlot: Int, CaseIterable {
+    case play, episodes, watchlist, watched, download, trailer
+
+    /// The buttons the row actually shows, in order: Episodes only on a
+    /// series, Download only on the Mac.
     static func slots(hasEpisodes: Bool) -> [MacDetailsActionSlot] {
-        allCases.filter { $0 != .episodes || hasEpisodes }
+        allCases.filter { slot in
+            if slot == .episodes { return hasEpisodes }
+            #if os(macOS)
+            return true
+            #else
+            return slot != .download
+            #endif
+        }
     }
 }
 
@@ -3994,6 +4238,10 @@ private struct TvDetailsActionRow: View {
     /// resumed episode swaps for its sources; tvOS takes focus down to the
     /// episode strip, which is otherwise several presses below the buttons.
     var onEpisodesClick: (() -> Void)? = nil
+    /// Mac only: download the movie, or a season of the series.
+    var onDownloadClick: (() -> Void)? = nil
+    /// The download button's symbol, for where the movie's download stands.
+    var downloadSymbol = "arrow.down.to.line"
     var focus: FocusState<DetailsActionFocus?>.Binding
     let entryLocked: Bool
     let playEntryLocked: Bool
@@ -4083,6 +4331,22 @@ private struct TvDetailsActionRow: View {
                 onFocus: onFocus
             )
             .disabled(entryLocked)
+
+            if let onDownloadClick {
+                TvDetailsActionButton(
+                    title: nil,
+                    systemName: downloadSymbol,
+                    accessibilityLabel: L10n.string("details_download", fallback: "Download"),
+                    accessibilityHint: L10n.string("details_download_hint", fallback: "Saves this title to watch without a connection"),
+                    isPrimary: false,
+                    focus: focus,
+                    tag: .download,
+                    macIsFocused: isMacFocused(.download),
+                    action: onDownloadClick,
+                    onFocus: onFocus
+                )
+                .disabled(entryLocked)
+            }
 
             TvDetailsActionButton(
                 title: nil,
