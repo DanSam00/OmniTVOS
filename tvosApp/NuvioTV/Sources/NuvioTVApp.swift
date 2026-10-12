@@ -1896,7 +1896,8 @@ struct ContentView: View {
                     return await syncManager.verifyProfilePin(profileId: profileId, pin: pin)
                 }
                 return profileViewModel.verifyProfilePin(id: profileId, pin: pin)
-            }
+            },
+            onPlayDownload: { playDownload($0) }
         )
         #if OMNI_DEBUG_TOOLS
         .task {
@@ -1920,6 +1921,10 @@ struct ContentView: View {
         if UserDefaults.standard.bool(forKey: "OmniDebugLandscape") {
             PhoneOrientation.request(.landscapeRight)
         }
+        // `-OmniDebugPortrait YES` turns it back upright.
+        if UserDefaults.standard.bool(forKey: "OmniDebugPortrait") {
+            PhoneOrientation.request(.portrait)
+        }
         downloadDebugLaunchURLIfRequested()
         guard let raw = UserDefaults.standard.string(forKey: "OmniDebugPlayURL"),
               let url = URL(string: raw) else { return }
@@ -1932,6 +1937,24 @@ struct ContentView: View {
             country: nil, released: nil
         )
         presentPlayback(url: url, meta: meta, subtitle: "", externalSubtitles: [], resumeFrom: nil)
+    }
+    #endif
+
+    #if os(iOS)
+    /// Plays a finished download from the device, as the title page would
+    /// play a stream: resume point, progress and the episode's own line.
+    private func playDownload(_ record: DownloadRecord) {
+        guard let file = DownloadManager.shared.localFileURL(for: record) else { return }
+        let episode = record.meta.videos?.first { $0.id == record.contentId }
+        playbackEpisodes = []
+        playbackCurrentEpisode = episode
+        presentPlayback(
+            url: file,
+            meta: record.meta,
+            subtitle: episode.map { "S\($0.season) · E\($0.episode) · \($0.title)" } ?? "",
+            externalSubtitles: record.stream.subtitles,
+            resumeFrom: Self.resumePosition(for: record.meta, episode: episode)
+        )
     }
     #endif
 

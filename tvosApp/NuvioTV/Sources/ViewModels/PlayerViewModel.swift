@@ -4038,6 +4038,9 @@ class PlayerViewModel: ObservableObject {
         // branches one at a time missed the middle one; live has no business
         // in this heuristic at all.
         guard !isLiveStream, !engine.isLiveSource else { return false }
+        // A downloaded file on this device cannot be an expired link's slate,
+        // however short it is.
+        if activeStreamURL?.hasPrefix("file:") == true { return false }
 
         let loaded = time.duration
         guard loaded > 0 else { return false }

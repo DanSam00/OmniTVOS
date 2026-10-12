@@ -35,11 +35,14 @@ struct PhoneDetailsView: View {
     @State private var trailerPreparedID: String?
     @State private var trailerShownID: String?
     @ObservedObject private var downloads = DownloadManager.shared
-    /// Waiting for the streams, to choose one to download.
-    @State private var isPreparingDownload = false
+    /// The movie or episode whose streams are loading, to choose one to download.
+    @State private var preparingDownloadId: String?
+    /// The episode being downloaded (nil for the movie itself).
+    @State private var downloadEpisode: NuvioVideo?
     /// The sources sheet is open to pick a download, not to play.
     @State private var isPickingDownload = false
-    @State private var isDownloadMenuPresented = false
+    /// The download whose options are showing.
+    @State private var downloadMenuId: String?
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -73,11 +76,23 @@ struct PhoneDetailsView: View {
         }
         .onDisappear { viewModel.cancelAllTasks() }
         .onChange(of: viewModel.uiState.isLoadingStreams) { _, loading in
-            guard !loading, isPreparingDownload, let meta = viewModel.uiState.meta else { return }
+            guard !loading, preparingDownloadId != nil, let meta = viewModel.uiState.meta else { return }
             chooseDownload(meta: meta)
         }
         .onChange(of: isSourcesPresented) { _, presented in
             if !presented { isPickingDownload = false }
+        }
+        .confirmationDialog(
+            viewModel.uiState.meta.map(downloadMenuTitle) ?? "",
+            isPresented: Binding(get: { downloadMenuId != nil }, set: { if !$0 { downloadMenuId = nil } }),
+            titleVisibility: .visible
+        ) {
+            if let meta = viewModel.uiState.meta { downloadMenuActions(meta: meta) }
+        } message: {
+            if let id = downloadMenuId, let record = downloads.record(for: id),
+               let message = PhoneDownloadIcon.statusText(record: record, waiting: downloads.isWaitingForWiFi(record)) {
+                Text(message)
+            }
         }
         .onChange(of: viewModel.uiState.meta?.id, initial: true) { _, _ in refreshWatchedEpisodes() }
         .onReceive(NotificationCenter.default.publisher(for: WatchedStore.changedNotification)) { _ in
@@ -96,7 +111,7 @@ struct PhoneDetailsView: View {
                     onSelect: { stream in
                         if isPickingDownload {
                             isSourcesPresented = false
-                            downloads.start(meta: meta, stream: stream, contentId: meta.id)
+                            startDownload(meta: meta, stream: stream, episode: downloadEpisode)
                         } else {
                             play(stream, meta: meta)
                         }
@@ -323,7 +338,9 @@ struct PhoneDetailsView: View {
             }
 
             if !meta.isSeries {
-                downloadButton(meta)
+                downloadControl(meta: meta, episode: nil)
+                    .frame(width: 48, height: 46)
+                    .background(Color.white.opacity(0.15), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
 
             Button { viewModel.toggleWatchlist() } label: {
@@ -352,85 +369,117 @@ struct PhoneDetailsView: View {
 
     // MARK: Downloads
 
-    private func downloadButton(_ meta: NuvioMeta) -> some View {
-        let record = downloads.record(for: meta.id)
+    private func downloadId(meta: NuvioMeta, episode: NuvioVideo?) -> String {
+        episode?.id ?? meta.id
+    }
+
+    /// The download icon for the movie, or for one episode, and what tapping
+    /// it does: start, retry, or show the download's options.
+    private func downloadControl(meta: NuvioMeta, episode: NuvioVideo?) -> some View {
+        let id = downloadId(meta: meta, episode: episode)
+        let record = downloads.record(for: id)
         return Button {
-            if let record, record.state != .failed {
-                isDownloadMenuPresented = true
-            } else if let record, record.state == .failed {
+            if let record, record.state == .failed {
                 downloads.resume(record.contentId)
+            } else if record != nil {
+                downloadMenuId = id
             } else {
-                beginDownload(meta)
+                beginDownload(meta, episode: episode)
             }
         } label: {
             PhoneDownloadIcon(
                 record: record,
                 isWaitingForWiFi: record.map(downloads.isWaitingForWiFi) ?? false,
-                isPreparing: isPreparingDownload
+                isPreparing: preparingDownloadId == id
             )
-            .frame(width: 48, height: 46)
-            .background(Color.white.opacity(0.15), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .accessibilityLabel(PhoneDownloadIcon.accessibilityLabel(record: record))
-        .confirmationDialog(meta.name, isPresented: $isDownloadMenuPresented, titleVisibility: .visible) {
-            if let record {
-                switch record.state {
-                case .completed:
-                    Button("Play Download") { _ = playDownloaded(meta) }
-                    Button("Delete Download", role: .destructive) { downloads.delete(record.contentId) }
-                case .downloading, .queued, .resolving:
-                    Button("Pause Download") { downloads.pause(record.contentId) }
-                    Button("Cancel Download", role: .destructive) { downloads.delete(record.contentId) }
-                case .paused:
-                    Button("Resume Download") { downloads.resume(record.contentId) }
-                    Button("Cancel Download", role: .destructive) { downloads.delete(record.contentId) }
-                case .failed:
-                    Button("Try Again") { downloads.resume(record.contentId) }
-                    Button("Remove", role: .destructive) { downloads.delete(record.contentId) }
-                }
-            }
-        } message: {
-            if let record, let message = PhoneDownloadIcon.statusText(record: record, waiting: downloads.isWaitingForWiFi(record)) {
-                Text(message)
+    }
+
+    /// The options for `downloadMenuId`: play or delete a finished download;
+    /// pause, resume or cancel one in progress.
+    @ViewBuilder
+    private func downloadMenuActions(meta: NuvioMeta) -> some View {
+        if let id = downloadMenuId, let record = downloads.record(for: id) {
+            switch record.state {
+            case .completed:
+                Button("Play Download") { _ = playDownloaded(meta: meta, contentId: id) }
+                Button("Delete Download", role: .destructive) { downloads.delete(id) }
+            case .downloading, .queued, .resolving:
+                Button("Pause Download") { downloads.pause(id) }
+                Button("Cancel Download", role: .destructive) { downloads.delete(id) }
+            case .paused:
+                Button("Resume Download") { downloads.resume(id) }
+                Button("Cancel Download", role: .destructive) { downloads.delete(id) }
+            case .failed:
+                Button("Try Again") { downloads.resume(id) }
+                Button("Remove", role: .destructive) { downloads.delete(id) }
             }
         }
     }
 
+    private func downloadMenuTitle(meta: NuvioMeta) -> String {
+        guard let id = downloadMenuId, let record = downloads.record(for: id),
+              let season = record.season, let episode = record.episode else { return meta.name }
+        return "S\(season) E\(episode) · \(record.episodeTitle ?? meta.name)"
+    }
+
     /// Fetches the sources, then downloads the one closest to the size limit
     /// — or asks, when the sizes cannot settle it.
-    private func beginDownload(_ meta: NuvioMeta) {
-        pickerEpisode = nil
-        isPreparingDownload = true
-        prepareStreams(meta: meta, episode: nil, force: false)
+    private func beginDownload(_ meta: NuvioMeta, episode: NuvioVideo?) {
+        pickerEpisode = episode
+        downloadEpisode = episode
+        preparingDownloadId = downloadId(meta: meta, episode: episode)
+        prepareStreams(meta: meta, episode: episode, force: false)
         if !viewModel.uiState.isLoadingStreams, !viewModel.uiState.streams.isEmpty {
             chooseDownload(meta: meta)
         }
     }
 
     private func chooseDownload(meta: NuvioMeta) {
-        isPreparingDownload = false
+        preparingDownloadId = nil
+        let episode = downloadEpisode
         let store = ProfileSettings.current
         let debrid = DebridResolver(store: store).isEnabled
         let ordered = PhoneSourcesSheet.displayedStreams(state: viewModel.uiState)
-        switch DownloadStreamChooser.choose(
-            from: ordered,
-            maxBytes: DownloadSettings.maxMovieBytes(in: store),
-            debridEnabled: debrid
-        ) {
+        let limit = episode == nil
+            ? DownloadSettings.maxMovieBytes(in: store)
+            : DownloadSettings.maxEpisodeBytes(in: store)
+        switch DownloadStreamChooser.choose(from: ordered, maxBytes: limit, debridEnabled: debrid) {
         case .auto(let stream):
-            downloads.start(meta: meta, stream: stream, contentId: meta.id)
+            startDownload(meta: meta, stream: stream, episode: episode)
         case .ask:
             isPickingDownload = true
             isSourcesPresented = true
         }
     }
 
-    /// Plays the movie's download, if it has one. False when it has none.
-    private func playDownloaded(_ meta: NuvioMeta) -> Bool {
-        guard let record = downloads.record(for: meta.id),
+    private func startDownload(meta: NuvioMeta, stream: NuvioStream, episode: NuvioVideo?) {
+        downloads.start(
+            meta: meta,
+            stream: stream,
+            contentId: downloadId(meta: meta, episode: episode),
+            season: episode?.season,
+            episode: episode?.episode,
+            episodeTitle: episode?.title
+        )
+    }
+
+    /// Plays a download of the movie or of one of its episodes. False when
+    /// there is none.
+    private func playDownloaded(meta: NuvioMeta, contentId: String) -> Bool {
+        guard let record = downloads.record(for: contentId),
               let file = downloads.localFileURL(for: record) else { return false }
-        onPlayClick(file.absoluteString, [:], meta, "", record.stream.subtitles, nil, [], nil)
+        let episode = meta.videos?.first { $0.id == contentId }
+        let subtitleLine = episode.map { "S\($0.season) · E\($0.episode) · \($0.title)" } ?? ""
+        onPlayClick(file.absoluteString, [:], meta, subtitleLine, record.stream.subtitles, episode, [], nil)
         return true
+    }
+
+    private func playDownloaded(_ meta: NuvioMeta) -> Bool {
+        playDownloaded(meta: meta, contentId: meta.id)
     }
 
     private func playLabel(_ meta: NuvioMeta) -> String {
@@ -500,11 +549,19 @@ struct PhoneDetailsView: View {
                     let isWatched = watchedEpisodeKeys.contains("\(episode.season):\(episode.episode)")
                     PhoneSwipeActionRow(
                         isWatched: isWatched,
-                        onTap: { openSources(meta: meta, episode: episode) },
+                        onTap: {
+                            // A downloaded episode plays from the device.
+                            if !playDownloaded(meta: meta, contentId: episode.id) {
+                                openSources(meta: meta, episode: episode)
+                            }
+                        },
                         onToggleWatched: { toggleEpisodeWatched(episode, meta: meta) },
                         onMarkThroughHere: { markWatchedThrough(episode, meta: meta) }
                     ) {
-                        PhoneEpisodeRow(episode: episode, fallbackArt: meta.backgroundUrl, isWatched: isWatched)
+                        PhoneEpisodeRow(episode: episode, fallbackArt: meta.backgroundUrl, isWatched: isWatched) {
+                            downloadControl(meta: meta, episode: episode)
+                                .frame(width: 40, height: 40)
+                        }
                     }
                 }
             }
@@ -610,10 +667,12 @@ struct PhoneDetailsView: View {
     }
 }
 
-private struct PhoneEpisodeRow: View {
+private struct PhoneEpisodeRow<Trailing: View>: View {
     let episode: NuvioVideo
     let fallbackArt: String?
     var isWatched = false
+    /// The episode's download icon.
+    @ViewBuilder var trailing: () -> Trailing
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -644,6 +703,7 @@ private struct PhoneEpisodeRow: View {
                 }
             }
             Spacer(minLength: 0)
+            trailing()
         }
         // A Liquid Glass card over the page's art, lightly darkened so the
         // text holds up on bright backdrops.

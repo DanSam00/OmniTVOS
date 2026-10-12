@@ -20,6 +20,7 @@ struct PhoneMainTabView: View {
     let onChangeProfileAvatar: (String, String) -> Void
     let onChangeProfilePin: (String, String?, String?) async -> Bool
     let onVerifyProfilePin: (String, String) async -> Bool
+    let onPlayDownload: (DownloadRecord) -> Void
 
     @StateObject private var homeLoader = PhoneHomeLoader()
     @ObservedObject private var iptv = IPTVAvailability.shared
@@ -68,7 +69,11 @@ struct PhoneMainTabView: View {
             }
             page(.library) {
                 NavigationStack {
-                    PhoneLibraryView(viewModel: libraryViewModel) { onOpenDetails($0, $1) }
+                    PhoneLibraryView(
+                        viewModel: libraryViewModel,
+                        onSelect: { onOpenDetails($0, $1) },
+                        onPlayDownload: onPlayDownload
+                    )
                 }
             }
             page(.calendar) {
@@ -238,6 +243,131 @@ private extension View {
     }
 }
 
+// MARK: - Downloads
+
+/// Everything downloaded to this phone, or downloading: movies, then each
+/// show's episodes in order. A finished one plays from the device; one in
+/// progress pauses or resumes on a tap; swipe to delete.
+struct PhoneDownloadsView: View {
+    let onPlay: (DownloadRecord) -> Void
+    let onOpen: (String, String) -> Void
+
+    @ObservedObject private var downloads = DownloadManager.shared
+
+    private var mine: [DownloadRecord] {
+        let profile = ProfileSettings.activeProfileScope
+        return downloads.records.values.filter { $0.profileId == profile }
+    }
+
+    private var movies: [DownloadRecord] {
+        mine.filter { $0.season == nil }.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    /// Shows by title, each with its episodes in season and episode order.
+    private var shows: [(meta: NuvioMeta, episodes: [DownloadRecord])] {
+        let grouped = Dictionary(grouping: mine.filter { $0.season != nil }, by: \.meta.id)
+        return grouped.values
+            .map { records in
+                (records[0].meta, records.sorted { ($0.season ?? 0, $0.episode ?? 0) < ($1.season ?? 0, $1.episode ?? 0) })
+            }
+            .sorted { $0.0.name.localizedCaseInsensitiveCompare($1.0.name) == .orderedAscending }
+    }
+
+    var body: some View {
+        if mine.isEmpty {
+            VStack(spacing: 12) {
+                Image(systemName: "arrow.down.circle").font(.largeTitle)
+                Text("Movies and episodes you download appear here, ready to watch without a connection.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .padding(.top, 100)
+            .padding(.horizontal, 40)
+        } else {
+            List {
+                if !movies.isEmpty {
+                    SwiftUI.Section("Movies") {
+                        ForEach(movies) { row($0) }
+                    }
+                }
+                ForEach(shows, id: \.meta.id) { show in
+                    SwiftUI.Section(show.meta.name) {
+                        ForEach(show.episodes) { row($0) }
+                    }
+                }
+                SwiftUI.Section {
+                    HStack {
+                        Text("Storage Used")
+                        Spacer()
+                        Text(DownloadSettings.label(for: max(downloads.storageUsed, 0)))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+        }
+    }
+
+    private func row(_ record: DownloadRecord) -> some View {
+        let waiting = downloads.isWaitingForWiFi(record)
+        let episode = record.meta.videos?.first { $0.id == record.contentId }
+        return Button { tap(record) } label: {
+            HStack(spacing: 12) {
+                PhoneArtwork(
+                    url: episode?.thumbnail ?? record.meta.backgroundUrl ?? record.meta.posterUrl,
+                    kind: .backdrop
+                )
+                .frame(width: 112, height: 63)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title(record))
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(2)
+                    if let status = PhoneDownloadIcon.statusText(record: record, waiting: waiting) {
+                        Text(status)
+                            .font(.caption)
+                            .foregroundStyle(record.state == .failed ? Color.orange : Color.secondary)
+                            .lineLimit(2)
+                    }
+                }
+                Spacer(minLength: 0)
+                PhoneDownloadIcon(record: record, isWaitingForWiFi: waiting, isPreparing: false)
+                    .frame(width: 32, height: 32)
+            }
+        }
+        .buttonStyle(.plain)
+        .swipeActions {
+            Button(role: .destructive) { downloads.delete(record.contentId) } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+        .contextMenu {
+            Button { onOpen(record.meta.id, record.meta.type) } label: {
+                Label("Go to Title", systemImage: "info.circle")
+            }
+            Button(role: .destructive) { downloads.delete(record.contentId) } label: {
+                Label("Delete Download", systemImage: "trash")
+            }
+        }
+    }
+
+    private func title(_ record: DownloadRecord) -> String {
+        guard let season = record.season, let episode = record.episode else { return record.meta.name }
+        return "S\(season) E\(episode) · \(record.episodeTitle ?? "Episode \(episode)")"
+    }
+
+    private func tap(_ record: DownloadRecord) {
+        switch record.state {
+        case .completed: onPlay(record)
+        case .downloading, .queued, .resolving: downloads.pause(record.contentId)
+        case .paused, .failed: downloads.resume(record.contentId)
+        }
+    }
+}
+
 // MARK: - Search
 
 struct PhoneSearchView: View {
@@ -330,12 +460,35 @@ struct PhoneSearchView: View {
 struct PhoneLibraryView: View {
     @ObservedObject var viewModel: LibraryViewModel
     let onSelect: (String, String) -> Void
+    let onPlayDownload: (DownloadRecord) -> Void
+
+    private enum Section: String, CaseIterable { case library = "Library", downloads = "Downloads" }
+    @State private var section: Section = .library
 
     private let columns = [GridItem(.adaptive(minimum: 104), spacing: 12, alignment: .top)]
 
     var body: some View {
+        VStack(spacing: 0) {
+            Picker("Show", selection: $section) {
+                ForEach(Section.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, PhoneLayout.gutter)
+            .padding(.vertical, 8)
+            switch section {
+            case .library:
+                libraryGrid
+            case .downloads:
+                PhoneDownloadsView(onPlay: onPlayDownload, onOpen: onSelect)
+            }
+        }
+        .navigationTitle(section == .library ? TVTab.library.title : "Downloads")
+        .onAppear { viewModel.loadLibrary() }
+    }
+
+    private var libraryGrid: some View {
         let groups = viewModel.sortedAndGroupedItems
-        ScrollView {
+        return ScrollView {
             if groups.values.allSatisfy(\.isEmpty) {
                 VStack(spacing: 12) {
                     Image(systemName: "rectangle.stack").font(.largeTitle)
@@ -363,7 +516,6 @@ struct PhoneLibraryView: View {
                 .padding(.vertical, 8)
             }
         }
-        .navigationTitle(TVTab.library.title)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -378,7 +530,6 @@ struct PhoneLibraryView: View {
                 }
             }
         }
-        .onAppear { viewModel.loadLibrary() }
         .refreshable { await viewModel.refreshSelectedLibrary() }
     }
 
