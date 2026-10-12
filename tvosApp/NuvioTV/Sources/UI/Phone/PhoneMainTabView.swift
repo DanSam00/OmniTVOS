@@ -306,50 +306,74 @@ struct PhoneDownloadsView: View {
             .padding(.top, 100)
             .padding(.horizontal, 40)
         } else {
-            List {
-                if !movies.isEmpty {
-                    SwiftUI.Section("Movies") {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    if !movies.isEmpty {
+                        header("Movies")
                         ForEach(movies) { row($0) }
                     }
-                }
-                ForEach(shows, id: \.meta.id) { show in
-                    SwiftUI.Section(show.meta.name) {
+                    ForEach(shows, id: \.meta.id) { show in
+                        header(show.meta.name)
                         ForEach(show.episodes) { row($0) }
                     }
-                }
-                SwiftUI.Section {
                     HStack {
                         Text("Storage Used")
                         Spacer()
                         Text(DownloadSettings.label(for: max(downloads.storageUsed, 0)))
                             .foregroundStyle(.secondary)
                     }
+                    .font(.subheadline)
+                    .padding(.top, 10)
                 }
+                .padding(.horizontal, PhoneLayout.gutter)
+                .padding(.vertical, 8)
             }
-            .listStyle(.insetGrouped)
-            .scrollContentBackground(.hidden)
         }
     }
 
+    private func header(_ title: String) -> some View {
+        Text(title)
+            .font(.title3.weight(.bold))
+            .padding(.top, 10)
+    }
+
+    /// A card like the episode list's, swiped left for Go to Title and
+    /// Delete (a full swipe deletes).
     private func row(_ record: DownloadRecord) -> some View {
         let waiting = downloads.isWaitingForWiFi(record)
         let episode = record.meta.videos?.first { $0.id == record.contentId }
-        return Button { tap(record) } label: {
+        return PhoneSwipeActionRow(
+            actions: [
+                PhoneSwipeAction(
+                    title: "Go to Title",
+                    systemImage: "info.circle",
+                    color: Color(white: 0.3),
+                    action: { onOpen(record.meta.id, record.meta.type) }
+                ),
+                PhoneSwipeAction(
+                    title: "Delete",
+                    systemImage: "trash",
+                    color: .red,
+                    action: { downloads.delete(record.contentId) }
+                ),
+            ],
+            onTap: { tap(record) }
+        ) {
             HStack(spacing: 12) {
                 PhoneArtwork(
                     url: episode?.thumbnail ?? record.meta.backgroundUrl ?? record.meta.posterUrl,
                     kind: .backdrop
                 )
-                .frame(width: 112, height: 63)
+                .frame(width: 128, height: 72)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(title(record))
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(2)
                     if let status = PhoneDownloadIcon.statusText(record: record, waiting: waiting) {
                         Text(status)
                             .font(.caption)
-                            .foregroundStyle(record.state == .failed ? Color.orange : Color.secondary)
+                            .foregroundStyle(record.state == .failed || record.state == .needsSource ? Color.orange : Color.secondary)
                             .lineLimit(2)
                     }
                 }
@@ -357,20 +381,11 @@ struct PhoneDownloadsView: View {
                 PhoneDownloadIcon(record: record, isWaitingForWiFi: waiting, isPreparing: false)
                     .frame(width: 32, height: 32)
             }
-        }
-        .buttonStyle(.plain)
-        .swipeActions {
-            Button(role: .destructive) { downloads.delete(record.contentId) } label: {
-                Label("Delete", systemImage: "trash")
-            }
-        }
-        .contextMenu {
-            Button { onOpen(record.meta.id, record.meta.type) } label: {
-                Label("Go to Title", systemImage: "info.circle")
-            }
-            Button(role: .destructive) { downloads.delete(record.contentId) } label: {
-                Label("Delete Download", systemImage: "trash")
-            }
+            .padding(8)
+            .frame(minHeight: 88)
+            .glassEffect(.regular.tint(.black.opacity(0.25)), in: .rect(cornerRadius: 10))
+            .environment(\.colorScheme, .dark)
+            .contentShape(Rectangle())
         }
     }
 

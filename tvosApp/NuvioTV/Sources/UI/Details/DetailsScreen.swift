@@ -2645,6 +2645,22 @@ struct TvDetailsContent: View {
         #endif
     }
 
+    /// The rail's download button for an episode, by where its download stands.
+    private func macEpisodeDownloadSymbol(_ contentId: String) -> String {
+        #if os(macOS)
+        switch downloads.record(for: contentId)?.state {
+        case nil: return "arrow.down.circle"
+        case .completed: return "checkmark.circle.fill"
+        case .downloading, .queued, .resolving, .findingSource: return "arrow.down.circle.dotted"
+        case .paused: return "pause.circle"
+        case .needsSource: return "questionmark.circle"
+        case .failed: return "exclamationmark.arrow.triangle.2.circlepath"
+        }
+        #else
+        return "arrow.down.circle"
+        #endif
+    }
+
     private func macDownloadBadge(for contentId: String) -> (text: String, tint: Color)? {
         #if os(macOS)
         guard let record = downloads.record(for: contentId) else { return nil }
@@ -3607,7 +3623,8 @@ struct TvDetailsContent: View {
                 ? L10n.string("details_watched", fallback: "Watched")
                 : (hasAired ? nil : L10n.string("calendar_upcoming", fallback: "Upcoming"))),
             badgeTint: download?.tint ?? (isWatched ? Color.yellow : Color.green.opacity(0.8)),
-            progress: macContinueProgress(for: video)
+            progress: macContinueProgress(for: video),
+            accessorySymbol: onDownload == nil ? nil : macEpisodeDownloadSymbol(video.id)
         )
     }
 
@@ -3745,7 +3762,13 @@ struct TvDetailsContent: View {
                     macFocus.row = .railList
                     macFocus.index = index
                     macActivateRailRow(index)
-                }
+                },
+                onRowAccessory: macRailMode == .episodes && onDownload != nil ? { index in
+                    guard macSeasonEpisodes.indices.contains(index) else { return }
+                    macFocus.row = .railList
+                    macFocus.index = index
+                    onDownload?(macSeasonEpisodes[index])
+                } : nil
             )
             .padding(.vertical, 70)
             .padding(.trailing, MacRailMetrics.gutter)
@@ -7717,6 +7740,8 @@ struct MacDetailsRail: View {
     let focusedRowIndex: Int?
     let onHeaderTap: (Int) -> Void
     let onRowTap: (Int) -> Void
+    /// The row's accessory button (an episode's download).
+    var onRowAccessory: ((Int) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -7843,7 +7868,11 @@ extension MacDetailsRail {
                             // had just established, so switching season or
                             // filter kept whatever view already sat at that
                             // position — the list simply never changed.
-                            MacRailRowView(row: row, isFocused: focusedRowIndex == index)
+                            MacRailRowView(
+                                row: row,
+                                isFocused: focusedRowIndex == index,
+                                onAccessory: onRowAccessory.map { action in { action(index) } }
+                            )
                                 .id(row.id)
                                 .contentShape(Rectangle())
                                 .onTapGesture { onRowTap(index) }
@@ -7963,6 +7992,9 @@ struct MacRailRow: Identifiable {
     var badge: String?
     var badgeTint: Color = .white.opacity(0.2)
     var progress: Double?
+    /// A small button at the row's end — an episode's download — drawn when
+    /// the rail is given something to do with it.
+    var accessorySymbol: String?
 }
 
 /// Shared with the player's Sources panel, so a stream reads the same way in
@@ -7970,6 +8002,7 @@ struct MacRailRow: Identifiable {
 struct MacRailRowView: View {
     let row: MacRailRow
     let isFocused: Bool
+    var onAccessory: (() -> Void)? = nil
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -8033,6 +8066,19 @@ struct MacRailRowView: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(Capsule().fill(row.badgeTint))
+            }
+
+            if let symbol = row.accessorySymbol, let onAccessory {
+                Button(action: onAccessory) {
+                    Image(systemName: symbol)
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 36, height: 36)
+                        .background(Circle().fill(Color.white.opacity(0.12)))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Download (D)")
             }
         }
         .padding(.horizontal, 10)

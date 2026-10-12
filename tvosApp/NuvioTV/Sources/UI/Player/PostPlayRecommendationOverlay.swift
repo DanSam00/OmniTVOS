@@ -45,24 +45,7 @@ struct PostPlayRecommendationOverlay: View {
         }
 
         return AnyView(
-            ZStack(alignment: .bottomLeading) {
-                // 1. Full-screen backdrop or Trailer preview
-                backdropLayer(for: recommendation)
-
-                // 2. Gradient Scrims for text contrast
-                scrimsLayer
-
-                // 3. Bottom-Leading Content Summary & Actions
-                VStack(alignment: .leading, spacing: 0) {
-                    summarySection(for: recommendation)
-                        .padding(.bottom, state.isTrailerPlaying ? 24 : 36)
-
-                    actionButtonsRow(for: recommendation)
-                }
-                .frame(maxWidth: 960, alignment: .leading)
-                .padding(.leading, 80)
-                .padding(.bottom, 60)
-            }
+            layout(for: recommendation)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea()
             .onExitCommand {
@@ -119,6 +102,68 @@ struct PostPlayRecommendationOverlay: View {
     }
 
     // MARK: - Subviews
+
+    /// The summary and the action buttons, laid out at TV size.
+    private func content(for recommendation: PostPlayRecommendation) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            summarySection(for: recommendation)
+                .padding(.bottom, state.isTrailerPlaying ? 24 : 36)
+
+            actionButtonsRow(for: recommendation)
+        }
+        .frame(maxWidth: 960, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func layout(for recommendation: PostPlayRecommendation) -> some View {
+        #if os(iOS)
+        // The card is drawn at TV size — 54pt titles, 76pt buttons, an 80pt
+        // margin — so on a phone it ran off the screen, and the backdrop's
+        // fill widened the layout past it. Here the art is held to the
+        // screen and the content is laid out at TV size, then scaled down to
+        // fit, upright or sideways.
+        GeometryReader { proxy in
+            let size = proxy.size
+            let scale = min(1, size.width / 720, size.height / 640)
+            // Clear of the Dynamic Island when sideways.
+            let sideInset = Self.windowSafeArea.left
+            ZStack(alignment: .bottomLeading) {
+                backdropLayer(for: recommendation)
+                    .frame(width: size.width, height: size.height)
+                    .clipped()
+                scrimsLayer
+                content(for: recommendation)
+                    .padding(.leading, 48 + sideInset / scale)
+                    .padding(.trailing, 32)
+                    .padding(.bottom, 40 + Self.windowSafeArea.bottom / scale)
+                    .frame(width: size.width / scale, alignment: .bottomLeading)
+                    .scaleEffect(scale, anchor: .bottomLeading)
+                    .frame(width: size.width, height: size.height, alignment: .bottomLeading)
+            }
+        }
+        #else
+        ZStack(alignment: .bottomLeading) {
+            // 1. Full-screen backdrop or Trailer preview
+            backdropLayer(for: recommendation)
+
+            // 2. Gradient Scrims for text contrast
+            scrimsLayer
+
+            // 3. Bottom-Leading Content Summary & Actions
+            content(for: recommendation)
+                .padding(.leading, 80)
+                .padding(.bottom, 60)
+        }
+        #endif
+    }
+
+    #if os(iOS)
+    private static var windowSafeArea: UIEdgeInsets {
+        UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.keyWindow }
+            .first?.safeAreaInsets ?? .zero
+    }
+    #endif
 
     @ViewBuilder
     private func backdropLayer(for recommendation: PostPlayRecommendation) -> some View {

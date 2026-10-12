@@ -79,20 +79,76 @@ enum DownloadStreamChooser {
         return debridEnabled && stream.isDebridResolvable && stream.isCached != false
     }
 
-    /// `streams` in the order the source list shows them, best first.
-    static func choose(from streams: [NuvioStream], maxBytes: Int64?, debridEnabled: Bool) -> Choice {
-        let candidates = streams.filter { isDownloadable($0, debridEnabled: debridEnabled) }
+    /// `streams` in the order the source list shows them, best first. For an
+    /// episode, `season`/`episode` keep out any stream whose name gives a
+    /// different episode — the size alone once picked S01E20 for S01E01.
+    static func choose(
+        from streams: [NuvioStream],
+        maxBytes: Int64?,
+        debridEnabled: Bool,
+        season: Int? = nil,
+        episode: Int? = nil
+    ) -> Choice {
+        let candidates = streams.filter {
+            isDownloadable($0, debridEnabled: debridEnabled)
+                && matches($0, season: season, episode: episode)
+        }
         guard !candidates.isEmpty else { return .ask }
-        let sized = candidates.compactMap { stream in
-            StreamBadgeSizing.fileSizeBytes(for: stream).map { (stream, $0) }
+        // A stream that names this very episode beats one that names none
+        // (a season pack, left to the debrid service to pick the file from).
+        func named(_ stream: NuvioStream) -> Bool {
+            guard let season, let episode, let marker = episodeMarker(of: stream) else { return false }
+            return marker == EpisodeMarker(season: season, episode: episode)
         }
         guard let maxBytes else {
-            return .auto(candidates[0])
+            return .auto(candidates.first(where: named) ?? candidates[0])
         }
-        let fitting = sized.filter { $0.1 <= maxBytes }
+        let fitting = candidates.compactMap { stream in
+            StreamBadgeSizing.fileSizeBytes(for: stream).map { (stream, $0) }
+        }
+        .filter { $0.1 <= maxBytes }
         // Closest to the limit; the earlier (better-ranked) one on a tie.
-        guard let best = fitting.max(by: { $0.1 < $1.1 }) else { return .ask }
+        guard let best = fitting.max(by: {
+            (named($0.0) ? 1 : 0, $0.1) < (named($1.0) ? 1 : 0, $1.1)
+        }) else { return .ask }
         return .auto(best.0)
+    }
+
+    struct EpisodeMarker: Equatable {
+        let season: Int
+        let episode: Int
+    }
+
+    /// The season and episode a stream's file name or title gives, when it
+    /// gives one: "S01E20", "s1.e20", "1x20".
+    static func episodeMarker(of stream: NuvioStream) -> EpisodeMarker? {
+        let text = [stream.filename, stream.description, stream.name]
+            .compactMap { $0 }
+            .joined(separator: " ")
+        return episodeMarker(in: text)
+    }
+
+    static func episodeMarker(in text: String) -> EpisodeMarker? {
+        let patterns = [
+            #"(?i)\bs(\d{1,2})[ ._-]?e(\d{1,3})(?!\d)"#,
+            #"(?i)\b(\d{1,2})x(\d{2,3})\b"#,
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+                  let seasonRange = Range(match.range(at: 1), in: text),
+                  let episodeRange = Range(match.range(at: 2), in: text),
+                  let season = Int(text[seasonRange]),
+                  let episode = Int(text[episodeRange]) else { continue }
+            return EpisodeMarker(season: season, episode: episode)
+        }
+        return nil
+    }
+
+    /// False only when the stream names an episode and it is another one.
+    static func matches(_ stream: NuvioStream, season: Int?, episode: Int?) -> Bool {
+        guard let season, let episode, let marker = episodeMarker(of: stream) else { return true }
+        return marker == EpisodeMarker(season: season, episode: episode)
     }
 }
 
@@ -402,7 +458,9 @@ final class DownloadManager: NSObject, ObservableObject {
         switch DownloadStreamChooser.choose(
             from: ordered,
             maxBytes: isMovie ? DownloadSettings.maxMovieBytes(in: store) : DownloadSettings.maxEpisodeBytes(in: store),
-            debridEnabled: debrid
+            debridEnabled: debrid,
+            season: record.season,
+            episode: record.episode
         ) {
         case .auto(let stream):
             update(key) {
@@ -496,6 +554,13 @@ final class DownloadManager: NSObject, ObservableObject {
         guard records[key] != nil else { return }
         guard let url else {
             fail(key, "Couldn't get a download link for this source.")
+            return
+        }
+        if let mismatch = Self.wrongEpisode(name: url.lastPathComponent.removingPercentEncoding, for: record) {
+            update(key) {
+                $0.state = .needsSource
+                $0.errorMessage = "That source gives \(mismatch), not this episode. Choose another."
+            }
             return
         }
         update(key) {
@@ -670,11 +735,30 @@ final class DownloadManager: NSObject, ObservableObject {
         }
     }
 
-    fileprivate func finished(_ key: String, fileName: String?, bytes: Int64, error: String?) {
+    /// "S01E20" when `name` gives an episode other than the record's.
+    private static func wrongEpisode(name: String?, for record: DownloadRecord) -> String? {
+        guard let name, let season = record.season, let episode = record.episode,
+              let marker = DownloadStreamChooser.episodeMarker(in: name),
+              marker != .init(season: season, episode: episode) else { return nil }
+        return String(format: "S%02dE%02d", marker.season, marker.episode)
+    }
+
+    fileprivate func finished(_ key: String, fileName: String?, bytes: Int64, error: String?, sourceName: String? = nil) {
         tasks[key] = nil
         lastProgressPublish[key] = nil
         if let error {
             fail(key, error)
+            return
+        }
+        // The file itself, named for another episode: not what was asked for.
+        if let record = records[key], let mismatch = Self.wrongEpisode(name: sourceName, for: record) {
+            if let fileName { try? FileManager.default.removeItem(at: Self.directory.appendingPathComponent(fileName)) }
+            update(key) {
+                $0.state = .needsSource
+                $0.receivedBytes = 0
+                $0.errorMessage = "That source gave \(mismatch), not this episode. Choose another."
+            }
+            pump()
             return
         }
         update(key) {
@@ -841,7 +925,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
             try? FileManager.default.removeItem(at: destination)
             try FileManager.default.moveItem(at: location, to: destination)
             let bytes = (try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
-            Task { @MainActor in self.finished(key, fileName: fileName, bytes: bytes, error: nil) }
+            Task { @MainActor in self.finished(key, fileName: fileName, bytes: bytes, error: nil, sourceName: suggested) }
         } catch {
             let message = error.localizedDescription
             Task { @MainActor in self.finished(key, fileName: nil, bytes: 0, error: message) }

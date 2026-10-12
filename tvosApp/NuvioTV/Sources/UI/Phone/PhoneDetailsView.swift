@@ -107,6 +107,7 @@ struct PhoneDetailsView: View {
                     state: viewModel.uiState,
                     isResolving: isResolvingDebrid,
                     isPickingDownload: isPickingDownload,
+                    downloadEpisode: downloadEpisode,
                     onRefresh: { prepareStreams(meta: meta, episode: pickerEpisode, force: true) },
                     onSelect: { stream in
                         if isPickingDownload {
@@ -487,7 +488,13 @@ struct PhoneDetailsView: View {
         let limit = episode == nil
             ? DownloadSettings.maxMovieBytes(in: store)
             : DownloadSettings.maxEpisodeBytes(in: store)
-        switch DownloadStreamChooser.choose(from: ordered, maxBytes: limit, debridEnabled: debrid) {
+        switch DownloadStreamChooser.choose(
+            from: ordered,
+            maxBytes: limit,
+            debridEnabled: debrid,
+            season: episode?.season,
+            episode: episode?.episode
+        ) {
         case .auto(let stream):
             startDownload(meta: meta, stream: stream, episode: episode)
         case .ask:
@@ -592,15 +599,26 @@ struct PhoneDetailsView: View {
                 ForEach(list, id: \.id) { episode in
                     let isWatched = watchedEpisodeKeys.contains("\(episode.season):\(episode.episode)")
                     PhoneSwipeActionRow(
-                        isWatched: isWatched,
+                        actions: [
+                            PhoneSwipeAction(
+                                title: "Up to here",
+                                systemImage: "checkmark.circle",
+                                color: Color(white: 0.3),
+                                action: { markWatchedThrough(episode, meta: meta) }
+                            ),
+                            PhoneSwipeAction(
+                                title: isWatched ? "Unwatched" : "Watched",
+                                systemImage: isWatched ? "eye.slash" : "eye",
+                                color: .blue,
+                                action: { toggleEpisodeWatched(episode, meta: meta) }
+                            ),
+                        ],
                         onTap: {
                             // A downloaded episode plays from the device.
                             if !playDownloaded(meta: meta, contentId: episode.id) {
                                 openSources(meta: meta, episode: episode)
                             }
-                        },
-                        onToggleWatched: { toggleEpisodeWatched(episode, meta: meta) },
-                        onMarkThroughHere: { markWatchedThrough(episode, meta: meta) }
+                        }
                     ) {
                         PhoneEpisodeRow(episode: episode, fallbackArt: meta.backgroundUrl, isWatched: isWatched) {
                             downloadControl(meta: meta, episode: episode)
@@ -766,7 +784,7 @@ private struct PhoneEpisodeRow<Trailing: View>: View {
 /// A horizontal-only pan. `gestureRecognizerShouldBegin` refuses any touch
 /// that starts out more vertical than horizontal, so the enclosing scroll
 /// view gets those immediately and never waits on this.
-private struct PhoneHorizontalPan: UIGestureRecognizerRepresentable {
+struct PhoneHorizontalPan: UIGestureRecognizerRepresentable {
     let onChanged: (CGFloat) -> Void
     let onEnded: (CGFloat, CGFloat) -> Void
 
@@ -799,11 +817,19 @@ private struct PhoneHorizontalPan: UIGestureRecognizerRepresentable {
     }
 }
 
-private struct PhoneSwipeActionRow<Content: View>: View {
-    let isWatched: Bool
+/// One button behind a swiped row.
+struct PhoneSwipeAction {
+    let title: String
+    let systemImage: String
+    let color: Color
+    let action: () -> Void
+}
+
+struct PhoneSwipeActionRow<Content: View>: View {
+    /// Left to right. The last is the full-swipe action, and widens to fill
+    /// the gap as a full swipe gets close.
+    let actions: [PhoneSwipeAction]
     let onTap: () -> Void
-    let onToggleWatched: () -> Void
-    let onMarkThroughHere: () -> Void
     @ViewBuilder let content: Content
 
     @State private var offset: CGFloat = 0
@@ -811,27 +837,25 @@ private struct PhoneSwipeActionRow<Content: View>: View {
     @State private var isOpen = false
 
     private let buttonWidth: CGFloat = 92
-    private var openOffset: CGFloat { -buttonWidth * 2 }
+    private var openOffset: CGFloat { -buttonWidth * CGFloat(actions.count) }
     private var fullSwipe: CGFloat { -rowWidth * 0.8 }
 
     var body: some View {
         ZStack(alignment: .trailing) {
             HStack(spacing: 0) {
                 Spacer(minLength: 0)
-                actionButton(
-                    title: "Up to here",
-                    systemImage: "checkmark.circle",
-                    color: Color(white: 0.3),
-                    action: onMarkThroughHere
-                )
-                actionButton(
-                    title: isWatched ? "Unwatched" : "Watched",
-                    systemImage: isWatched ? "eye.slash" : "eye",
-                    // Grows to fill the gap as a full swipe gets close.
-                    color: .blue,
-                    width: max(buttonWidth, -offset - buttonWidth),
-                    action: onToggleWatched
-                )
+                ForEach(Array(actions.enumerated()), id: \.offset) { index, item in
+                    let isLast = index == actions.count - 1
+                    actionButton(
+                        title: item.title,
+                        systemImage: item.systemImage,
+                        color: item.color,
+                        width: isLast
+                            ? max(buttonWidth, -offset - buttonWidth * CGFloat(actions.count - 1))
+                            : nil,
+                        action: item.action
+                    )
+                }
             }
             .opacity(offset < 0 ? 1 : 0)
 
@@ -856,7 +880,7 @@ private struct PhoneSwipeActionRow<Content: View>: View {
                 let end = start + dx + velocity * 0.15
                 if offset <= fullSwipe || end <= fullSwipe * 1.15 {
                     withAnimation(.easeOut(duration: 0.18)) { offset = -rowWidth }
-                    onToggleWatched()
+                    actions.last?.action()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { close() }
                 } else if offset < openOffset / 2 {
                     withAnimation(.spring(duration: 0.3)) { offset = openOffset }
@@ -904,6 +928,8 @@ private struct PhoneSourcesSheet: View {
     let state: DetailsUiState
     let isResolving: Bool
     var isPickingDownload = false
+    /// Picking for this episode: sources named for another one are hidden.
+    var downloadEpisode: NuvioVideo? = nil
     let onRefresh: () -> Void
     let onSelect: (NuvioStream) -> Void
 
@@ -911,7 +937,10 @@ private struct PhoneSourcesSheet: View {
         let all = Self.displayedStreams(state: state)
         guard isPickingDownload else { return all }
         let debrid = DebridResolver(store: ProfileSettings.current).isEnabled
-        return all.filter { DownloadStreamChooser.isDownloadable($0, debridEnabled: debrid) }
+        return all.filter {
+            DownloadStreamChooser.isDownloadable($0, debridEnabled: debrid)
+                && DownloadStreamChooser.matches($0, season: downloadEpisode?.season, episode: downloadEpisode?.episode)
+        }
     }
 
     /// The sources as the sheet lists them, best first.
