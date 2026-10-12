@@ -381,6 +381,9 @@ struct PhoneDetailsView: View {
         return Button {
             if let record, record.state == .failed {
                 downloads.resume(record.contentId)
+            } else if let record, record.state == .needsSource {
+                // A season download found nothing within the limit: pick one.
+                beginDownload(meta, episode: episode)
             } else if record != nil {
                 downloadMenuId = id
             } else {
@@ -416,6 +419,13 @@ struct PhoneDetailsView: View {
             case .failed:
                 Button("Try Again") { downloads.resume(id) }
                 Button("Remove", role: .destructive) { downloads.delete(id) }
+            case .findingSource:
+                Button("Cancel Download", role: .destructive) { downloads.delete(id) }
+            case .needsSource:
+                Button("Choose Source") {
+                    beginDownload(meta, episode: meta.videos?.first { $0.id == id })
+                }
+                Button("Remove", role: .destructive) { downloads.delete(id) }
             }
         }
     }
@@ -424,6 +434,36 @@ struct PhoneDetailsView: View {
         guard let id = downloadMenuId, let record = downloads.record(for: id),
               let season = record.season, let episode = record.episode else { return meta.name }
         return "S\(season) E\(episode) · \(record.episodeTitle ?? meta.name)"
+    }
+
+    /// Download this season, or every episode. Each episode finds its own
+    /// source in the background; those that cannot are left to pick.
+    private func seasonDownloadMenu(meta: NuvioMeta, season: Int, list: [NuvioVideo]) -> some View {
+        let all = orderedEpisodes(meta)
+        let seasonDone = !list.isEmpty && list.allSatisfy { downloads.record(for: $0.id) != nil }
+        return Menu {
+            Button {
+                downloads.enqueueEpisodes(meta: meta, episodes: list)
+            } label: {
+                Label(
+                    "Download \(season == 0 ? "Specials" : "Season \(season)") (\(list.count))",
+                    systemImage: "arrow.down.circle"
+                )
+            }
+            .disabled(seasonDone)
+            if seasons(meta).count > 1 {
+                Button {
+                    downloads.enqueueEpisodes(meta: meta, episodes: all)
+                } label: {
+                    Label("Download All Episodes (\(all.count))", systemImage: "square.and.arrow.down.on.square")
+                }
+            }
+        } label: {
+            Image(systemName: seasonDone ? "checkmark.circle" : "arrow.down.circle")
+                .font(.title3)
+                .padding(.horizontal, 6)
+        }
+        .accessibilityLabel("Download Season")
     }
 
     /// Fetches the sources, then downloads the one closest to the size limit
@@ -474,7 +514,10 @@ struct PhoneDetailsView: View {
               let file = downloads.localFileURL(for: record) else { return false }
         let episode = meta.videos?.first { $0.id == contentId }
         let subtitleLine = episode.map { "S\($0.season) · E\($0.episode) · \($0.title)" } ?? ""
-        onPlayClick(file.absoluteString, [:], meta, subtitleLine, record.stream.subtitles, episode, [], nil)
+        // The whole season, so the player moves on to the next episode —
+        // from the phone too when that one is downloaded.
+        let episodes = episode == nil ? [] : orderedEpisodes(meta)
+        onPlayClick(file.absoluteString, [:], meta, subtitleLine, record.playbackSubtitles, episode, episodes, nil)
         return true
     }
 
@@ -528,6 +571,7 @@ struct PhoneDetailsView: View {
             HStack {
                 Text("Episodes").font(.title3.weight(.bold))
                 Spacer()
+                seasonDownloadMenu(meta: meta, season: season, list: list)
                 if allSeasons.count > 1 {
                     Menu {
                         ForEach(allSeasons, id: \.self) { value in
@@ -1012,6 +1056,12 @@ struct PhoneDownloadIcon: View {
                         .foregroundStyle(.orange)
                 case .paused:
                     ring(record.progress, symbol: "pause.fill")
+                case .findingSource:
+                    ProgressView().controlSize(.small)
+                case .needsSource:
+                    Image(systemName: "questionmark.circle")
+                        .font(.headline)
+                        .foregroundStyle(.orange)
                 case .resolving, .queued:
                     if isWaitingForWiFi {
                         Image(systemName: "wifi.slash").font(.headline)
@@ -1059,6 +1109,8 @@ struct PhoneDownloadIcon: View {
         case .paused: return "Download paused"
         case .failed: return "Download failed, retry"
         case .resolving, .queued: return "Download waiting"
+        case .findingSource: return "Finding a source to download"
+        case .needsSource: return "Choose a source to download"
         }
     }
 
@@ -1073,8 +1125,10 @@ struct PhoneDownloadIcon: View {
             return "Downloading \(Int(record.progress * 100))%" + (size.map { " · \(done) of \($0)" } ?? "")
         case .paused:
             return "Paused at \(Int(record.progress * 100))%."
-        case .failed:
+        case .failed, .needsSource:
             return record.errorMessage
+        case .findingSource:
+            return "Finding a source within your size limit…"
         }
     }
 }

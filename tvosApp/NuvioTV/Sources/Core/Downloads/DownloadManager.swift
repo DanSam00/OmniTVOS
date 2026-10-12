@@ -100,6 +100,10 @@ enum DownloadStreamChooser {
 
 struct DownloadRecord: Codable, Identifiable {
     enum State: String, Codable {
+        /// Queued as part of a season: its source is still to be found.
+        case findingSource
+        /// No source fit the size limit: the user picks one.
+        case needsSource
         case resolving, queued, downloading, paused, completed, failed
     }
 
@@ -112,7 +116,12 @@ struct DownloadRecord: Codable, Identifiable {
     var season: Int?
     var episode: Int?
     var episodeTitle: String?
-    let stream: NuvioStream
+    /// Nil until a season download has found this episode's source.
+    var stream: NuvioStream?
+    /// Subtitles saved beside the video, in the preferred languages. Their
+    /// `url` is the bare file name: iOS moves the app's container on every
+    /// update, so a full path saved today points nowhere tomorrow.
+    var localSubtitles: [NuvioSubtitle]?
     var sourceURL: String?
     var headers: [String: String]
     var expectedBytes: Int64
@@ -125,6 +134,19 @@ struct DownloadRecord: Codable, Identifiable {
     var progress: Double {
         guard expectedBytes > 0 else { return 0 }
         return min(1, Double(receivedBytes) / Double(expectedBytes))
+    }
+
+    /// The saved subtitles first — they work offline — then the source's own.
+    var playbackSubtitles: [NuvioSubtitle] {
+        let saved = (localSubtitles ?? []).map { subtitle in
+            NuvioSubtitle(
+                url: DownloadManager.directory.appendingPathComponent(subtitle.url).absoluteString,
+                language: subtitle.language,
+                label: subtitle.label,
+                source: subtitle.source
+            )
+        }
+        return saved + (stream?.subtitles ?? [])
     }
 }
 
@@ -142,6 +164,8 @@ final class DownloadManager: NSObject, ObservableObject {
     @Published private(set) var records: [String: DownloadRecord] = [:]
     /// The device is on mobile data (or another expensive network) only.
     @Published private(set) var isOnCellularOnly = false
+    /// No connection at all.
+    @Published private(set) var isOffline = false
 
     /// Handed over by the app when iOS wakes it for finished background
     /// work; called once the session has delivered its events.
@@ -168,7 +192,11 @@ final class DownloadManager: NSObject, ObservableObject {
             let cellularOnly = path.status == .satisfied
                 && (path.usesInterfaceType(.cellular) || path.isExpensive)
                 && !path.usesInterfaceType(.wifi) && !path.usesInterfaceType(.wiredEthernet)
-            Task { @MainActor in self?.isOnCellularOnly = cellularOnly }
+            let offline = path.status != .satisfied
+            Task { @MainActor in
+                self?.isOnCellularOnly = cellularOnly
+                self?.isOffline = offline
+            }
         }
         pathMonitor.start(queue: DispatchQueue(label: "omni.downloads.path"))
     }
@@ -187,6 +215,12 @@ final class DownloadManager: NSObject, ObservableObject {
     func isWaitingForWiFi(_ record: DownloadRecord) -> Bool {
         (record.state == .downloading || record.state == .queued)
             && isOnCellularOnly && !DownloadSettings.allowsCellular()
+    }
+
+    /// A finished download of `contentId` for the active profile, if any.
+    func completedDownload(_ contentId: String) -> (file: URL, record: DownloadRecord)? {
+        guard let record = record(for: contentId), let file = localFileURL(for: record) else { return nil }
+        return (file, record)
     }
 
     func localFileURL(for record: DownloadRecord) -> URL? {
@@ -214,7 +248,7 @@ final class DownloadManager: NSObject, ObservableObject {
         episodeTitle: String? = nil
     ) {
         let key = Self.key(profileId: profileId, contentId: contentId)
-        if let existing = records[key], existing.state != .failed { return }
+        if let existing = records[key], existing.state != .failed, existing.state != .needsSource { return }
         let record = DownloadRecord(
             id: key,
             contentId: contentId,
@@ -224,6 +258,7 @@ final class DownloadManager: NSObject, ObservableObject {
             episode: episode,
             episodeTitle: episodeTitle,
             stream: stream,
+            localSubtitles: nil,
             sourceURL: nil,
             headers: stream.httpHeaders ?? [:],
             expectedBytes: StreamBadgeSizing.fileSizeBytes(for: stream) ?? 0,
@@ -236,6 +271,100 @@ final class DownloadManager: NSObject, ObservableObject {
         records[key] = record
         saveIndex()
         Task { await resolveAndQueue(key) }
+    }
+
+    /// Queues every episode given that is not already downloaded or on its
+    /// way. Each finds its own source in turn — the one closest to the
+    /// episode size limit — and is left for the user to pick when none fits.
+    func enqueueEpisodes(meta: NuvioMeta, episodes: [NuvioVideo]) {
+        var added = 0
+        for (offset, episode) in episodes.enumerated() {
+            let key = Self.key(profileId: profileId, contentId: episode.id)
+            if let existing = records[key], existing.state != .failed, existing.state != .needsSource { continue }
+            records[key] = DownloadRecord(
+                id: key,
+                contentId: episode.id,
+                profileId: profileId,
+                meta: meta,
+                season: episode.season,
+                episode: episode.episode,
+                episodeTitle: episode.title,
+                stream: nil,
+                localSubtitles: nil,
+                sourceURL: nil,
+                headers: [:],
+                expectedBytes: 0,
+                receivedBytes: 0,
+                state: .findingSource,
+                errorMessage: nil,
+                fileName: nil,
+                // Keeps the episodes in order in the queue.
+                createdAt: Date().addingTimeInterval(Double(offset) / 1000)
+            )
+            added += 1
+        }
+        guard added > 0 else { return }
+        Self.log("download.enqueue \(meta.id) episodes=\(added)")
+        saveIndex()
+        runSourceFinder()
+    }
+
+    private var isFindingSources = false
+
+    /// Works through the episodes still without a source, one at a time —
+    /// each is a full add-on search.
+    private func runSourceFinder() {
+        guard !isFindingSources else { return }
+        isFindingSources = true
+        Task {
+            while let next = records.values
+                .filter({ $0.state == .findingSource })
+                .min(by: { $0.createdAt < $1.createdAt }) {
+                await findSource(next.id)
+            }
+            isFindingSources = false
+        }
+    }
+
+    private func findSource(_ key: String) async {
+        guard let record = records[key] else { return }
+        let repository = StreamsRepository.downloads
+        _ = await repository.collectStreams(type: "series", videoId: record.contentId)
+        guard records[key]?.state == .findingSource else { return }
+        let store = ProfileSettings.current
+        let sort = store.string(forKey: SettingsKey.streamSortOption)
+            .flatMap(StreamSortOption.init(rawValueOrSync:)) ?? .quality
+        let debrid = DebridResolver(store: store).isEnabled
+        let ordered = StreamPickerListBuilder.displayedStreams(
+            streams: repository.state.allStreams,
+            groups: repository.state.groups,
+            selectedAddonId: nil,
+            sortOption: sort,
+            includeDebrid: debrid,
+            cachedOnly: (store.object(forKey: SettingsKey.cachedOnlyStreams) as? Bool) ?? false
+        )
+        switch DownloadStreamChooser.choose(
+            from: ordered,
+            maxBytes: DownloadSettings.maxEpisodeBytes(in: store),
+            debridEnabled: debrid
+        ) {
+        case .auto(let stream):
+            update(key) {
+                $0.stream = stream
+                $0.headers = stream.httpHeaders ?? [:]
+                $0.expectedBytes = StreamBadgeSizing.fileSizeBytes(for: stream) ?? 0
+                $0.state = .resolving
+            }
+            await resolveAndQueue(key)
+        case .ask:
+            let anyDownloadable = ordered.contains { DownloadStreamChooser.isDownloadable($0, debridEnabled: debrid) }
+            update(key) {
+                $0.state = .needsSource
+                $0.errorMessage = anyDownloadable
+                    ? "No source fits your episode size limit. Choose one."
+                    : "No downloadable source found. Choose one."
+            }
+        }
     }
 
     func pause(_ contentId: String) {
@@ -284,6 +413,9 @@ final class DownloadManager: NSObject, ObservableObject {
         if let fileName = records[key]?.fileName {
             try? FileManager.default.removeItem(at: Self.directory.appendingPathComponent(fileName))
         }
+        for subtitle in records[key]?.localSubtitles ?? [] {
+            try? FileManager.default.removeItem(at: Self.directory.appendingPathComponent(subtitle.url))
+        }
         Self.removeResumeData(for: key)
         records[key] = nil
         saveIndex()
@@ -293,13 +425,13 @@ final class DownloadManager: NSObject, ObservableObject {
     // MARK: Engine
 
     private func resolveAndQueue(_ key: String) async {
-        guard let record = records[key] else { return }
+        guard let record = records[key], let stream = record.stream else { return }
         let url: URL?
-        if let raw = record.stream.url, let direct = URL(string: raw) {
+        if let raw = stream.url, let direct = URL(string: raw) {
             url = direct
         } else {
             let result = await DebridResolver(store: ProfileSettings.current).resolvedURL(
-                for: record.stream,
+                for: stream,
                 season: record.season,
                 episode: record.episode
             )
@@ -316,6 +448,50 @@ final class DownloadManager: NSObject, ObservableObject {
         }
         Self.removeResumeData(for: key)
         pump()
+        await saveSubtitles(key)
+    }
+
+    /// Saves up to two subtitles per preferred language (six at most) beside
+    /// the video, so they are there with no connection.
+    private func saveSubtitles(_ key: String) async {
+        guard let record = records[key], record.localSubtitles == nil,
+              let available = record.stream?.subtitles, !available.isEmpty else { return }
+        var languages = SubtitleLanguagePreferences.orderedFromDefaults()
+        if languages.isEmpty,
+           let code = Locale.current.language.languageCode?.identifier,
+           let name = Locale(identifier: "en").localizedString(forLanguageCode: code) {
+            languages = [name]
+        }
+        var picked: [NuvioSubtitle] = []
+        for language in languages {
+            let matching = available.filter {
+                SubtitleLanguagePreferences.matches($0.language, target: language)
+                    || SubtitleLanguagePreferences.matches($0.label, target: language)
+            }
+            picked += matching.prefix(2)
+            if picked.count >= 6 { break }
+        }
+        var saved: [NuvioSubtitle] = []
+        for (index, subtitle) in picked.prefix(6).enumerated() {
+            guard let url = URL(string: subtitle.url),
+                  let (data, response) = try? await URLSession.shared.data(from: url),
+                  (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,
+                  !data.isEmpty else { continue }
+            let ext = url.pathExtension.isEmpty || url.pathExtension.count > 4 ? "srt" : url.pathExtension.lowercased()
+            let file = Self.directory.appendingPathComponent(Self.safeName(key) + ".sub\(index).\(ext)")
+            guard (try? data.write(to: file, options: .atomic)) != nil else { continue }
+            saved.append(NuvioSubtitle(
+                url: file.lastPathComponent,
+                language: subtitle.language,
+                label: (subtitle.label ?? subtitle.language) + " (saved)",
+                source: subtitle.source
+            ))
+        }
+        guard records[key] != nil else {
+            saved.forEach { try? FileManager.default.removeItem(at: Self.directory.appendingPathComponent($0.url)) }
+            return
+        }
+        update(key) { $0.localSubtitles = saved }
     }
 
     /// Starts queued downloads up to the limit, oldest first.
@@ -412,6 +588,7 @@ final class DownloadManager: NSObject, ObservableObject {
                     }
                 }
                 self.pump()
+                self.runSourceFinder()
             }
         }
     }

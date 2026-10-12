@@ -1946,13 +1946,17 @@ struct ContentView: View {
     private func playDownload(_ record: DownloadRecord) {
         guard let file = DownloadManager.shared.localFileURL(for: record) else { return }
         let episode = record.meta.videos?.first { $0.id == record.contentId }
-        playbackEpisodes = []
+        // The whole show, so the next episode follows — from the phone when
+        // it is downloaded too (see `resolveNextEpisodeStream`).
+        playbackEpisodes = episode == nil ? [] : (record.meta.videos ?? []).sorted {
+            ($0.season <= 0 ? Int.max : $0.season, $0.episode) < ($1.season <= 0 ? Int.max : $1.season, $1.episode)
+        }
         playbackCurrentEpisode = episode
         presentPlayback(
             url: file,
             meta: record.meta,
             subtitle: episode.map { "S\($0.season) · E\($0.episode) · \($0.title)" } ?? "",
-            externalSubtitles: record.stream.subtitles,
+            externalSubtitles: record.playbackSubtitles,
             resumeFrom: Self.resumePosition(for: record.meta, episode: episode)
         )
     }
@@ -1976,7 +1980,14 @@ struct ContentView: View {
         downloads.delete(meta.id)
         downloads.start(
             meta: meta,
-            stream: NuvioStream(url: raw, name: "Debug", description: nil, addonName: "Debug"),
+            // `-OmniDebugDownloadSubtitle <url>` adds an English subtitle,
+            // to exercise saving subtitles beside the download.
+            stream: NuvioStream(
+                url: raw, name: "Debug", description: nil, addonName: "Debug",
+                subtitles: UserDefaults.standard.string(forKey: "OmniDebugDownloadSubtitle").map {
+                    [NuvioSubtitle(url: $0, language: "eng", label: "English")]
+                } ?? []
+            ),
             contentId: meta.id
         )
         Task { @MainActor in
@@ -1986,7 +1997,10 @@ struct ContentView: View {
                 if record.state == .failed { return }
                 if let file = downloads.localFileURL(for: record) {
                     DownloadManager.log("download.debug playing \(file.lastPathComponent)")
-                    presentPlayback(url: file, meta: meta, subtitle: "", externalSubtitles: [], resumeFrom: nil)
+                    // Waits for the saved subtitles, which follow the video.
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    let subtitles = downloads.record(for: meta.id)?.playbackSubtitles ?? []
+                    presentPlayback(url: file, meta: meta, subtitle: "", externalSubtitles: subtitles, resumeFrom: nil)
                     return
                 }
             }
@@ -2256,7 +2270,18 @@ struct ContentView: View {
     /// applies the same smart selection the details screen uses. Returns nil when
     /// nothing real is available, so the player falls back to a normal end.
     private static func resolveNextEpisodeStream(episode: NuvioVideo, profileId: String?) async -> PreparedNextStream? {
-        await resolveStream(
+        let subtitleLine = "S\(episode.season) · E\(episode.episode) · \(episode.title)"
+        #if os(iOS) || os(macOS)
+        // Downloaded: plays from the device, connection or not.
+        if let local = await MainActor.run(body: { DownloadManager.shared.completedDownload(episode.id) }) {
+            return PreparedNextStream(
+                url: local.file,
+                subtitleLine: subtitleLine,
+                subtitles: local.record.playbackSubtitles
+            )
+        }
+        #endif
+        return await resolveStream(
             contentId: episode.id,
             type: "series",
             subtitleLine: "S\(episode.season) · E\(episode.episode) · \(episode.title)",

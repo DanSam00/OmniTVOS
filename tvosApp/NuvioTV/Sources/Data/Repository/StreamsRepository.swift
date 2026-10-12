@@ -15,6 +15,10 @@ import Foundation
 @MainActor
 final class StreamsRepository: ObservableObject {
     static let shared = StreamsRepository()
+    /// A second, independent discovery for the download manager, which finds
+    /// a source for each queued episode in the background. On the shared one
+    /// its requests and the open title's would cancel each other.
+    static let downloads = StreamsRepository()
 
     /// Bounded per-add-on stream request timeout (seconds). Dead providers
     /// finish as failed without blocking the rest or smart autoplay forever.

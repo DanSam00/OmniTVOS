@@ -29,6 +29,11 @@ struct PhoneMainTabView: View {
     /// then kept, hidden, so it holds its place as the system tabs did.
     @State private var visited: Set<TVTab> = [.home]
     @State private var isKeyboardShown = false
+    @State private var librarySection: PhoneLibrarySection = .library
+    @ObservedObject private var downloads = DownloadManager.shared
+    /// Launched with no connection: Downloads opens once, on its own.
+    @State private var appearedAt = Date()
+    @State private var didOpenDownloadsOffline = false
 
     /// The system tab bar holds five tabs on a phone and folds the rest into
     /// a "More" list, which showed Calendar twice once Live TV arrived; this
@@ -71,6 +76,7 @@ struct PhoneMainTabView: View {
                 NavigationStack {
                     PhoneLibraryView(
                         viewModel: libraryViewModel,
+                        section: $librarySection,
                         onSelect: { onOpenDetails($0, $1) },
                         onPlayDownload: onPlayDownload
                     )
@@ -115,6 +121,20 @@ struct PhoneMainTabView: View {
             }
         }
         .onChange(of: selection) { _, tab in visited.insert(tab) }
+        // No connection at launch and something downloaded: Home cannot
+        // load, so open on the downloads instead. Only at launch — a
+        // connection dropping later leaves the user where they are.
+        .onReceive(downloads.$isOffline) { offline in
+            guard offline, !didOpenDownloadsOffline,
+                  Date().timeIntervalSince(appearedAt) < 10 else { return }
+            let profile = ProfileSettings.activeProfileScope
+            guard downloads.records.values.contains(where: {
+                $0.state == .completed && $0.profileId == profile
+            }) else { return }
+            didOpenDownloadsOffline = true
+            librarySection = .downloads
+            selection = .library
+        }
         .onReceive(iptv.$hasSources) { has in
             if !has, selection == .guide { selection = .home }
         }
@@ -364,6 +384,9 @@ struct PhoneDownloadsView: View {
         case .completed: onPlay(record)
         case .downloading, .queued, .resolving: downloads.pause(record.contentId)
         case .paused, .failed: downloads.resume(record.contentId)
+        // Picked on the title's page, from its source list.
+        case .needsSource: onOpen(record.meta.id, record.meta.type)
+        case .findingSource: break
         }
     }
 }
@@ -457,20 +480,24 @@ struct PhoneSearchView: View {
 
 // MARK: - Library
 
+enum PhoneLibrarySection: String, CaseIterable {
+    case library = "Library"
+    case downloads = "Downloads"
+}
+
 struct PhoneLibraryView: View {
     @ObservedObject var viewModel: LibraryViewModel
+    /// Held by the tab view, which opens Downloads when launched offline.
+    @Binding var section: PhoneLibrarySection
     let onSelect: (String, String) -> Void
     let onPlayDownload: (DownloadRecord) -> Void
-
-    private enum Section: String, CaseIterable { case library = "Library", downloads = "Downloads" }
-    @State private var section: Section = .library
 
     private let columns = [GridItem(.adaptive(minimum: 104), spacing: 12, alignment: .top)]
 
     var body: some View {
         VStack(spacing: 0) {
             Picker("Show", selection: $section) {
-                ForEach(Section.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                ForEach(PhoneLibrarySection.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, PhoneLayout.gutter)
