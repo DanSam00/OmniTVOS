@@ -219,6 +219,11 @@ enum SettingsKey {
     static let heroEnabled = "nuvio.tv.settings.layout.heroEnabled"
     /// Prime-style featured carousel of Continue Watching in the hero slot.
     static let homeFeature = "nuvio.tv.settings.layout.homeFeature"
+    /// Largest download for a movie / an episode, in bytes (0 = no limit).
+    static let downloadMaxMovieBytes = "omni.settings.downloads.maxMovieBytes"
+    static let downloadMaxEpisodeBytes = "omni.settings.downloads.maxEpisodeBytes"
+    /// Downloads may use mobile data (iPhone).
+    static let downloadAllowCellular = "omni.settings.downloads.allowCellular"
     /// Whether the hero carousels move on by themselves. Off unless asked for.
     static let heroAutoScroll = "nuvio.tv.settings.layout.heroAutoScroll"
     /// JSON `[String]` of Home section ids selected as Grid View hero sources.
@@ -381,7 +386,11 @@ enum SettingsKey {
     /// alike. The home layout defaults to Grid View on the Mac, which suits a
     /// mouse, and Modern elsewhere, so a pick on one device must not switch
     /// the others.
-    static let perPlatform: Set<String> = [homeLayout]
+    static let perPlatform: Set<String> = [
+        homeLayout,
+        // Downloads belong to the device they are on.
+        downloadMaxMovieBytes, downloadMaxEpisodeBytes, downloadAllowCellular,
+    ]
 
     static let all = [
         profileName, profilePinEnabled, profileAutoSelectLast, profileRequireSelectionAfterBackground, kidsProfile,
@@ -6615,6 +6624,9 @@ private struct PlaybackSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
+            #if os(iOS) || os(macOS)
+            DownloadSettingsGroup(accentColor: accentColor)
+            #endif
             SettingsGroup(
                 title: L10n.string("tvos_playback_player", fallback: "Player"),
                 subtitle: L10n.string(
@@ -13842,6 +13854,138 @@ private struct SettingsChoiceRow: View {
         options.contains(selection) ? selection : (options.first ?? selection)
     }
 }
+
+#if os(iOS) || os(macOS)
+/// Settings → Playback → Downloads: how large a download may be, whether
+/// mobile data may be used, and the space downloads take.
+private struct DownloadSettingsGroup: View {
+    let accentColor: Color
+
+    @AppStorage(SettingsKey.downloadMaxMovieBytes) private var maxMovieBytes = Int(DownloadSettings.defaultMovieBytes)
+    @AppStorage(SettingsKey.downloadMaxEpisodeBytes) private var maxEpisodeBytes = Int(DownloadSettings.defaultEpisodeBytes)
+    @AppStorage(SettingsKey.downloadAllowCellular) private var allowCellular = false
+    @ObservedObject private var downloads = DownloadManager.shared
+    @State private var confirmingDeleteAll = false
+
+    var body: some View {
+        SettingsGroup(
+            title: L10n.string("settings_downloads", fallback: "Downloads"),
+            subtitle: L10n.string(
+                "settings_downloads_subtitle",
+                fallback: "Save movies to watch without a connection. The source closest to your limit, without going over, is picked."
+            )
+        ) {
+            SettingsSizeLimitRow(
+                title: L10n.string("settings_downloads_movie_max", fallback: "Maximum Movie Size"),
+                subtitle: L10n.string("settings_downloads_movie_max_subtitle", fallback: "The largest file a movie download may be"),
+                bytes: $maxMovieBytes,
+                accentColor: accentColor
+            )
+            SettingsSizeLimitRow(
+                title: L10n.string("settings_downloads_episode_max", fallback: "Maximum Episode Size"),
+                subtitle: L10n.string("settings_downloads_episode_max_subtitle", fallback: "The largest file an episode download may be"),
+                bytes: $maxEpisodeBytes,
+                accentColor: accentColor
+            )
+            #if os(iOS)
+            SettingsToggleRow(
+                title: L10n.string("settings_downloads_cellular", fallback: "Download Over Mobile Data"),
+                subtitle: L10n.string(
+                    "settings_downloads_cellular_subtitle",
+                    fallback: "Off: downloads wait for Wi-Fi. Applies to downloads started after the change."
+                ),
+                isOn: $allowCellular,
+                accentColor: accentColor
+            )
+            #endif
+            SettingsInfoRow(
+                title: L10n.string("settings_downloads_storage", fallback: "Storage Used"),
+                value: DownloadSettings.label(for: max(downloads.storageUsed, 0))
+            )
+            SettingsActionRow(
+                title: L10n.string("settings_downloads_delete_all", fallback: "Delete All Downloads"),
+                subtitle: L10n.string("settings_downloads_delete_all_subtitle", fallback: "Remove every download from this device"),
+                value: L10n.string("action_delete", fallback: "Delete"),
+                accentColor: Color(red: 1.0, green: 0.43, blue: 0.43),
+                macRowID: "downloads.deleteAll"
+            ) {
+                confirmingDeleteAll = true
+            }
+            .disabled(downloads.records.isEmpty)
+            .confirmationDialog(
+                "Delete all downloads from this device?",
+                isPresented: $confirmingDeleteAll,
+                titleVisibility: .visible
+            ) {
+                Button("Delete All", role: .destructive) { downloads.deleteAll() }
+            }
+        }
+    }
+}
+
+/// A size limit picked from `DownloadSettings.steps`, smallest to largest,
+/// then "No limit": minus and plus, and on the phone a slider as well.
+private struct SettingsSizeLimitRow: View {
+    let title: String
+    let subtitle: String
+    /// Bytes; 0 is no limit.
+    @Binding var bytes: Int
+    let accentColor: Color
+
+    @FocusState private var isFocused: Bool
+
+    private var steps: [Int64] { DownloadSettings.steps + [0] }
+
+    private var index: Int {
+        if bytes <= 0 { return steps.count - 1 }
+        // The nearest step, for a value saved from another build.
+        return DownloadSettings.steps.enumerated()
+            .min { abs($0.element - Int64(bytes)) < abs($1.element - Int64(bytes)) }?.offset ?? 0
+    }
+
+    private func set(_ newIndex: Int) {
+        bytes = Int(steps[min(max(newIndex, 0), steps.count - 1)])
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            SettingsRowShell(isFocused: isFocused, accentColor: accentColor) {
+                SettingsRowText(title: title, subtitle: subtitle)
+                Spacer(minLength: SettingsPhoneMetrics.isPhone ? 8 : 24)
+                HStack(spacing: 12) {
+                    SettingsMiniButton(systemName: "minus", accentColor: accentColor, isAtBound: index == 0) {
+                        set(index - 1)
+                    }
+                    Text(DownloadSettings.label(for: bytes > 0 ? Int64(bytes) : nil))
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                        .frame(width: SettingsPhoneMetrics.isPhone ? 72 : 96)
+                    SettingsMiniButton(systemName: "plus", accentColor: accentColor, isAtBound: index == steps.count - 1) {
+                        set(index + 1)
+                    }
+                }
+            }
+            #if os(iOS)
+            Slider(
+                value: Binding(get: { Double(index) }, set: { set(Int($0.rounded())) }),
+                in: 0...Double(steps.count - 1),
+                step: 1
+            )
+            .tint(accentColor)
+            .padding(.horizontal, 16)
+            #endif
+        }
+        .nuvioFocusable()
+        .focused($isFocused)
+        .focusEffectDisabledIfAvailable()
+        // Return steps up, wrapping from "No limit" to the smallest.
+        .macSettingsRow(title) {
+            set(index >= steps.count - 1 ? 0 : index + 1)
+        }
+    }
+}
+#endif
 
 private struct SettingsStepperRow: View {
     let title: String

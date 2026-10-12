@@ -51,12 +51,24 @@ struct NuvioTVApp: App {
                 .macFullBleedWindow()
             #else
             ContentView()
+                #if os(iOS)
+                // Started at launch, so downloads that finished or broke
+                // while Omni was closed are picked up straight away.
+                .task { _ = DownloadManager.shared }
+                #endif
             #endif
         }
         #if os(macOS)
         .commands {
             MacTabCommands()
             MacPlayerCommands()
+        }
+        #endif
+        #if os(iOS)
+        // iOS relaunches Omni in the background when downloads finish;
+        // recreating the session is what lets it deliver their results.
+        .backgroundTask(.urlSession(DownloadManager.sessionIdentifier)) {
+            await MainActor.run { _ = DownloadManager.shared }
         }
         #endif
     }
@@ -1908,6 +1920,7 @@ struct ContentView: View {
         if UserDefaults.standard.bool(forKey: "OmniDebugLandscape") {
             PhoneOrientation.request(.landscapeRight)
         }
+        downloadDebugLaunchURLIfRequested()
         guard let raw = UserDefaults.standard.string(forKey: "OmniDebugPlayURL"),
               let url = URL(string: raw) else { return }
         UserDefaults.standard.removeObject(forKey: "OmniDebugPlayURL")
@@ -1919,6 +1932,42 @@ struct ContentView: View {
             country: nil, released: nil
         )
         presentPlayback(url: url, meta: meta, subtitle: "", externalSubtitles: [], resumeFrom: nil)
+    }
+    #endif
+
+    #if os(iOS) && OMNI_DEBUG_TOOLS
+    /// `-OmniDebugDownloadURL <url>` downloads that file through the download
+    /// manager, then plays the saved copy — the engine and offline playback,
+    /// tested without a stream add-on.
+    private func downloadDebugLaunchURLIfRequested() {
+        guard let raw = UserDefaults.standard.string(forKey: "OmniDebugDownloadURL") else { return }
+        UserDefaults.standard.removeObject(forKey: "OmniDebugDownloadURL")
+        let meta = NuvioMeta(
+            id: "debug-download", name: "Debug Download", description: nil,
+            posterUrl: nil, backgroundUrl: nil, logoUrl: nil, imdbId: nil, tmdbId: nil,
+            type: "movie", year: nil, genres: nil, rating: nil, releaseInfo: nil,
+            runtime: nil, cast: nil, director: nil, writer: nil, certification: nil,
+            country: nil, released: nil
+        )
+        let downloads = DownloadManager.shared
+        downloads.delete(meta.id)
+        downloads.start(
+            meta: meta,
+            stream: NuvioStream(url: raw, name: "Debug", description: nil, addonName: "Debug"),
+            contentId: meta.id
+        )
+        Task { @MainActor in
+            for _ in 0..<600 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let record = downloads.record(for: meta.id) else { return }
+                if record.state == .failed { return }
+                if let file = downloads.localFileURL(for: record) {
+                    DownloadManager.log("download.debug playing \(file.lastPathComponent)")
+                    presentPlayback(url: file, meta: meta, subtitle: "", externalSubtitles: [], resumeFrom: nil)
+                    return
+                }
+            }
+        }
     }
     #endif
 

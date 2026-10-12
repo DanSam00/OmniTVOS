@@ -34,6 +34,12 @@ struct PhoneDetailsView: View {
     /// then shown when the Trailer Delay runs out — as Home does on the TV.
     @State private var trailerPreparedID: String?
     @State private var trailerShownID: String?
+    @ObservedObject private var downloads = DownloadManager.shared
+    /// Waiting for the streams, to choose one to download.
+    @State private var isPreparingDownload = false
+    /// The sources sheet is open to pick a download, not to play.
+    @State private var isPickingDownload = false
+    @State private var isDownloadMenuPresented = false
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -66,6 +72,13 @@ struct PhoneDetailsView: View {
             viewModel.loadDetails(id: id, type: type)
         }
         .onDisappear { viewModel.cancelAllTasks() }
+        .onChange(of: viewModel.uiState.isLoadingStreams) { _, loading in
+            guard !loading, isPreparingDownload, let meta = viewModel.uiState.meta else { return }
+            chooseDownload(meta: meta)
+        }
+        .onChange(of: isSourcesPresented) { _, presented in
+            if !presented { isPickingDownload = false }
+        }
         .onChange(of: viewModel.uiState.meta?.id, initial: true) { _, _ in refreshWatchedEpisodes() }
         .onReceive(NotificationCenter.default.publisher(for: WatchedStore.changedNotification)) { _ in
             refreshWatchedEpisodes()
@@ -73,11 +86,21 @@ struct PhoneDetailsView: View {
         .sheet(isPresented: $isSourcesPresented) {
             if let meta = viewModel.uiState.meta {
                 PhoneSourcesSheet(
-                    title: pickerEpisode.map { "S\($0.season) · E\($0.episode) · \($0.title)" } ?? meta.name,
+                    title: isPickingDownload
+                        ? "Choose a Source to Download"
+                        : pickerEpisode.map { "S\($0.season) · E\($0.episode) · \($0.title)" } ?? meta.name,
                     state: viewModel.uiState,
                     isResolving: isResolvingDebrid,
+                    isPickingDownload: isPickingDownload,
                     onRefresh: { prepareStreams(meta: meta, episode: pickerEpisode, force: true) },
-                    onSelect: { stream in play(stream, meta: meta) }
+                    onSelect: { stream in
+                        if isPickingDownload {
+                            isSourcesPresented = false
+                            downloads.start(meta: meta, stream: stream, contentId: meta.id)
+                        } else {
+                            play(stream, meta: meta)
+                        }
+                    }
                 )
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
@@ -287,7 +310,7 @@ struct PhoneDetailsView: View {
                 if meta.isSeries {
                     let next = nextEpisode(meta)
                     openSources(meta: meta, episode: next)
-                } else {
+                } else if !playDownloaded(meta) {
                     openSources(meta: meta, episode: nil)
                 }
             } label: {
@@ -297,6 +320,10 @@ struct PhoneDetailsView: View {
                     .padding(.vertical, 12)
                     .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .foregroundStyle(.black)
+            }
+
+            if !meta.isSeries {
+                downloadButton(meta)
             }
 
             Button { viewModel.toggleWatchlist() } label: {
@@ -321,6 +348,89 @@ struct PhoneDetailsView: View {
             }
             .accessibilityLabel(viewModel.uiState.isWatched ? "Mark Unwatched" : "Mark Watched")
         }
+    }
+
+    // MARK: Downloads
+
+    private func downloadButton(_ meta: NuvioMeta) -> some View {
+        let record = downloads.record(for: meta.id)
+        return Button {
+            if let record, record.state != .failed {
+                isDownloadMenuPresented = true
+            } else if let record, record.state == .failed {
+                downloads.resume(record.contentId)
+            } else {
+                beginDownload(meta)
+            }
+        } label: {
+            PhoneDownloadIcon(
+                record: record,
+                isWaitingForWiFi: record.map(downloads.isWaitingForWiFi) ?? false,
+                isPreparing: isPreparingDownload
+            )
+            .frame(width: 48, height: 46)
+            .background(Color.white.opacity(0.15), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .accessibilityLabel(PhoneDownloadIcon.accessibilityLabel(record: record))
+        .confirmationDialog(meta.name, isPresented: $isDownloadMenuPresented, titleVisibility: .visible) {
+            if let record {
+                switch record.state {
+                case .completed:
+                    Button("Play Download") { _ = playDownloaded(meta) }
+                    Button("Delete Download", role: .destructive) { downloads.delete(record.contentId) }
+                case .downloading, .queued, .resolving:
+                    Button("Pause Download") { downloads.pause(record.contentId) }
+                    Button("Cancel Download", role: .destructive) { downloads.delete(record.contentId) }
+                case .paused:
+                    Button("Resume Download") { downloads.resume(record.contentId) }
+                    Button("Cancel Download", role: .destructive) { downloads.delete(record.contentId) }
+                case .failed:
+                    Button("Try Again") { downloads.resume(record.contentId) }
+                    Button("Remove", role: .destructive) { downloads.delete(record.contentId) }
+                }
+            }
+        } message: {
+            if let record, let message = PhoneDownloadIcon.statusText(record: record, waiting: downloads.isWaitingForWiFi(record)) {
+                Text(message)
+            }
+        }
+    }
+
+    /// Fetches the sources, then downloads the one closest to the size limit
+    /// — or asks, when the sizes cannot settle it.
+    private func beginDownload(_ meta: NuvioMeta) {
+        pickerEpisode = nil
+        isPreparingDownload = true
+        prepareStreams(meta: meta, episode: nil, force: false)
+        if !viewModel.uiState.isLoadingStreams, !viewModel.uiState.streams.isEmpty {
+            chooseDownload(meta: meta)
+        }
+    }
+
+    private func chooseDownload(meta: NuvioMeta) {
+        isPreparingDownload = false
+        let store = ProfileSettings.current
+        let debrid = DebridResolver(store: store).isEnabled
+        let ordered = PhoneSourcesSheet.displayedStreams(state: viewModel.uiState)
+        switch DownloadStreamChooser.choose(
+            from: ordered,
+            maxBytes: DownloadSettings.maxMovieBytes(in: store),
+            debridEnabled: debrid
+        ) {
+        case .auto(let stream):
+            downloads.start(meta: meta, stream: stream, contentId: meta.id)
+        case .ask:
+            isPickingDownload = true
+            isSourcesPresented = true
+        }
+    }
+
+    /// Plays the movie's download, if it has one. False when it has none.
+    private func playDownloaded(_ meta: NuvioMeta) -> Bool {
+        guard let record = downloads.record(for: meta.id),
+              let file = downloads.localFileURL(for: record) else { return false }
+        onPlayClick(file.absoluteString, [:], meta, "", record.stream.subtitles, nil, [], nil)
+        return true
     }
 
     private func playLabel(_ meta: NuvioMeta) -> String {
@@ -689,10 +799,19 @@ private struct PhoneSourcesSheet: View {
     let title: String
     let state: DetailsUiState
     let isResolving: Bool
+    var isPickingDownload = false
     let onRefresh: () -> Void
     let onSelect: (NuvioStream) -> Void
 
     private var streams: [NuvioStream] {
+        let all = Self.displayedStreams(state: state)
+        guard isPickingDownload else { return all }
+        let debrid = DebridResolver(store: ProfileSettings.current).isEnabled
+        return all.filter { DownloadStreamChooser.isDownloadable($0, debridEnabled: debrid) }
+    }
+
+    /// The sources as the sheet lists them, best first.
+    static func displayedStreams(state: DetailsUiState) -> [NuvioStream] {
         let store = ProfileSettings.current
         let sort = store.string(forKey: SettingsKey.streamSortOption)
             .flatMap(StreamSortOption.init(rawValueOrSync:)) ?? .quality
@@ -722,7 +841,9 @@ private struct PhoneSourcesSheet: View {
                         .disabled(isResolving)
                 }
                 if !state.isLoadingStreams && streams.isEmpty {
-                    Text("No sources found. Check your add-ons in Settings.")
+                    Text(isPickingDownload
+                        ? "None of these sources can be downloaded."
+                        : "No sources found. Check your add-ons in Settings.")
                         .foregroundStyle(.secondary)
                 }
             }
@@ -750,6 +871,9 @@ private struct PhoneStreamRow: View {
                 if tags.isDolbyVision { badge("DV") } else if tags.isHDR { badge("HDR") }
                 if tags.isAtmos { badge("Atmos") }
                 if tags.isCached { badge("Cached") }
+                if let size = StreamBadgeSizing.fileSizeBytes(for: stream) {
+                    badge(DownloadSettings.label(for: size))
+                }
                 Spacer(minLength: 0)
                 Text(stream.addonName ?? "").font(.caption2).foregroundStyle(.secondary)
             }
@@ -800,6 +924,97 @@ struct PhoneParallaxScroll: ViewModifier {
                     .scaleEffect(1 + pull / max(proxy.size.height, 1), anchor: .top)
                     .offset(y: drift)
             }
+        }
+    }
+}
+/// The movie page's download button: an arrow to start; a ring filling
+/// with the progress (and the percentage) while downloading; Wi-Fi crossed
+/// out while it waits for Wi-Fi; a tick once downloaded; a retry mark if it
+/// failed.
+struct PhoneDownloadIcon: View {
+    let record: DownloadRecord?
+    let isWaitingForWiFi: Bool
+    let isPreparing: Bool
+
+    var body: some View {
+        Group {
+            if isPreparing && record == nil {
+                ProgressView().controlSize(.small)
+            } else if let record {
+                switch record.state {
+                case .completed:
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.white)
+                case .failed:
+                    Image(systemName: "exclamationmark.arrow.triangle.2.circlepath")
+                        .font(.headline)
+                        .foregroundStyle(.orange)
+                case .paused:
+                    ring(record.progress, symbol: "pause.fill")
+                case .resolving, .queued:
+                    if isWaitingForWiFi {
+                        Image(systemName: "wifi.slash").font(.headline)
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                case .downloading:
+                    if isWaitingForWiFi {
+                        Image(systemName: "wifi.slash").font(.headline)
+                    } else {
+                        ring(record.progress, percent: true)
+                    }
+                }
+            } else {
+                Image(systemName: "arrow.down.circle").font(.title3)
+            }
+        }
+        .foregroundStyle(.white)
+    }
+
+    private func ring(_ progress: Double, symbol: String? = nil, percent: Bool = false) -> some View {
+        ZStack {
+            Circle().stroke(Color.white.opacity(0.25), lineWidth: 3)
+            Circle()
+                .trim(from: 0, to: max(0.02, progress))
+                .stroke(Color.white, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .animation(.linear(duration: 0.25), value: progress)
+            if let symbol {
+                Image(systemName: symbol).font(.system(size: 9, weight: .bold))
+            } else if percent {
+                Text("\(Int((progress * 100).rounded()))")
+                    .font(.system(size: 9, weight: .bold))
+                    .monospacedDigit()
+            }
+        }
+        .frame(width: 28, height: 28)
+    }
+
+    static func accessibilityLabel(record: DownloadRecord?) -> String {
+        guard let record else { return "Download" }
+        switch record.state {
+        case .completed: return "Downloaded"
+        case .downloading: return "Downloading, \(Int(record.progress * 100)) percent"
+        case .paused: return "Download paused"
+        case .failed: return "Download failed, retry"
+        case .resolving, .queued: return "Download waiting"
+        }
+    }
+
+    static func statusText(record: DownloadRecord, waiting: Bool) -> String? {
+        let size = record.expectedBytes > 0 ? DownloadSettings.label(for: record.expectedBytes) : nil
+        switch record.state {
+        case .completed:
+            return "Downloaded" + (size.map { " · \($0)" } ?? "") + ". Available to watch offline."
+        case .downloading, .queued, .resolving:
+            if waiting { return "Waiting for Wi-Fi. Downloads over mobile data are off in Settings." }
+            let done = DownloadSettings.label(for: max(record.receivedBytes, 1))
+            return "Downloading \(Int(record.progress * 100))%" + (size.map { " · \(done) of \($0)" } ?? "")
+        case .paused:
+            return "Paused at \(Int(record.progress * 100))%."
+        case .failed:
+            return record.errorMessage
         }
     }
 }
