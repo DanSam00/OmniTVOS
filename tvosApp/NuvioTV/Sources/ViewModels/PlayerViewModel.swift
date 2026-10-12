@@ -4091,11 +4091,15 @@ class PlayerViewModel: ObservableObject {
         return true
     }
 
+    /// The shorter of the stored length and the listed runtime: a wrong file
+    /// played before (a 70-minute 1976 "Bluey" for the 7-minute cartoon)
+    /// leaves a stored length that makes every right source look like a slate.
     private static func expectedDuration(for meta: NuvioMeta) -> Double? {
+        let runtime = runtimeSeconds(from: meta.runtime)
         if let stored = ContinueWatchingStore.item(for: meta.id)?.duration, stored >= 60 {
-            return stored
+            return min(stored, runtime ?? stored)
         }
-        return runtimeSeconds(from: meta.runtime)
+        return runtime
     }
 
     /// Parses a Stremio/Cinemeta runtime string ("115 min", "1h 55min", "120")

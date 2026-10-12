@@ -70,6 +70,9 @@ enum DownloadStreamChooser {
     /// one. Not live streams, nor HLS playlists, which need Apple's separate
     /// downloader.
     static func isDownloadable(_ stream: NuvioStream, debridEnabled: Bool) -> Bool {
+        // "[TB download]", "[RD download]": a torrent the debrid service has
+        // yet to fetch. Its link plays a short "downloading" clip, not the video.
+        if isUncachedDebrid(stream) { return false }
         if let raw = stream.url, let url = URL(string: raw) {
             guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return false }
             let path = url.path.lowercased()
@@ -81,19 +84,26 @@ enum DownloadStreamChooser {
 
     /// `streams` in the order the source list shows them, best first. For an
     /// episode, `season`/`episode` keep out any stream whose name gives a
-    /// different episode — the size alone once picked S01E20 for S01E01.
+    /// different episode — the size alone once picked S01E20 for S01E01 —
+    /// and `meta` any stream named for a same-named title from another year.
     static func choose(
         from streams: [NuvioStream],
         maxBytes: Int64?,
         debridEnabled: Bool,
         season: Int? = nil,
-        episode: Int? = nil
+        episode: Int? = nil,
+        meta: NuvioMeta? = nil
     ) -> Choice {
-        let candidates = streams.filter {
+        var candidates = streams.filter {
             isDownloadable($0, debridEnabled: debridEnabled)
-                && matches($0, season: season, episode: episode)
+                && matches($0, season: season, episode: episode, meta: meta)
         }
         guard !candidates.isEmpty else { return .ask }
+        // Once any stream names the show's own title before the episode,
+        // drop those naming something longer ("Bluey Compilations S01E03").
+        if let meta, candidates.contains(where: { namesTitle($0, meta: meta) == true }) {
+            candidates.removeAll { namesTitle($0, meta: meta) == false }
+        }
         // A stream that names this very episode beats one that names none
         // (a season pack, left to the debrid service to pick the file from).
         func named(_ stream: NuvioStream) -> Bool {
@@ -145,10 +155,84 @@ enum DownloadStreamChooser {
         return nil
     }
 
-    /// False only when the stream names an episode and it is another one.
-    static func matches(_ stream: NuvioStream, season: Int?, episode: Int?) -> Bool {
+    /// False when the stream names an episode and it is another one, or
+    /// names a year that rules out this title.
+    static func matches(_ stream: NuvioStream, season: Int?, episode: Int?, meta: NuvioMeta? = nil) -> Bool {
+        if let meta, wrongYear(in: streamText(stream), for: meta) != nil { return false }
         guard let season, let episode, let marker = episodeMarker(of: stream) else { return true }
         return marker == EpisodeMarker(season: season, episode: episode)
+    }
+
+    static func isUncachedDebrid(_ stream: NuvioStream) -> Bool {
+        guard let name = stream.name?.lowercased() else { return false }
+        return name.range(of: #"\[[a-z]{2,3} download\]"#, options: .regularExpression) != nil
+    }
+
+    /// Whether the text before an episode marker gives this show's title:
+    /// true for "Bluey.S01E03" or "Bluey (2018) - S01E03", false for "Bluey
+    /// Compilations S01E03", nil when no line puts a title before a marker.
+    static func namesTitle(_ stream: NuvioStream, meta: NuvioMeta) -> Bool? {
+        guard NuvioMeta.isSeriesType(meta.type) else { return nil }
+        let title = compact(meta.name)
+        guard !title.isEmpty,
+              let marker = try? NSRegularExpression(pattern: #"(?i)\bs\d{1,2}[ ._-]?e\d{1,3}(?!\d)"#)
+        else { return nil }
+        var sawTitle = false
+        for line in streamText(stream).components(separatedBy: .newlines) {
+            // Bracketed tags and a "(2018)" go; the title is what's left
+            // before the marker, after the last "/" or "|".
+            let cleaned = line
+                .replacingOccurrences(of: #"\[[^\]]*\]|\((19|20)\d{2}\)"#, with: " ", options: .regularExpression)
+            guard let match = marker.firstMatch(in: cleaned, range: NSRange(cleaned.startIndex..., in: cleaned)),
+                  let range = Range(match.range, in: cleaned) else { continue }
+            let before = cleaned[..<range.lowerBound]
+                .split(whereSeparator: { $0 == "/" || $0 == "|" }).last.map(String.init) ?? ""
+            let segment = compact(before)
+                .replacingOccurrences(of: #"((19|20)\d{2}|us|uk|au|nz|ca)$"#, with: "", options: .regularExpression)
+            guard segment.count >= 3 else { continue }
+            if segment.hasSuffix(title) || title.hasSuffix(segment) { return true }
+            sawTitle = true
+        }
+        return sawTitle ? false : nil
+    }
+
+    /// Lowercase letters and digits only: "Bluey." and "bluey" compare equal.
+    private static func compact(_ text: String) -> String {
+        String(text.lowercased().unicodeScalars.filter(CharacterSet.alphanumerics.contains).map(Character.init))
+    }
+
+    private static func streamText(_ stream: NuvioStream) -> String {
+        [stream.filename, stream.description].compactMap { $0 }.joined(separator: "\n")
+    }
+
+    /// The year in `text` that makes it another title of the same name, if
+    /// any: for a show, a year before it began ("Bluey (1976)" for the 2018
+    /// Bluey); for a film, years none of which is within one of its release
+    /// (the remake, or the original). Years in the title itself don't count.
+    static func wrongYear(in text: String, for meta: NuvioMeta) -> Int? {
+        guard let released = releaseYear(of: meta) else { return nil }
+        let years = self.years(in: text).filter { !meta.name.contains(String($0)) }
+        guard !years.isEmpty else { return nil }
+        if NuvioMeta.isSeriesType(meta.type) {
+            return years.first { $0 < released - 1 }
+        }
+        return years.contains { abs($0 - released) <= 1 } ? nil : years.first
+    }
+
+    private static func releaseYear(of meta: NuvioMeta) -> Int? {
+        if let year = meta.year { return year }
+        for value in [meta.releaseInfo, meta.released] {
+            if let value, value.count >= 4, let year = Int(value.prefix(4)) { return year }
+        }
+        return nil
+    }
+
+    /// 1900–2099, standing alone: not part of "1920x1080" or "2160p".
+    private static func years(in text: String) -> [Int] {
+        guard let regex = try? NSRegularExpression(pattern: #"(?<![\dx])(19\d{2}|20\d{2})(?![\dxp])"#, options: .caseInsensitive) else { return [] }
+        return regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { match in
+            Range(match.range(at: 1), in: text).flatMap { Int(text[$0]) }
+        }
     }
 }
 
@@ -261,6 +345,7 @@ final class DownloadManager: NSObject, ObservableObject {
     private override init() {
         super.init()
         records = Self.loadIndex()
+        dropMismatchedDownloads()
         let config = URLSessionConfiguration.background(withIdentifier: Self.sessionIdentifier)
         config.isDiscretionary = false
         #if os(iOS)
@@ -279,6 +364,31 @@ final class DownloadManager: NSObject, ObservableObject {
             }
         }
         pathMonitor.start(queue: DispatchQueue(label: "omni.downloads.path"))
+    }
+
+    /// Downloads saved before the source checks knew better — another
+    /// episode, or a same-named show from another year: the file goes, and
+    /// the record waits for a source to be chosen.
+    private func dropMismatchedDownloads() {
+        for (key, record) in records where record.state == .completed {
+            guard let stream = record.stream,
+                  !DownloadStreamChooser.matches(stream, season: record.season, episode: record.episode, meta: record.meta)
+                    || DownloadStreamChooser.isUncachedDebrid(stream)
+                    || Self.isPlaceholder(bytes: record.receivedBytes, of: record)
+            else { continue }
+            let files = [record.fileName].compactMap { $0 } + (record.localSubtitles ?? []).map(\.url)
+            for name in files {
+                try? FileManager.default.removeItem(at: Self.directory.appendingPathComponent(name))
+            }
+            update(key, save: false) {
+                $0.state = .needsSource
+                $0.fileName = nil
+                $0.localSubtitles = nil
+                $0.receivedBytes = 0
+                $0.errorMessage = "The saved file wasn't the right video. Choose another source."
+            }
+        }
+        saveIndex()
     }
 
     // MARK: Queries
@@ -460,7 +570,8 @@ final class DownloadManager: NSObject, ObservableObject {
             maxBytes: isMovie ? DownloadSettings.maxMovieBytes(in: store) : DownloadSettings.maxEpisodeBytes(in: store),
             debridEnabled: debrid,
             season: record.season,
-            episode: record.episode
+            episode: record.episode,
+            meta: record.meta
         ) {
         case .auto(let stream):
             update(key) {
@@ -556,10 +667,10 @@ final class DownloadManager: NSObject, ObservableObject {
             fail(key, "Couldn't get a download link for this source.")
             return
         }
-        if let mismatch = Self.wrongEpisode(name: url.lastPathComponent.removingPercentEncoding, for: record) {
+        if let mismatch = Self.mismatch(name: url.lastPathComponent.removingPercentEncoding, for: record) {
             update(key) {
                 $0.state = .needsSource
-                $0.errorMessage = "That source gives \(mismatch), not this episode. Choose another."
+                $0.errorMessage = "That source gives \(mismatch). Choose another."
             }
             return
         }
@@ -735,12 +846,23 @@ final class DownloadManager: NSObject, ObservableObject {
         }
     }
 
-    /// "S01E20" when `name` gives an episode other than the record's.
-    private static func wrongEpisode(name: String?, for record: DownloadRecord) -> String? {
-        guard let name, let season = record.season, let episode = record.episode,
+    private static func isPlaceholder(bytes: Int64, of record: DownloadRecord) -> Bool {
+        let listed = record.stream.flatMap { StreamBadgeSizing.fileSizeBytes(for: $0) } ?? record.expectedBytes
+        return bytes < 5_000_000 && listed > 50_000_000
+    }
+
+    /// What `name` gives instead of the record's title, if it gives
+    /// something else: "S01E20, not this episode", or "a 1976 title of the
+    /// same name".
+    private static func mismatch(name: String?, for record: DownloadRecord) -> String? {
+        guard let name else { return nil }
+        if let year = DownloadStreamChooser.wrongYear(in: name, for: record.meta) {
+            return "a \(year) title of the same name"
+        }
+        guard let season = record.season, let episode = record.episode,
               let marker = DownloadStreamChooser.episodeMarker(in: name),
               marker != .init(season: season, episode: episode) else { return nil }
-        return String(format: "S%02dE%02d", marker.season, marker.episode)
+        return String(format: "S%02dE%02d, not this episode", marker.season, marker.episode)
     }
 
     fileprivate func finished(_ key: String, fileName: String?, bytes: Int64, error: String?, sourceName: String? = nil) {
@@ -750,13 +872,25 @@ final class DownloadManager: NSObject, ObservableObject {
             fail(key, error)
             return
         }
-        // The file itself, named for another episode: not what was asked for.
-        if let record = records[key], let mismatch = Self.wrongEpisode(name: sourceName, for: record) {
+        // A few hundred KB for a file listed at hundreds of MB: the debrid
+        // service's "still downloading" clip, not the video.
+        if let record = records[key], Self.isPlaceholder(bytes: bytes, of: record) {
             if let fileName { try? FileManager.default.removeItem(at: Self.directory.appendingPathComponent(fileName)) }
             update(key) {
                 $0.state = .needsSource
                 $0.receivedBytes = 0
-                $0.errorMessage = "That source gave \(mismatch), not this episode. Choose another."
+                $0.errorMessage = "That source isn't ready on your debrid service yet. Choose another."
+            }
+            pump()
+            return
+        }
+        // The file itself, named for another episode or title: not what was asked for.
+        if let record = records[key], let mismatch = Self.mismatch(name: sourceName, for: record) {
+            if let fileName { try? FileManager.default.removeItem(at: Self.directory.appendingPathComponent(fileName)) }
+            update(key) {
+                $0.state = .needsSource
+                $0.receivedBytes = 0
+                $0.errorMessage = "That source gave \(mismatch). Choose another."
             }
             pump()
             return

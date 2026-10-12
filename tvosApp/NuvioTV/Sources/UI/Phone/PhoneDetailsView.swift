@@ -493,7 +493,8 @@ struct PhoneDetailsView: View {
             maxBytes: limit,
             debridEnabled: debrid,
             season: episode?.season,
-            episode: episode?.episode
+            episode: episode?.episode,
+            meta: meta
         ) {
         case .auto(let stream):
             startDownload(meta: meta, stream: stream, episode: episode)
@@ -939,7 +940,7 @@ private struct PhoneSourcesSheet: View {
         let debrid = DebridResolver(store: ProfileSettings.current).isEnabled
         return all.filter {
             DownloadStreamChooser.isDownloadable($0, debridEnabled: debrid)
-                && DownloadStreamChooser.matches($0, season: downloadEpisode?.season, episode: downloadEpisode?.episode)
+                && DownloadStreamChooser.matches($0, season: downloadEpisode?.season, episode: downloadEpisode?.episode, meta: state.meta)
         }
     }
 
