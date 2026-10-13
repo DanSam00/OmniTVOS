@@ -341,7 +341,6 @@ struct PhoneDownloadsView: View {
     /// Delete (a full swipe deletes).
     private func row(_ record: DownloadRecord) -> some View {
         let waiting = downloads.isWaitingForWiFi(record)
-        let episode = record.meta.videos?.first { $0.id == record.contentId }
         return PhoneSwipeActionRow(
             actions: [
                 PhoneSwipeAction(
@@ -361,7 +360,7 @@ struct PhoneDownloadsView: View {
         ) {
             HStack(spacing: 12) {
                 PhoneArtwork(
-                    url: episode?.thumbnail ?? record.meta.backgroundUrl ?? record.meta.posterUrl,
+                    url: DownloadManager.listArtwork(for: record),
                     kind: .backdrop
                 )
                 .frame(width: 128, height: 72)

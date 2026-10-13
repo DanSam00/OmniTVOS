@@ -31,6 +31,15 @@ enum DownloadSettings {
         limit(store.object(forKey: SettingsKey.downloadMaxEpisodeBytes), fallback: defaultEpisodeBytes)
     }
 
+    static let defaultConcurrent = 2
+    static let concurrentRange = 1...5
+
+    /// How many downloads run at once.
+    static func maxConcurrent(in store: UserDefaults = ProfileSettings.current) -> Int {
+        let stored = (store.object(forKey: SettingsKey.downloadMaxConcurrent) as? NSNumber)?.intValue
+        return min(max(stored ?? defaultConcurrent, concurrentRange.lowerBound), concurrentRange.upperBound)
+    }
+
     static func allowsCellular(in store: UserDefaults = ProfileSettings.current) -> Bool {
         #if os(iOS)
         store.bool(forKey: SettingsKey.downloadAllowCellular)
@@ -294,6 +303,10 @@ struct DownloadRecord: Codable, Identifiable {
     var errorMessage: String?
     var fileName: String?
     let createdAt: Date
+    /// Poster, backdrop, logo and episode still saved beside the video, by
+    /// kind: bare file names, like the subtitles. The show's own art is one
+    /// copy shared by all its episodes.
+    var localArtwork: [String: String]? = nil
 
     var progress: Double {
         guard expectedBytes > 0 else { return 0 }
@@ -323,7 +336,6 @@ struct DownloadRecord: Codable, Identifiable {
 final class DownloadManager: NSObject, ObservableObject {
     static let shared = DownloadManager()
     nonisolated static let sessionIdentifier = "com.saminaden.omni.downloads"
-    private static let maxConcurrent = 2
 
     @Published private(set) var records: [String: DownloadRecord] = [:]
     /// The device is on mobile data (or another expensive network) only.
@@ -346,6 +358,13 @@ final class DownloadManager: NSObject, ObservableObject {
         super.init()
         records = Self.loadIndex()
         dropMismatchedDownloads()
+        // Downloads made before artwork was saved with them.
+        Task { [weak self] in
+            guard let self else { return }
+            for key in self.records.keys.sorted() where self.records[key]?.state == .completed {
+                await self.saveArtwork(key)
+            }
+        }
         let config = URLSessionConfiguration.background(withIdentifier: Self.sessionIdentifier)
         config.isDiscretionary = false
         #if os(iOS)
@@ -623,6 +642,33 @@ final class DownloadManager: NSObject, ObservableObject {
         }
     }
 
+    /// The Simultaneous Downloads setting changed: start more if it went up.
+    /// Running downloads are left alone when it goes down.
+    func concurrencyChanged() {
+        pump()
+    }
+
+    /// Downloads played to the end with Delete After Watching on, waiting for
+    /// the player to let go of the file.
+    private var playedToEnd: Set<String> = []
+
+    func notePlayedToEnd(file: URL) {
+        guard ProfileSettings.current.bool(forKey: SettingsKey.downloadDeleteAfterWatching),
+              let key = records.first(where: { $0.value.fileName == file.lastPathComponent })?.key
+        else { return }
+        playedToEnd.insert(key)
+    }
+
+    /// Deletes what the player finished, except the file it is moving on to.
+    func releaseWatchedDownloads(keeping file: URL?) {
+        for key in playedToEnd where records[key]?.fileName != file?.lastPathComponent {
+            playedToEnd.remove(key)
+            guard let record = records[key] else { continue }
+            Self.log("download.deleteAfterWatching \(record.contentId)")
+            deleteRecord(key)
+        }
+    }
+
     func delete(_ contentId: String) {
         deleteRecord(Self.key(profileId: profileId, contentId: contentId))
     }
@@ -640,6 +686,11 @@ final class DownloadManager: NSObject, ObservableObject {
         }
         for subtitle in records[key]?.localSubtitles ?? [] {
             try? FileManager.default.removeItem(at: Self.directory.appendingPathComponent(subtitle.url))
+        }
+        // The show's art stays while another of its episodes still uses it.
+        for name in Set(records[key]?.localArtwork?.values.map { $0 } ?? [])
+        where !records.values.contains(where: { $0.id != key && $0.localArtwork?.values.contains(name) == true }) {
+            try? FileManager.default.removeItem(at: Self.directory.appendingPathComponent(name))
         }
         Self.removeResumeData(for: key)
         records[key] = nil
@@ -681,6 +732,56 @@ final class DownloadManager: NSObject, ObservableObject {
         Self.removeResumeData(for: key)
         pump()
         await saveSubtitles(key)
+        await saveArtwork(key)
+    }
+
+    /// Saves the poster, backdrop, logo and episode still, so the Downloads
+    /// list has its pictures with no connection.
+    private func saveArtwork(_ key: String) async {
+        guard let record = records[key] else { return }
+        var saved = record.localArtwork ?? [:]
+        let show = "art_" + Self.safeName(Self.key(profileId: record.profileId, contentId: record.meta.id))
+        let still = record.meta.videos?.first { $0.id == record.contentId }?.thumbnail
+        let wanted: [(kind: String, remote: String?, base: String)] = [
+            ("poster", record.meta.posterUrl, show),
+            ("backdrop", record.meta.backgroundUrl, show),
+            ("logo", record.meta.logoUrl, show),
+            ("still", still, Self.safeName(key)),
+        ]
+        var changed = false
+        for item in wanted {
+            if let name = saved[item.kind],
+               FileManager.default.fileExists(atPath: Self.directory.appendingPathComponent(name).path) { continue }
+            guard let remote = item.remote, let url = URL(string: remote),
+                  url.scheme == "http" || url.scheme == "https" else { continue }
+            let ext = ["jpg", "jpeg", "png", "webp"].contains(url.pathExtension.lowercased())
+                ? url.pathExtension.lowercased() : "jpg"
+            let name = "\(item.base).\(item.kind).\(ext)"
+            let file = Self.directory.appendingPathComponent(name)
+            if !FileManager.default.fileExists(atPath: file.path) {
+                guard let (data, response) = try? await URLSession.shared.data(from: url),
+                      (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,
+                      !data.isEmpty,
+                      (try? data.write(to: file, options: .atomic)) != nil else { continue }
+            }
+            saved[item.kind] = name
+            changed = true
+        }
+        guard changed, records[key] != nil else { return }
+        update(key) { $0.localArtwork = saved }
+    }
+
+    /// The picture a Downloads list shows: the episode still, else the
+    /// backdrop, else the poster — saved copies first, so it works offline.
+    static func listArtwork(for record: DownloadRecord) -> String? {
+        for kind in ["still", "backdrop", "poster"] {
+            if let name = record.localArtwork?[kind] {
+                let file = directory.appendingPathComponent(name)
+                if FileManager.default.fileExists(atPath: file.path) { return file.absoluteString }
+            }
+        }
+        let still = record.meta.videos?.first { $0.id == record.contentId }?.thumbnail
+        return still ?? record.meta.backgroundUrl ?? record.meta.posterUrl
     }
 
     /// Saves up to two subtitles per preferred language (six at most) beside
@@ -729,11 +830,12 @@ final class DownloadManager: NSObject, ObservableObject {
     /// Starts queued downloads up to the limit, oldest first.
     private func pump() {
         let running = tasks.count
-        guard running < Self.maxConcurrent else { return }
+        let limit = DownloadSettings.maxConcurrent()
+        guard running < limit else { return }
         let queued = records.values
             .filter { $0.state == .queued && tasks[$0.id] == nil }
             .sorted { $0.createdAt < $1.createdAt }
-        for record in queued.prefix(Self.maxConcurrent - running) {
+        for record in queued.prefix(limit - running) {
             begin(record)
         }
     }

@@ -224,6 +224,10 @@ enum SettingsKey {
     static let downloadMaxEpisodeBytes = "omni.settings.downloads.maxEpisodeBytes"
     /// Downloads may use mobile data (iPhone).
     static let downloadAllowCellular = "omni.settings.downloads.allowCellular"
+    /// A download is deleted once it has been played to the end.
+    static let downloadDeleteAfterWatching = "omni.settings.downloads.deleteAfterWatching"
+    /// How many downloads run at once.
+    static let downloadMaxConcurrent = "omni.settings.downloads.maxConcurrent"
     /// Whether the hero carousels move on by themselves. Off unless asked for.
     static let heroAutoScroll = "nuvio.tv.settings.layout.heroAutoScroll"
     /// JSON `[String]` of Home section ids selected as Grid View hero sources.
@@ -390,6 +394,7 @@ enum SettingsKey {
         homeLayout,
         // Downloads belong to the device they are on.
         downloadMaxMovieBytes, downloadMaxEpisodeBytes, downloadAllowCellular,
+        downloadDeleteAfterWatching, downloadMaxConcurrent,
     ]
 
     static let all = [
@@ -13864,6 +13869,8 @@ private struct DownloadSettingsGroup: View {
     @AppStorage(SettingsKey.downloadMaxMovieBytes) private var maxMovieBytes = Int(DownloadSettings.defaultMovieBytes)
     @AppStorage(SettingsKey.downloadMaxEpisodeBytes) private var maxEpisodeBytes = Int(DownloadSettings.defaultEpisodeBytes)
     @AppStorage(SettingsKey.downloadAllowCellular) private var allowCellular = false
+    @AppStorage(SettingsKey.downloadDeleteAfterWatching) private var deleteAfterWatching = false
+    @AppStorage(SettingsKey.downloadMaxConcurrent) private var maxConcurrent = DownloadSettings.defaultConcurrent
     @ObservedObject private var downloads = DownloadManager.shared
     @State private var confirmingDeleteAll = false
 
@@ -13914,6 +13921,28 @@ private struct DownloadSettingsGroup: View {
                 accentColor: accentColor
             )
             #endif
+            SettingsToggleRow(
+                title: L10n.string("settings_downloads_delete_watched", fallback: "Delete After Watching"),
+                subtitle: L10n.string(
+                    "settings_downloads_delete_watched_subtitle",
+                    fallback: "Remove a download once you've played it to the end"
+                ),
+                isOn: $deleteAfterWatching,
+                accentColor: accentColor
+            )
+            SettingsStepperRow(
+                title: L10n.string("settings_downloads_concurrent", fallback: "Simultaneous Downloads"),
+                subtitle: L10n.string(
+                    "settings_downloads_concurrent_subtitle",
+                    fallback: "How many download at once. The rest wait their turn."
+                ),
+                value: $maxConcurrent,
+                range: DownloadSettings.concurrentRange,
+                step: 1,
+                suffix: "",
+                accentColor: accentColor
+            )
+            .onChange(of: maxConcurrent) { _, _ in downloads.concurrencyChanged() }
             SettingsInfoRow(
                 title: L10n.string("settings_downloads_storage", fallback: "Storage Used"),
                 value: DownloadSettings.label(for: max(downloads.storageUsed, 0))

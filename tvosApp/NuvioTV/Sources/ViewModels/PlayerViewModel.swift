@@ -780,6 +780,7 @@ class PlayerViewModel: ObservableObject {
         self.pendingSeekDelta = 0
         self.hidePeek()
         self.activeMeta = meta
+        releaseWatchedDownloads(keeping: url)
         self.activeStreamURL = url.absoluteString
         self.activeHTTPHeaders = httpHeaders
         if !isTrailerPlayback {
@@ -2046,9 +2047,26 @@ class PlayerViewModel: ObservableObject {
         // Leave the fallback host destroyed so re-entry cannot resume a ghost pipeline.
         playerController.destroyPlayer()
         aetherController.destroyPlayer()
+        releaseWatchedDownloads(keeping: nil)
         PictureInPictureManager.shared.invalidateSession()
         postPlayController.stop()
         status = .idle
+    }
+
+    /// A download played to the end goes once the player lets go of its file
+    /// — on close, or when the next title loads — if Delete After Watching is on.
+    private func noteDownloadPlayedToEnd() {
+        #if os(iOS) || os(macOS)
+        guard let activeStreamURL, activeStreamURL.hasPrefix("file:"),
+              let file = URL(string: activeStreamURL) else { return }
+        DownloadManager.shared.notePlayedToEnd(file: file)
+        #endif
+    }
+
+    private func releaseWatchedDownloads(keeping url: URL?) {
+        #if os(iOS) || os(macOS)
+        DownloadManager.shared.releaseWatchedDownloads(keeping: url)
+        #endif
     }
 
     // MARK: - Post-Play Recommendation Actions
@@ -3755,6 +3773,7 @@ class PlayerViewModel: ObservableObject {
 
         if shouldSaveNextUpProgress(at: progressTime), let nextEpisode {
             markWatchedIfNeeded()
+            noteDownloadPlayedToEnd()
             if usesTraktProgress {
                 reportTraktProgress(
                     meta: activeMeta,
@@ -3841,6 +3860,7 @@ class PlayerViewModel: ObservableObject {
         // Ending start / 90% — checkmark without sitting through the credits.
         if completesPlayback {
             markWatchedIfNeeded()
+            noteDownloadPlayedToEnd()
         }
     }
 
@@ -3916,6 +3936,23 @@ class PlayerViewModel: ObservableObject {
             )
             if scrobbleAction == .stop, !succeeded {
                 self?.didQueueTraktStop = false
+            }
+            // Offline (a download on a flight): kept, and sent once the
+            // connection is back.
+            let source = TraktSettingsStore.watchProgressSource(in: traktStore)
+            if succeeded {
+                OfflinePlaybackSync.clearProgress(
+                    meta: meta, season: episodeNumbers?.season, episode: episodeNumbers?.episode, source: source
+                )
+            } else {
+                OfflinePlaybackSync.recordProgress(
+                    meta: meta,
+                    season: episodeNumbers?.season,
+                    episode: episodeNumbers?.episode,
+                    position: playbackTime.current,
+                    duration: playbackTime.duration,
+                    source: source
+                )
             }
         }
     }

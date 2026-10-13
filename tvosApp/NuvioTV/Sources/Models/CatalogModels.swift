@@ -5152,24 +5152,26 @@ enum WatchedStore {
                 profileId: profileId
             )
             Task {
-                _ = await TraktHistoryService.setWatched(
+                let sent = await TraktHistoryService.setWatched(
                     meta,
                     season: season,
                     episode: episode,
                     isWatched: true,
                     store: traktStore
                 )
+                if !sent { OfflinePlaybackSync.recordWatched(meta: meta, season: season, episode: episode, source: .trakt) }
             }
         }
         if RemoteTrackingState.shouldSyncWatchedHistory(to: .simkl, in: traktStore) {
             Task {
-                _ = await SimklHistoryService.setWatched(
+                let sent = await SimklHistoryService.setWatched(
                     meta,
                     season: season,
                     episode: episode,
                     isWatched: true,
                     store: traktStore
                 )
+                if !sent { OfflinePlaybackSync.recordWatched(meta: meta, season: season, episode: episode, source: .simkl) }
             }
         }
         return true

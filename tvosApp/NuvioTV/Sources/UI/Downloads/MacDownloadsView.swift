@@ -114,11 +114,10 @@ struct MacDownloadsView: View {
     private func row(_ record: DownloadRecord) -> some View {
         let highlighted = isCaret(record)
         let waiting = downloads.isWaitingForWiFi(record)
-        let episode = record.meta.videos?.first { $0.id == record.contentId }
         return HStack(spacing: 22) {
             Button { primary(record) } label: {
                 HStack(spacing: 22) {
-                    AsyncImage(url: URL(string: episode?.thumbnail ?? record.meta.backgroundUrl ?? record.meta.posterUrl ?? "")) { image in
+                    AsyncImage(url: URL(string: DownloadManager.listArtwork(for: record) ?? "")) { image in
                         image.resizable().aspectRatio(contentMode: .fill)
                     } placeholder: {
                         Color.white.opacity(0.08)

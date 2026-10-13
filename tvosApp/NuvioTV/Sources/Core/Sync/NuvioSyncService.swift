@@ -126,6 +126,19 @@ final class NuvioSyncManager: ObservableObject {
         didAttach = true
 
         let center = NotificationCenter.default
+        ConnectivityMonitor.shared.start()
+        observers.append(center.addObserver(
+            forName: ConnectivityMonitor.restoredNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.connectionRestored() }
+        })
+        // Updates left waiting by an earlier offline session.
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            await OfflinePlaybackSync.flush()
+        }
         observers.append(center.addObserver(
             forName: ProfileManager.profilesChangedNotification,
             object: nil,
@@ -395,6 +408,18 @@ final class NuvioSyncManager: ObservableObject {
             return
         }
         schedulePull(force: true)
+    }
+
+    /// Back online after watching offline: sends what Trakt or Simkl missed,
+    /// and starts the Nuvio push that carries the unsent progress and marks —
+    /// or the first account pull, when Omni was opened with no connection.
+    func connectionRestored() {
+        if let key = currentSyncKey(), completedInitialPullKeys.contains(key) {
+            schedulePush()
+        } else {
+            retryInitialAccountPull()
+        }
+        Task { @MainActor in await OfflinePlaybackSync.flush() }
     }
 
     /// Retries the complete account bootstrap, not just the profile list. This
