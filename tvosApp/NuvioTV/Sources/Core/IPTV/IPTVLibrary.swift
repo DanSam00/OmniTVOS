@@ -1106,3 +1106,35 @@ private extension String {
         return trimmed.isEmpty ? nil : trimmed
     }
 }
+
+// MARK: - Log redaction
+
+/// IPTV stream addresses carry the provider login in their path
+/// (`/live/<user>/<pass>/123.m3u8`, `/movie/…`, `/series/…`) or query
+/// (`username=…&password=…`), and the player logs every address it opens.
+/// Lines are passed through this before they reach a log file.
+enum LogRedaction {
+    private static let pathLogin = try? NSRegularExpression(
+        pattern: #"(/(?:live|movie|series|timeshift)/)[^/\s?#]+/[^/\s?#]+/"#
+    )
+    private static let queryLogin = try? NSRegularExpression(
+        pattern: #"\b(username|password)=[^&\s]+"#, options: .caseInsensitive
+    )
+
+    static func redact(_ line: String) -> String {
+        guard line.contains("/live/") || line.contains("/movie/") || line.contains("/series/")
+            || line.contains("/timeshift/") || line.localizedCaseInsensitiveContains("password=") else { return line }
+        var text = line
+        if let pathLogin {
+            text = pathLogin.stringByReplacingMatches(
+                in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "$1•••/•••/"
+            )
+        }
+        if let queryLogin {
+            text = queryLogin.stringByReplacingMatches(
+                in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "$1=•••"
+            )
+        }
+        return text
+    }
+}

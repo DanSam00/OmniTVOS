@@ -1214,7 +1214,26 @@ private struct PhoneSourcesPanel: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 24)
             } else {
-                ForEach(viewModel.availableSources, id: \.id) { stream in
+                PhoneSourceFilterBar(
+                    providers: viewModel.macSourceProviders.map { .init(id: $0, name: $0) },
+                    selectedProvider: viewModel.macSourceProvider,
+                    onSelectProvider: { viewModel.macSourceProvider = $0 },
+                    resolution: Binding(get: { viewModel.macSourceResolution }, set: { viewModel.macSourceResolution = $0 }),
+                    sort: Binding(get: { viewModel.macSourceSort }, set: { viewModel.macSourceSort = $0 }),
+                    cachedOnly: Binding(get: { viewModel.macSourceCachedOnly }, set: { viewModel.macSourceCachedOnly = $0 }),
+                    showsCachedOnly: viewModel.macSourceIncludesDebrid,
+                    onDarkBackground: true,
+                    horizontalInset: 0
+                )
+                let shown = viewModel.macDisplayedSources
+                if shown.isEmpty {
+                    Text("No sources match these filters.")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.6))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 24)
+                }
+                ForEach(shown, id: \.id) { stream in
                     PhonePanelRow(
                         title: stream.panelTitle,
                         subtitle: stream.panelSubtitle,

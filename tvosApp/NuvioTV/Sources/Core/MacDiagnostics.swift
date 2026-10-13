@@ -73,7 +73,7 @@ enum MacDiagnostics {
     }
 
     static func log(_ message: @autoclosure () -> String) {
-        let line = message()
+        let line = LogRedaction.redact(message())
         logger.log("\(line, privacy: .public)")
         queue.async { writeSynchronously(line) }
     }

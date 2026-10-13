@@ -3223,7 +3223,7 @@ class PlayerViewModel: ObservableObject {
         }
     }
 
-    #if os(macOS)
+    #if os(macOS) || os(iOS)
     // MARK: Sources filters
 
     /// The Sources panel's caret stop for its filter chips.
@@ -3341,9 +3341,14 @@ class PlayerViewModel: ObservableObject {
         case .cache:
             macSourceCachedOnly.toggle()
         }
+        #if os(macOS)
         MacDiagnostics.log("player.sources.filter \(filter) shown=\(macDisplayedSources.count) of=\(availableSources.count)")
+        #endif
     }
 
+    #endif
+
+    #if os(macOS)
     /// Left/Right while the caret is on the filter row.
     func macPanelMoveHorizontal(_ delta: Int) {
         guard sidePanel == .sources, macPanelFocusedID == Self.macSourceFilterRowID else { return }

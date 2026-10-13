@@ -102,6 +102,34 @@ final class StreamsRepository: ObservableObject {
         )
     }
 
+    private static let iptvVODGroupId = "omni.iptv.vod"
+
+    /// Whether this title is looked for in the IPTV providers' films and shows.
+    private static func searchesIPTVLibrary(type: String, videoId: String) -> Bool {
+        guard !videoId.hasPrefix("iptv"),
+              ["movie", "series"].contains(type.lowercased()) else { return false }
+        return IPTVSourceStore.sources().contains(where: \.enabled)
+    }
+
+    /// The title's copies in the IPTV providers' films and shows, matched on
+    /// its name and year — nil when there are none.
+    private func iptvVODGroup(type: String, videoId: String) async -> AddonStreamGroup? {
+        let contentId = Self.baseContentId(from: videoId)
+        let repository = CinemetaCatalogRepository()
+        var meta = repository.cachedMetadata(for: contentId)
+        if meta == nil { meta = try? await repository.getMetadata(id: contentId, type: type) }
+        guard let meta else { return nil }
+        let episode = Self.seasonEpisode(fromVideoId: videoId)
+        let streams = await IPTVVODLibrary.shared.streams(meta: meta, season: episode.season, episode: episode.episode)
+        guard !streams.isEmpty else { return nil }
+        return AddonStreamGroup(
+            addonId: Self.iptvVODGroupId,
+            displayName: "IPTV",
+            streams: streams,
+            isLoading: false
+        )
+    }
+
     private func jellyfinStreamGroup(videoId: String) -> AddonStreamGroup? {
         let contentId = Self.baseContentId(from: videoId)
         let episode = Self.seasonEpisode(fromVideoId: videoId)
@@ -223,6 +251,9 @@ final class StreamsRepository: ObservableObject {
             jellyfinStreamGroup(videoId: videoId),
             iptvStreamGroup(videoId: videoId),
         ].compactMap { $0 }
+        let iptvVOD: Task<AddonStreamGroup?, Never>? = Self.searchesIPTVLibrary(type: type, videoId: videoId)
+            ? Task { await self.iptvVODGroup(type: type, videoId: videoId) }
+            : nil
         state = StreamsDiscoveryState(
             requestKey: requestKey,
             revision: state.revision &+ 1,
@@ -237,6 +268,8 @@ final class StreamsRepository: ObservableObject {
         }
 
         guard !enabledURLs.isEmpty else {
+            let ownedGroups = ownedGroups + [await iptvVOD?.value].compactMap { $0 ?? nil }
+            guard activeRequestKey == requestKey else { return }
             state = StreamsDiscoveryState(
                 requestKey: requestKey,
                 revision: state.revision &+ 1,
@@ -269,6 +302,8 @@ final class StreamsRepository: ObservableObject {
         }
 
         guard !targets.isEmpty else {
+            let ownedGroups = ownedGroups + [await iptvVOD?.value].compactMap { $0 ?? nil }
+            guard activeRequestKey == requestKey else { return }
             state = StreamsDiscoveryState(
                 requestKey: requestKey,
                 revision: state.revision &+ 1,
@@ -281,7 +316,10 @@ final class StreamsRepository: ObservableObject {
         }
 
         // Create every group as loading *before* any request so chips appear immediately.
-        let initialGroups = ownedGroups + targets.map {
+        let iptvPlaceholder = iptvVOD == nil ? [] : [AddonStreamGroup(
+            addonId: Self.iptvVODGroupId, displayName: "IPTV", streams: [], isLoading: true
+        )]
+        let initialGroups = ownedGroups + iptvPlaceholder + targets.map {
             AddonStreamGroup(
                 addonId: $0.addonId,
                 displayName: $0.displayName,
@@ -316,6 +354,18 @@ final class StreamsRepository: ObservableObject {
         }
 
         guard activeRequestKey == requestKey else { return }
+
+        if let iptvVOD {
+            let found = await iptvVOD.value
+            guard activeRequestKey == requestKey else { return }
+            var groups = state.groups
+            if let found, let index = groups.firstIndex(where: { $0.addonId == Self.iptvVODGroupId }) {
+                groups[index] = found
+            } else {
+                groups.removeAll { $0.addonId == Self.iptvVODGroupId }
+            }
+            publish(groups: groups, requestKey: requestKey, forceLoading: true)
+        }
 
         // Stream groups are done, but smart subtitle matching must not run until
         // external subtitle decoration finishes. Stay "loading" through that step.

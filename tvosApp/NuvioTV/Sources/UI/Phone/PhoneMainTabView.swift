@@ -427,19 +427,21 @@ struct PhoneSearchView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Picker("Type", selection: Binding(
-                    get: { viewModel.selectedType },
-                    set: { viewModel.setType($0) }
-                )) {
-                    ForEach(SearchContentType.allCases, id: \.self) { type in
-                        Text(type.title).tag(type)
+                // Only with results to narrow: Discover has its own filters.
+                if !viewModel.searchText.isEmpty {
+                    Picker("Type", selection: Binding(
+                        get: { viewModel.selectedType },
+                        set: { viewModel.setType($0) }
+                    )) {
+                        ForEach(SearchContentType.allCases, id: \.self) { type in
+                            Text(type.title).tag(type)
+                        }
                     }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, PhoneLayout.gutter)
                 }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, PhoneLayout.gutter)
 
                 if viewModel.searchText.isEmpty {
-                    recent
                     PhoneDiscoverSection(viewModel: discover, onSelect: onSelect)
                 } else if viewModel.isLoading && viewModel.results.isEmpty {
                     ProgressView().frame(maxWidth: .infinity).padding(.top, 60)
@@ -455,6 +457,7 @@ struct PhoneSearchView: View {
             .padding(.vertical, 8)
         }
         .navigationTitle(TVTab.search.title)
+        .navigationBarTitleDisplayMode(.inline)
         // Pinned under the title. Left automatic, iOS 26 puts the field at
         // the bottom of the screen, where the tab bar covers it.
         .searchable(
@@ -462,33 +465,21 @@ struct PhoneSearchView: View {
             placement: .navigationBarDrawer(displayMode: .always),
             prompt: "Movies and shows"
         )
+        // Past searches matching what is typed so far — all of them while the
+        // field is empty — from this session's and earlier ones.
+        .searchSuggestions {
+            ForEach(viewModel.matchingRecentSearches, id: \.self) { term in
+                Label(term, systemImage: "clock.arrow.circlepath").searchCompletion(term)
+            }
+            if viewModel.searchText.isEmpty, !viewModel.recentSearches.isEmpty {
+                Button("Clear Recent Searches", role: .destructive) { viewModel.clearRecent() }
+            }
+        }
         .searchFocused($isSearchFocused)
         .onReceive(NotificationCenter.default.publisher(for: Self.debugFocusNotification)) { _ in
             isSearchFocused = true
         }
         .onSubmit(of: .search) { viewModel.performSearch(query: viewModel.searchText) }
-    }
-
-    @ViewBuilder
-    private var recent: some View {
-        if !viewModel.recentSearches.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("Recent").font(.headline)
-                    Spacer()
-                    Button("Clear") { viewModel.clearRecent() }.font(.subheadline)
-                }
-                ForEach(viewModel.recentSearches, id: \.self) { term in
-                    Button { viewModel.applyRecent(term) } label: {
-                        Label(term, systemImage: "clock.arrow.circlepath")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 6)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, PhoneLayout.gutter)
-        }
     }
 }
 
@@ -510,12 +501,6 @@ struct PhoneLibraryView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Show", selection: $section) {
-                ForEach(PhoneLibrarySection.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, PhoneLayout.gutter)
-            .padding(.vertical, 8)
             switch section {
             case .library:
                 libraryGrid
@@ -524,6 +509,19 @@ struct PhoneLibraryView: View {
             }
         }
         .navigationTitle(section == .library ? TVTab.library.title : "Downloads")
+        // The Library | Downloads switch is the bar's title, rather than a
+        // large title with the switch under it: that took the top quarter of
+        // the screen before the first poster.
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Picker("Show", selection: $section) {
+                    ForEach(PhoneLibrarySection.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 260)
+            }
+        }
         .onAppear { viewModel.loadLibrary() }
     }
 

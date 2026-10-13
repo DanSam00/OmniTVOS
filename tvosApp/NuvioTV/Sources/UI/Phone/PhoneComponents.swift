@@ -441,3 +441,94 @@ struct PhoneFlexiblePoster: View {
     }
 }
 #endif
+
+/// The source list's filters, as the Mac's episode page and player have them:
+/// provider, resolution, sort, and cached-only with a debrid service. Each
+/// chip opens a menu; the active ones are filled.
+struct PhoneSourceFilterBar: View {
+    struct Provider: Hashable {
+        let id: String
+        let name: String
+    }
+
+    let providers: [Provider]
+    let selectedProvider: String?
+    let onSelectProvider: (String?) -> Void
+    @Binding var resolution: StreamResolutionFilter
+    @Binding var sort: StreamSortOption
+    @Binding var cachedOnly: Bool
+    let showsCachedOnly: Bool
+    /// White on the player's dark panel; the system's colours in a sheet.
+    var onDarkBackground = false
+    var horizontalInset: CGFloat = 16
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Menu {
+                    Button { onSelectProvider(nil) } label: {
+                        menuLabel(L10n.string("action_all", fallback: "All"), selected: selectedProvider == nil)
+                    }
+                    ForEach(providers, id: \.self) { provider in
+                        Button { onSelectProvider(provider.id) } label: {
+                            menuLabel(provider.name, selected: selectedProvider == provider.id)
+                        }
+                    }
+                } label: {
+                    chip(
+                        L10n.format("details_provider_format", fallback: "Provider: %@",
+                                    providers.first { $0.id == selectedProvider }?.name
+                                        ?? L10n.string("action_all", fallback: "All")),
+                        isActive: selectedProvider != nil
+                    )
+                }
+                Menu {
+                    ForEach(StreamResolutionFilter.allCases) { option in
+                        Button { resolution = option } label: { menuLabel(option.title, selected: resolution == option) }
+                    }
+                } label: {
+                    chip(L10n.format("details_resolution_format", fallback: "Res: %@", resolution.title),
+                         isActive: resolution != .any)
+                }
+                Menu {
+                    ForEach(StreamSortOption.allCases, id: \.self) { option in
+                        Button { sort = option } label: {
+                            menuLabel(L10n.optionLabel(option.rawValue), selected: sort == option)
+                        }
+                    }
+                } label: {
+                    chip(L10n.format("details_sort_format", fallback: "Sort: %@", L10n.optionLabel(sort.rawValue)),
+                         isActive: sort != .quality)
+                }
+                if showsCachedOnly {
+                    Button { cachedOnly.toggle() } label: {
+                        chip(cachedOnly
+                                ? L10n.string("details_cached_only", fallback: "Cached only")
+                                : L10n.string("details_all_cache", fallback: "All cache"),
+                             isActive: cachedOnly)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, horizontalInset)
+            .padding(.vertical, 8)
+        }
+    }
+
+    @ViewBuilder
+    private func menuLabel(_ text: String, selected: Bool) -> some View {
+        if selected { Label(text, systemImage: "checkmark") } else { Text(text) }
+    }
+
+    private func chip(_ text: String, isActive: Bool) -> some View {
+        let base: Color = onDarkBackground ? .white : .primary
+        return Text(text)
+            .font(.subheadline.weight(.semibold))
+            .lineLimit(1)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .foregroundStyle(isActive ? (onDarkBackground ? Color.black : Color(uiColor: .systemBackground)) : base)
+            .background(isActive ? base : base.opacity(0.12), in: Capsule())
+            .contentShape(Capsule())
+    }
+}

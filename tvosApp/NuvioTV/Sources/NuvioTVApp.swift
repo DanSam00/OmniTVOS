@@ -49,6 +49,10 @@ struct NuvioTVApp: App {
                 // a 1px blue border around the entire window.
                 .focusEffectDisabledIfAvailable()
                 .macFullBleedWindow()
+                // A nuvio:// link (an add-on install, a title) goes to the
+                // window already open; without this macOS opened a new one
+                // in the background for every link.
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
             #else
             ContentView()
                 #if os(iOS)
@@ -59,6 +63,7 @@ struct NuvioTVApp: App {
             #endif
         }
         #if os(macOS)
+        .handlesExternalEvents(matching: ["*"])
         .commands {
             MacTabCommands()
             MacPlayerCommands()
@@ -1913,14 +1918,22 @@ struct ContentView: View {
         #endif
         #else
         mainTabView
+            // `-OmniDebugPlayURL <url>`, in a build made with OMNI_MAC_DEBUG_PLAY.
+            #if os(macOS) && OMNI_MAC_DEBUG_PLAY
+            .task {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                playDebugLaunchURLIfRequested()
+            }
+            #endif
         #endif
     }
 
-    #if os(iOS) && OMNI_DEBUG_TOOLS
+    #if (os(iOS) && OMNI_DEBUG_TOOLS) || (os(macOS) && OMNI_MAC_DEBUG_PLAY)
     /// `-OmniDebugPlayURL <url>` on launch opens the player on that URL once
     /// Home is up, so the player can be exercised in the simulator without a
     /// stream add-on installed.
     private func playDebugLaunchURLIfRequested() {
+        #if os(iOS)
         // `-OmniDebugLandscape YES` turns the app sideways, since the
         // simulator cannot be rotated from the command line.
         if UserDefaults.standard.bool(forKey: "OmniDebugLandscape") {
@@ -1931,6 +1944,7 @@ struct ContentView: View {
             PhoneOrientation.request(.portrait)
         }
         downloadDebugLaunchURLIfRequested()
+        #endif
         guard let raw = UserDefaults.standard.string(forKey: "OmniDebugPlayURL"),
               let url = URL(string: raw) else { return }
         UserDefaults.standard.removeObject(forKey: "OmniDebugPlayURL")

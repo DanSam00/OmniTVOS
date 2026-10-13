@@ -934,8 +934,31 @@ private struct PhoneSourcesSheet: View {
     let onRefresh: () -> Void
     let onSelect: (NuvioStream) -> Void
 
+    // The Mac's filters: sort, resolution and cached-only are the stored
+    // preferences every source list reads; the provider is this sheet's own.
+    @AppStorage(SettingsKey.streamSortOption) private var sortOption: StreamSortOption = .quality
+    @AppStorage(SettingsKey.streamResolutionFilter) private var resolutionFilter: StreamResolutionFilter = .any
+    @AppStorage(SettingsKey.cachedOnlyStreams) private var cachedOnly = false
+    @State private var selectedAddonId: String?
+
+    private var includesDebrid: Bool { DebridResolver(store: ProfileSettings.current).isEnabled }
+
+    private var providers: [PhoneSourceFilterBar.Provider] {
+        state.streamGroups
+            .filter { !$0.streams.isEmpty || $0.isLoading }
+            .map { .init(id: $0.addonId, name: $0.isLoading ? "\($0.displayName)…" : $0.displayName) }
+    }
+
     private var streams: [NuvioStream] {
-        let all = Self.displayedStreams(state: state)
+        let all = StreamPickerListBuilder.displayedStreams(
+            streams: state.streams,
+            groups: state.streamGroups,
+            selectedAddonId: selectedAddonId,
+            sortOption: sortOption,
+            includeDebrid: includesDebrid,
+            cachedOnly: cachedOnly,
+            resolutionFilter: resolutionFilter
+        )
         guard isPickingDownload else { return all }
         let debrid = DebridResolver(store: ProfileSettings.current).isEnabled
         return all.filter {
@@ -977,11 +1000,27 @@ private struct PhoneSourcesSheet: View {
                 if !state.isLoadingStreams && streams.isEmpty {
                     Text(isPickingDownload
                         ? "None of these sources can be downloaded."
-                        : "No sources found. Check your add-ons in Settings.")
+                        : state.streams.isEmpty
+                            ? "No sources found. Check your add-ons in Settings."
+                            : "No sources match these filters.")
                         .foregroundStyle(.secondary)
                 }
             }
             .listStyle(.plain)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if !state.streams.isEmpty || state.isLoadingStreams {
+                    PhoneSourceFilterBar(
+                        providers: providers,
+                        selectedProvider: selectedAddonId,
+                        onSelectProvider: { selectedAddonId = $0 },
+                        resolution: $resolutionFilter,
+                        sort: $sortOption,
+                        cachedOnly: $cachedOnly,
+                        showsCachedOnly: includesDebrid
+                    )
+                    .background(.bar)
+                }
+            }
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

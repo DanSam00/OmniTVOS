@@ -1630,7 +1630,7 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
 
         static func log(_ message: String) {
             let stamp = ISO8601DateFormatter().string(from: Date())
-            guard let data = "[\(stamp)] \(message)\n".data(using: .utf8) else { return }
+            guard let data = "[\(stamp)] \(LogRedaction.redact(message))\n".data(using: .utf8) else { return }
             queue.async {
                 let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
                 if size > maxBytes, let whole = try? Data(contentsOf: url) {

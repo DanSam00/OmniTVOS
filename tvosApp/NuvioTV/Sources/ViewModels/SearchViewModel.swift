@@ -192,6 +192,24 @@ class SearchViewModel: ObservableObject {
         }
     }
 
+    /// Past searches containing what is typed so far, best first: this
+    /// device's recent searches, then the other queries searched this
+    /// session (their results are still in memory). All of the recent ones
+    /// while nothing is typed.
+    var matchingRecentSearches: [String] {
+        func folded(_ text: String) -> String {
+            text.trimmingCharacters(in: .whitespacesAndNewlines)
+                .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        }
+        let typed = folded(searchText)
+        guard !typed.isEmpty else { return recentSearches }
+        var seen = Set<String>([typed])
+        return (recentSearches + cacheOrder.reversed())
+            .filter { folded($0).contains(typed) && seen.insert(folded($0)).inserted }
+            .prefix(6)
+            .map { $0 }
+    }
+
     func applyRecent(_ term: String) {
         searchText = term
     }

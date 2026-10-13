@@ -22,6 +22,11 @@ struct IPTVGuideView: View {
     @State private var programmes: [String: [IPTVProgramme]] = [:]
     @State private var isLoading = true
     @State private var now = Date()
+    #if os(iOS)
+    /// The section and group chips, folded into one summary chip until
+    /// asked for: two rows of them left a phone in landscape a sliver of guide.
+    @AppStorage("omni.iptv.guideFiltersShown") private var filtersShown = false
+    #endif
     #if os(macOS)
     @State private var caretRow = 0
     @State private var caretCell = 0
@@ -100,7 +105,7 @@ struct IPTVGuideView: View {
             let timelineWidth = max(proxy.size.width - Self.channelColumnWidth - horizontalPadding * 2, 200)
             let minutes = windowMinutes(for: timelineWidth)
             let perMinute = timelineWidth / minutes
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: headerSpacing) {
                 header
                 if isLoading {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -150,6 +155,89 @@ struct IPTVGuideView: View {
 
     // MARK: Header
 
+    private var headerSpacing: CGFloat {
+        #if os(iOS)
+        return 8
+        #else
+        return 18
+        #endif
+    }
+
+    #if os(iOS)
+    /// One row: the title, the filters' summary (which shows or hides them),
+    /// and the time controls as icons.
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(L10n.string("nav_live_tv", fallback: "Live TV"))
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                if sections.count > 1 || subsections.count > 1 {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) { filtersShown.toggle() }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(filterSummary).lineLimit(1)
+                            Image(systemName: filtersShown ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 11, weight: .bold))
+                        }
+                        .font(.system(size: 13, weight: .semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(Capsule().fill(Color.white.opacity(0.12)))
+                        .foregroundColor(.white)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(filtersShown ? "Hide channel filters" : "Show channel filters")
+                }
+                Spacer(minLength: 4)
+                iconButton("chevron.left", label: "Earlier") { shift(by: -1) }
+                Button { windowStart = Self.slot(containing: Date()) } label: {
+                    Text(L10n.string("guide_now", fallback: "Now"))
+                        .font(.system(size: 13, weight: .semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(Capsule().fill(Color.white.opacity(0.12)))
+                        .foregroundColor(.white)
+                }
+                .buttonStyle(.plain)
+                iconButton("chevron.right", label: "Later") { shift(by: 1) }
+            }
+            if filtersShown {
+                if sections.count > 1 {
+                    chipRow(row: 1, titles: [allTitle] + sections, selected: section.map { (sections.firstIndex(of: $0) ?? -1) + 1 } ?? 0) {
+                        selectSection($0 == 0 ? nil : sections[$0 - 1])
+                    }
+                }
+                if subsections.count > 1 {
+                    chipRow(row: 2, titles: [allTitle] + subsections, selected: subsection.map { (subsections.firstIndex(of: $0) ?? -1) + 1 } ?? 0) {
+                        selectSubsection($0 == 0 ? nil : subsections[$0 - 1])
+                    }
+                }
+            }
+        }
+    }
+
+    /// "EU · UK ENTERTAINMENT", or "All channels" with nothing chosen.
+    private var filterSummary: String {
+        let parts = [section, subsection].compactMap { $0 }
+        return parts.isEmpty ? L10n.string("guide_all_channels", fallback: "All channels") : parts.joined(separator: " · ")
+    }
+
+    private func iconButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .bold))
+                .frame(width: 32, height: 32)
+                .background(Circle().fill(Color.white.opacity(0.12)))
+                .foregroundColor(.white)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+    #else
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 14) {
@@ -173,6 +261,8 @@ struct IPTVGuideView: View {
             }
         }
     }
+
+    #endif
 
     private var allTitle: String { L10n.string("library_type_all", fallback: "All") }
 
