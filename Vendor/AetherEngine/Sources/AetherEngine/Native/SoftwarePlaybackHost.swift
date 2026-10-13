@@ -91,6 +91,8 @@ final class SoftwarePlaybackHost {
     /// hand it to the view via the same `attach(_ layer: CALayer)` entry
     /// point it uses for `AVPlayerLayer`.
     var displayLayer: AVSampleBufferDisplayLayer { renderer.displayLayer }
+    /// macOS: the layer handed to Picture in Picture (see `SampleBufferRenderer.pipLayer`).
+    var pipDisplayLayer: AVSampleBufferDisplayLayer? { renderer.pipLayer }
 
     /// SW-PiP Phase C: engine-fed cue mirror + PiP gate for the renderer's frame compositor.
     func updateSubtitleCompositor(cues: [SubtitleCue], enabled: Bool) {
@@ -775,6 +777,7 @@ final class SoftwarePlaybackHost {
         }
         if !demuxLoopStarted, let aOut = audioOutput {
             aOut.attachVideoLayer(renderer.queueTarget)
+            if let pip = renderer.pipTarget { aOut.attachVideoLayer(pip) }
         }
         if !demuxLoopStarted {
             demuxLoopStarted = true
@@ -1093,6 +1096,7 @@ final class SoftwarePlaybackHost {
         if let aOut = audioOutput {
             aOut.stop()
             aOut.detachVideoLayer(renderer.queueTarget)
+            if let pip = renderer.pipTarget { aOut.detachVideoLayer(pip) }
         }
         audioOutput = nil
         audioDecoder?.close()

@@ -4,6 +4,7 @@ import UIKit
 #endif
 #if canImport(AppKit)
 import AppKit
+import SwiftUI
 #endif
 import AVKit
 import AVFoundation
@@ -315,6 +316,14 @@ final class PictureInPictureManager: NSObject, ObservableObject {
             self.pipController = pip
             bindPossibleObservation(pip)
         } else if #available(tvOS 15.0, macOS 12.0, *), let swSource = engine.softwarePiPSource {
+            #if os(macOS)
+            // Software-decoded video goes to the mini player, which is always possible.
+            possibleObservation?.invalidate()
+            pipController = nil
+            configuredSoftwareDisplayLayer = swSource.layer
+            isPictureInPicturePossible = true
+            return
+            #else
             if configuredSoftwareDisplayLayer === swSource.layer, pipController != nil {
                 return
             }
@@ -328,6 +337,7 @@ final class PictureInPictureManager: NSObject, ObservableObject {
             self.pipController = pip
             configuredSoftwareDisplayLayer = swSource.layer
             bindPossibleObservation(pip)
+            #endif
         }
     }
 
@@ -347,7 +357,86 @@ final class PictureInPictureManager: NSObject, ObservableObject {
 
     // MARK: - Actions
 
+    #if os(macOS)
+    // MARK: Mini player (software-decoded video)
+
+    /// The floating window software-decoded video goes to instead of the system PiP window.
+    ///
+    /// AVKit on the Mac draws a sample-buffer layer at 1:1 and places it by its size, not by the
+    /// window: measured with a test grid, a 720x540 layer put its corner at the window's centre, a
+    /// 1440x1080 one at the bottom-left, a 480x360 one at the top-right. No layer size is right for
+    /// every PiP window size, so for that path Omni floats its own window, fed by the renderer's PiP
+    /// mirror. The native (AVPlayerLayer) path keeps the system window, which it draws correctly.
+    private var miniPlayer: MacMiniPlayerPanel?
+
+    private func startMiniPlayer(_ source: SoftwarePiPSource) {
+        guard miniPlayer == nil else { return }
+        let engine = activeAetherController?.engine
+        engine?.pictureInPictureActive = true
+        let panel = MacMiniPlayerPanel(
+            layer: source.layer,
+            videoSize: engine?.softwareDisplaySize ?? CGSize(width: 16, height: 9),
+            isPaused: { [weak source] in source?.isPaused ?? true }
+        )
+        panel.onTogglePlay = { [weak source] in
+            guard let source else { return }
+            source.setPlaying(source.isPaused)
+        }
+        panel.onReturn = { [weak self] in self?.returnFromMiniPlayer() }
+        panel.onClose = { [weak self] in self?.finishMiniPlayer(restoring: false) }
+        miniPlayer = panel
+        panel.show()
+        isPictureInPictureActive = true
+        pipLog("mini player start")
+        onDidStartPiP?()
+    }
+
+    /// The mini player's return button: the same as AVKit's restore button.
+    private func returnFromMiniPlayer() {
+        guard miniPlayer != nil, !isRestoringUI else { return }
+        guard let context = activeContext, let onRestoreUI else {
+            finishMiniPlayer(restoring: false)
+            return
+        }
+        isRestoringUI = true
+        restoreSurfaceReady = false
+        // The panel never activates Omni, so bring it forward, as the system window's button does.
+        NSApp.activate(ignoringOtherApps: true)
+        onRestoreUI(context) { [weak self] success in
+            guard let self, !success else { return }
+            // The app refused: stay in the mini player.
+            self.isRestoringUI = false
+        }
+    }
+
+    /// Closes the mini player: back to the full-screen player once it has remounted, or, without
+    /// restoring, the end of playback, as the system window's close button is.
+    private func finishMiniPlayer(restoring: Bool) {
+        guard let panel = miniPlayer else { return }
+        miniPlayer = nil
+        panel.close()
+        pipLog("mini player stop restoring=\(restoring)")
+        startedAutomatically = false
+        isStopping = false
+        clearAutomaticReturn()
+        isPictureInPictureActive = false
+        activeAetherController?.engine.pictureInPictureActive = false
+        activeAetherController?.rebindSurface()
+        if !restoring {
+            onDidStopPiPWithoutRestoring?()
+            invalidateSession()
+        }
+        isRestoringUI = false
+    }
+    #endif
+
     func startPictureInPicture() {
+        #if os(macOS)
+        if let source = activeAetherController?.engine.softwarePiPSource {
+            startMiniPlayer(source)
+            return
+        }
+        #endif
         guard isPictureInPictureSupported else { return }
         rebuildPipControllerIfNeeded()
 
@@ -362,6 +451,12 @@ final class PictureInPictureManager: NSObject, ObservableObject {
 
     func stopPictureInPicture() {
         guard isPictureInPictureActive else { return }
+        #if os(macOS)
+        if miniPlayer != nil {
+            finishMiniPlayer(restoring: false)
+            return
+        }
+        #endif
         pipController?.stopPictureInPicture()
     }
 
@@ -375,6 +470,12 @@ final class PictureInPictureManager: NSObject, ObservableObject {
 
     /// Stops playback and clears the active session state.
     func invalidateSession() {
+        #if os(macOS)
+        if let panel = miniPlayer {
+            miniPlayer = nil
+            panel.close()
+        }
+        #endif
         let retainedCoordinator = activeCoordinator
         let oldPipController = pipController
         let restoreCompletion = pendingRestoreCompletion
@@ -425,28 +526,6 @@ extension PictureInPictureManager: @preconcurrency AVPictureInPictureControllerD
         isPictureInPictureActive = true
         activeAetherController?.engine.pictureInPictureActive = true
         onDidStartPiP?()
-        #if os(macOS)
-        // Temporary: the PiP window shows one magnified corner of the picture
-        // over black, and reading the code has not settled who sizes the layer
-        // once AVKit has it. This states the geometry outright, a second in.
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            guard let layer = self?.activeAetherController?.engine.softwarePiPSource?.layer else {
-                MacDiagnostics.log("pip.geom no software layer (native path)")
-                return
-            }
-            let superlayer = layer.superlayer
-            MacDiagnostics.log(String(
-                format: "pip.geom layer.frame=%.0fx%.0f@%.0f,%.0f bounds=%.0fx%.0f gravity=%@ "
-                    + "mask=%lu super=%@ super.bounds=%.0fx%.0f",
-                layer.frame.width, layer.frame.height, layer.frame.origin.x, layer.frame.origin.y,
-                layer.bounds.width, layer.bounds.height,
-                layer.videoGravity.rawValue,
-                UInt(layer.autoresizingMask.rawValue),
-                superlayer.map { String(describing: type(of: $0)) } ?? "none",
-                superlayer?.bounds.width ?? 0, superlayer?.bounds.height ?? 0))
-        }
-        #endif
     }
 
     func pictureInPictureController(
@@ -496,6 +575,13 @@ extension PictureInPictureManager: @preconcurrency AVPictureInPictureControllerD
     /// new SwiftUI hierarchy still owns an empty surface.
     func fullscreenSurfaceDidRebind() {
         guard isRestoringUI else { return }
+        #if os(macOS)
+        if miniPlayer != nil {
+            // The player is back in the window: the mini player has done its job.
+            finishMiniPlayer(restoring: true)
+            return
+        }
+        #endif
         restoreSurfaceReady = true
         activeAetherController?.rebindSurface()
         #if os(macOS)
@@ -591,3 +677,186 @@ extension PictureInPictureManager: @preconcurrency AVPictureInPictureSampleBuffe
         completionHandler()
     }
 }
+
+#if os(macOS)
+// MARK: - Mac mini player
+
+/// A floating, resizable window holding the renderer's PiP mirror layer: Omni's own picture in
+/// picture for software-decoded video (see `PictureInPictureManager.startMiniPlayer`). It floats
+/// over every app and Space, keeps the video's shape, and shows its controls on hover.
+@MainActor
+final class MacMiniPlayerPanel {
+    var onReturn: (() -> Void)?
+    var onClose: (() -> Void)?
+    var onTogglePlay: (() -> Void)?
+
+    private let panel: MiniPanel
+    private let layer: CALayer
+    private let model: MacMiniPlayerModel
+    private var pollTimer: Timer?
+
+    /// A borderless panel that can still take clicks without bringing Omni forward.
+    private final class MiniPanel: NSPanel {
+        override var canBecomeKey: Bool { true }
+    }
+
+    init(layer: AVSampleBufferDisplayLayer, videoSize: CGSize, isPaused: @escaping () -> Bool) {
+        let aspect = videoSize.width > 0 && videoSize.height > 0 ? videoSize : CGSize(width: 16, height: 9)
+        let width: CGFloat = 480
+        let height = (width * aspect.height / aspect.width).rounded()
+        let screen = NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let frame = CGRect(x: screen.maxX - width - 24, y: screen.minY + 24, width: width, height: height)
+
+        panel = MiniPanel(
+            contentRect: frame,
+            styleMask: [.borderless, .resizable, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.hidesOnDeactivate = false
+        panel.isMovableByWindowBackground = true
+        panel.hasShadow = true
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.contentAspectRatio = aspect
+        panel.minSize = CGSize(width: 240, height: (240 * aspect.height / aspect.width).rounded())
+
+        let content = NSView(frame: CGRect(origin: .zero, size: frame.size))
+        content.wantsLayer = true
+        content.layer?.backgroundColor = NSColor.black.cgColor
+        content.layer?.cornerRadius = 12
+        content.layer?.masksToBounds = true
+
+        self.layer = layer
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.removeFromSuperlayer()
+        layer.videoGravity = .resizeAspect
+        layer.frame = content.bounds
+        layer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        content.layer?.addSublayer(layer)
+        CATransaction.commit()
+
+        let model = MacMiniPlayerModel(isPaused: isPaused())
+        self.model = model
+        let controls = NSHostingView(rootView: MacMiniPlayerControls(
+            model: model,
+            onTogglePlay: { [weak model] in
+                model?.isPaused.toggle()
+            },
+            onReturn: {},
+            onClose: {},
+            onDrag: { _ in }
+        ))
+        controls.frame = content.bounds
+        controls.autoresizingMask = [.width, .height]
+        content.addSubview(controls)
+        panel.contentView = content
+
+        // Wired after init so the closures can reach `self`.
+        controls.rootView = MacMiniPlayerControls(
+            model: model,
+            onTogglePlay: { [weak self] in self?.onTogglePlay?() },
+            onReturn: { [weak self] in self?.onReturn?() },
+            onClose: { [weak self] in self?.onClose?() },
+            onDrag: { [weak self] ended in self?.drag(ended: ended) }
+        )
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak model] _ in
+            MainActor.assumeIsolated {
+                let paused = isPaused()
+                if model?.isPaused != paused { model?.isPaused = paused }
+            }
+        }
+    }
+
+    func show() {
+        panel.orderFrontRegardless()
+    }
+
+    private var dragStart: (origin: CGPoint, mouse: CGPoint)?
+
+    /// Moves the window with the pointer, in screen coordinates: the controls cover the whole
+    /// picture, so the panel's own drag-by-background never sees the press.
+    private func drag(ended: Bool) {
+        let mouse = NSEvent.mouseLocation
+        let start = dragStart ?? (panel.frame.origin, mouse)
+        dragStart = ended ? nil : start
+        panel.setFrameOrigin(CGPoint(x: start.origin.x + mouse.x - start.mouse.x,
+                                     y: start.origin.y + mouse.y - start.mouse.y))
+    }
+
+    func close() {
+        pollTimer?.invalidate()
+        pollTimer = nil
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.removeFromSuperlayer()
+        CATransaction.commit()
+        panel.orderOut(nil)
+    }
+}
+
+@MainActor
+final class MacMiniPlayerModel: ObservableObject {
+    @Published var isPaused: Bool
+    init(isPaused: Bool) { self.isPaused = isPaused }
+}
+
+/// The mini player's controls, over the picture while the pointer is on it: close and return at
+/// the top, play/pause in the middle — the system PiP window's layout.
+struct MacMiniPlayerControls: View {
+    @ObservedObject var model: MacMiniPlayerModel
+    let onTogglePlay: () -> Void
+    let onReturn: () -> Void
+    let onClose: () -> Void
+    /// Called while the picture is dragged; true once the drag ends.
+    let onDrag: (Bool) -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        // Always laid out, faded in on hover: a click lands on a control even before the
+        // pointer has been noticed over the window.
+        ZStack {
+            Color.black.opacity(0.25)
+            VStack {
+                HStack {
+                    button("xmark", help: "Close", action: onClose)
+                    Spacer()
+                    button("arrow.up.left.and.arrow.down.right", help: "Back to Omni", action: onReturn)
+                }
+                Spacer()
+            }
+            .padding(10)
+            button(model.isPaused ? "play.fill" : "pause.fill", help: model.isPaused ? "Play" : "Pause",
+                   size: 22, action: onTogglePlay)
+        }
+        .opacity(isHovering ? 1 : 0.001)
+        .gesture(
+            DragGesture(minimumDistance: 2)
+                .onChanged { _ in onDrag(false) }
+                .onEnded { _ in onDrag(true) }
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.15)) { isHovering = hovering }
+        }
+    }
+
+    private func button(_ symbol: String, help: String, size: CGFloat = 13, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: size, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: size * 2.6, height: size * 2.6)
+                .background(.ultraThinMaterial, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(help)
+    }
+}
+#endif

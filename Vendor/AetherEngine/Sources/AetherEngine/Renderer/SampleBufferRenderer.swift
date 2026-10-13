@@ -35,6 +35,13 @@ final class SampleBufferRenderer: @unchecked Sendable {
     /// for every decoded frame.
     private let renderingTarget: any AVQueuedSampleBufferRendering
 
+    /// macOS: a second display layer fed the same frames, for Picture in Picture. AVKit on the Mac
+    /// drew the on-screen layer magnified and off-centre in the PiP window (a layer sized and placed
+    /// for the player view); this one belongs to PiP alone and is laid out for it. Nil elsewhere.
+    @MainActor let pipLayer: AVSampleBufferDisplayLayer?
+    /// The mirror's queue, captured on the main actor like `renderingTarget`.
+    let pipTarget: (any AVQueuedSampleBufferRendering)?
+
     /// SW-PiP Phase C: composites active subtitle cues into frames while PiP is active (the system
     /// window renders only this layer, the host overlay cannot reach it).
     let subtitleCompositor = SubtitleFrameCompositor()
@@ -171,6 +178,18 @@ final class SampleBufferRenderer: @unchecked Sendable {
         } else {
             renderingTarget = layer
         }
+        #if os(macOS)
+        let mirror = Self.makeDisplayLayer(isHDR: false)
+        pipLayer = mirror
+        if #available(macOS 15.0, *) {
+            pipTarget = mirror.sampleBufferRenderer
+        } else {
+            pipTarget = mirror
+        }
+        #else
+        pipLayer = nil
+        pipTarget = nil
+        #endif
     }
 
     /// #303: what the display did with the frames, as the renderer itself counts them. Our own
@@ -383,11 +402,14 @@ final class SampleBufferRenderer: @unchecked Sendable {
         case .rendererFlush(let remove):
             if #available(tvOS 18.0, iOS 18.0, macOS 15.0, *) {
                 displayLayer.sampleBufferRenderer.flush(removingDisplayedImage: remove) { }
+                pipLayer?.sampleBufferRenderer.flush(removingDisplayedImage: remove) { }
             }
         case .removeImage:
             displayLayer.flushAndRemoveImage()
+            pipLayer?.flushAndRemoveImage()
         case .holdImage:
             displayLayer.flush()
+            pipLayer?.flush()
         }
     }
 
@@ -444,6 +466,10 @@ final class SampleBufferRenderer: @unchecked Sendable {
             scheduleQueueDiagnosticsRefresh()
         }
         target.enqueue(sampleBuffer)
+        // The PiP mirror takes what it can; a frame it is not ready for is one PiP frame, not a stall.
+        if let pipTarget, pipTarget.isReadyForMoreMediaData {
+            pipTarget.enqueue(sampleBuffer)
+        }
 
         // #311: reported here rather than at admission, so it describes frames the compositor has
         // been given. A frame refused for an unschedulable timestamp, skipped after a seek, or lost
