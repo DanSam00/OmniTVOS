@@ -179,7 +179,7 @@ struct PhoneMainTabView: View {
 // MARK: - Tab bar
 
 /// A floating bar in the style of the iOS 26 tab bar, with Search apart in
-/// its own circle. Labels go when the tabs would not fit with them.
+/// its own circle. Icons only, no labels, so the icons can be larger.
 struct PhoneTabBar: View {
     let tabs: [TVTab]
     @Binding var selection: TVTab
@@ -187,16 +187,13 @@ struct PhoneTabBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            ViewThatFits(in: .horizontal) {
-                items(labeled: true)
-                items(labeled: false)
-            }
-            .padding(4)
-            .phoneBarBackground(Capsule())
+            items
+                .padding(4)
+                .phoneBarBackground(Capsule())
 
             Button { selection = .search } label: {
                 Image(systemName: TVTab.search.symbol)
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(.system(size: 24, weight: .semibold))
                     .frame(width: 56, height: 56)
                     .foregroundStyle(.white)
                     .background {
@@ -213,35 +210,44 @@ struct PhoneTabBar: View {
         .sensoryFeedback(.selection, trigger: selection)
     }
 
-    private func items(labeled: Bool) -> some View {
+    /// Without labels, a plain TV could be anything, so Live TV's says LIVE
+    /// on its screen.
+    @ViewBuilder
+    private func icon(for tab: TVTab) -> some View {
+        if tab == .guide {
+            Image(systemName: "tv")
+                .overlay {
+                    Text("LIVE")
+                        .font(.system(size: 6.5, weight: .heavy))
+                        .kerning(0.2)
+                        .offset(y: -1.5)
+                }
+        } else {
+            Image(systemName: tab.symbol)
+        }
+    }
+
+    private var items: some View {
         HStack(spacing: 0) {
             ForEach(tabs) { tab in
                 Button {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { selection = tab }
                 } label: {
-                    VStack(spacing: 2) {
-                        Image(systemName: tab.symbol)
-                            .font(.system(size: labeled ? 18 : 20, weight: .semibold))
-                            .frame(height: 24)
-                        if labeled {
-                            Text(tab.title)
-                                .font(.system(size: 10, weight: .semibold))
-                                .lineLimit(1)
-                                .fixedSize()
+                    icon(for: tab)
+                        .font(.system(size: 24, weight: .semibold))
+                        .frame(height: 30)
+                        .foregroundStyle(selection == tab ? Color.white : Color.white.opacity(0.75))
+                        .padding(.horizontal, 10)
+                        .frame(height: 48)
+                        .frame(maxWidth: .infinity)
+                        .background {
+                            if selection == tab {
+                                Capsule()
+                                    .fill(Color.white.opacity(0.16))
+                                    .matchedGeometryEffect(id: "pill", in: pill)
+                            }
                         }
-                    }
-                    .foregroundStyle(selection == tab ? Color.white : Color.white.opacity(0.75))
-                    .padding(.horizontal, 10)
-                    .frame(height: 48)
-                    .frame(maxWidth: .infinity)
-                    .background {
-                        if selection == tab {
-                            Capsule()
-                                .fill(Color.white.opacity(0.16))
-                                .matchedGeometryEffect(id: "pill", in: pill)
-                        }
-                    }
-                    .contentShape(Rectangle())
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(tab.title)
