@@ -10244,13 +10244,25 @@ private struct CachedHeroLogo: View {
         self.title = title
         // Already loaded (the carousel fetches its neighbours' logos ahead):
         // drawn at once, so the logo moves with the rest of the slide.
-        let cached = URL(string: url).flatMap { BackdropImageCache.shared.cachedImage(for: $0) }
+        var cached = URL(string: url).flatMap { BackdropImageCache.shared.cachedImage(for: $0) }
+        if Self.lightensDarkInk, let original = cached, let imageURL = URL(string: url) {
+            // Not yet lightened: wait for the task rather than flash black.
+            cached = DarkLogoInk.cachedResult(for: imageURL, original: original)
+        }
         _image = State(initialValue: cached)
         _loadedURL = State(initialValue: cached == nil ? nil : url)
     }
     @State private var outgoingImage: UIImage?
     @State private var outgoingOpacity = 0.0
     @State private var imageOpacity = 1.0
+
+    /// Black logo ink vanishes on the dark hero (`DarkLogoInk`). Apple TV
+    /// only for now.
+    #if os(tvOS)
+    private static let lightensDarkInk = true
+    #else
+    private static let lightensDarkInk = false
+    #endif
 
     private var showsLogoImage: Bool {
         image != nil || outgoingImage != nil
@@ -10292,13 +10304,16 @@ private struct CachedHeroLogo: View {
                 outgoingOpacity = 0
                 return
             }
-            guard let loaded = await BackdropImageCache.shared.image(for: imageURL) else {
+            guard var loaded = await BackdropImageCache.shared.image(for: imageURL) else {
                 guard !Task.isCancelled else { return }
                 image = nil
                 loadedURL = nil
                 outgoingImage = nil
                 outgoingOpacity = 0
                 return
+            }
+            if Self.lightensDarkInk, let lightened = await DarkLogoInk.lightened(loaded, url: imageURL) {
+                loaded = lightened
             }
             guard !Task.isCancelled else { return }
             let previousImage = image

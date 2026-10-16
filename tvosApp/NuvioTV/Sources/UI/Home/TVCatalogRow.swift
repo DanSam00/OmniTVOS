@@ -1313,6 +1313,8 @@ extension TVCollectionFolderRow: Equatable {
 /// earlier could sit blank — the Sports row in Grid View did exactly that.
 struct CachedFolderCover<Content: View, Placeholder: View>: View {
     let url: URL
+    /// Lighten black ink so a logo shows on a dark tile (`DarkLogoInk`).
+    var lightensDarkInk = false
     @ViewBuilder let content: (Image) -> Content
     @ViewBuilder let placeholder: () -> Placeholder
 
@@ -1336,9 +1338,140 @@ struct CachedFolderCover<Content: View, Placeholder: View>: View {
                 return
             }
             TVHomeDebugTrace.log("folderCover.done \(url.lastPathComponent)")
-            image = loaded
+            var shown = loaded
+            if lightensDarkInk, let lightened = await DarkLogoInk.lightened(loaded, url: url) {
+                guard !Task.isCancelled else { return }
+                shown = lightened
+            }
+            image = shown
             loadedURL = url
         }
+    }
+}
+
+/// Logos drawn in black or dark grey — Apple TV+, A24, Pixar, DC, the
+/// HBO in "HBO max", Marvel's "STUDIOS" — vanish on Home's dark tiles. This
+/// turns that ink light and leaves colored ink alone, so Marvel keeps its
+/// red box and Peacock its dots; inverting the whole logo would recolor them.
+/// Covers with no see-through area (a picture rather than a logo) are left
+/// as they are.
+enum DarkLogoInk {
+    private static let cache = NSCache<NSURL, UIImage>()
+    /// URLs whose logo needed no change.
+    private static var unchanged = Set<URL>()
+    private static let lock = NSLock()
+
+    /// What was already worked out for `url`: the lightened logo, the
+    /// original when it needed no change, or nil when not yet measured.
+    static func cachedResult(for url: URL, original: UIImage) -> UIImage? {
+        if let cached = cache.object(forKey: url as NSURL) { return cached }
+        lock.lock()
+        defer { lock.unlock() }
+        return unchanged.contains(url) ? original : nil
+    }
+
+    /// The lightened logo, or nil when it has no dark ink to lighten.
+    static func lightened(_ image: UIImage, url: URL) async -> UIImage? {
+        if let cached = cache.object(forKey: url as NSURL) { return cached }
+        lock.lock()
+        let known = unchanged.contains(url)
+        lock.unlock()
+        if known { return nil }
+
+        guard let source = cgImage(of: image) else { return nil }
+        let result = await Task.detached(priority: .utility) { lighten(source) }.value
+        guard let result else {
+            lock.lock()
+            unchanged.insert(url)
+            lock.unlock()
+            return nil
+        }
+        let lightened = makeImage(result, like: image)
+        cache.setObject(lightened, forKey: url as NSURL)
+        return lightened
+    }
+
+    private static func lighten(_ source: CGImage) -> CGImage? {
+        // Logos are drawn a few hundred points wide; more pixels add nothing.
+        let scale = min(1, 1200 / Double(max(source.width, 1)))
+        let width = max(1, Int(Double(source.width) * scale))
+        let height = max(1, Int(Double(source.height) * scale))
+        let bytesPerRow = width * 4
+        var pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
+        let space = CGColorSpaceCreateDeviceRGB()
+        let info = CGImageAlphaInfo.premultipliedLast.rawValue
+        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow, space: space, bitmapInfo: info
+            ) else { return false }
+            context.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { return nil }
+
+        var opaque = 0, clear = 0, darkInk = 0
+        for index in stride(from: 0, to: pixels.count, by: 4) {
+            let alpha = Double(pixels[index + 3]) / 255
+            if alpha < 0.1 { clear += 1; continue }
+            guard alpha > 0.5 else { continue }
+            opaque += 1
+            let (value, saturation) = valueAndSaturation(pixels, index, alpha)
+            if value < 0.3, saturation < 0.2 { darkInk += 1 }
+        }
+        let total = width * height
+        guard opaque > 0,
+              Double(clear) / Double(total) > 0.05,
+              Double(darkInk) / Double(opaque) > 0.1 else { return nil }
+
+        for index in stride(from: 0, to: pixels.count, by: 4) {
+            let alphaByte = pixels[index + 3]
+            guard alphaByte > 0 else { continue }
+            let alpha = Double(alphaByte) / 255
+            let (value, saturation) = valueAndSaturation(pixels, index, alpha)
+            // Grey ink only, fading out as the color gets stronger; dark
+            // greys flip to light (0.5 stays 0.5, so the change is smooth).
+            let weight = min(1, max(0, (0.25 - saturation) / 0.1))
+            guard weight > 0, value < 0.5 else { continue }
+            let lift = (1 - 2 * value) * weight
+            for channel in 0..<3 {
+                let c = Double(pixels[index + channel]) / 255 / alpha
+                let lifted = min(1, c + lift)
+                pixels[index + channel] = UInt8((lifted * alpha * 255).rounded())
+            }
+        }
+
+        return pixels.withUnsafeMutableBytes { buffer -> CGImage? in
+            CGContext(
+                data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow, space: space, bitmapInfo: info
+            )?.makeImage()
+        }
+    }
+
+    /// Brightness (largest channel) and saturation of a premultiplied pixel.
+    private static func valueAndSaturation(_ pixels: [UInt8], _ index: Int, _ alpha: Double) -> (Double, Double) {
+        let r = Double(pixels[index]) / 255 / alpha
+        let g = Double(pixels[index + 1]) / 255 / alpha
+        let b = Double(pixels[index + 2]) / 255 / alpha
+        let high = max(r, g, b), low = min(r, g, b)
+        return (high, high - low)
+    }
+
+    private static func cgImage(of image: UIImage) -> CGImage? {
+        #if os(macOS)
+        image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        #else
+        image.cgImage
+        #endif
+    }
+
+    private static func makeImage(_ cgImage: CGImage, like original: UIImage) -> UIImage {
+        #if os(macOS)
+        NSImage(cgImage: cgImage, size: original.size)
+        #else
+        UIImage(cgImage: cgImage, scale: original.scale, orientation: original.imageOrientation)
+        #endif
     }
 }
 
@@ -1406,6 +1539,15 @@ struct TVCollectionFolderCard: View {
 
     private var usesEmojiCover: Bool {
         coverImageURL == nil && folder.coverEmoji != nil
+    }
+
+    /// Apple TV only for now.
+    private var lightensDarkLogoInk: Bool {
+        #if os(tvOS)
+        usesLogoCoverPresentation
+        #else
+        false
+        #endif
     }
 
     private var usesLogoCoverPresentation: Bool {
@@ -1521,7 +1663,7 @@ struct TVCollectionFolderCard: View {
                         )
                     )
             }
-            CachedFolderCover(url: url) { image in
+            CachedFolderCover(url: url, lightensDarkInk: lightensDarkLogoInk) { image in
                 if usesLogoCoverPresentation {
                     image
                         .resizable()
