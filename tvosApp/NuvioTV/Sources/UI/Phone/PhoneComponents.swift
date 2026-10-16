@@ -92,6 +92,8 @@ struct PhoneArtwork: View {
     let url: String?
     var contentMode: ContentMode = .fill
     var kind: PhoneArtKind = .poster
+    /// Lighten black ink so a logo shows on a dark tile (`DarkLogoInk`).
+    var lightensDarkInk = false
 
     @Environment(\.displayScale) private var displayScale
     @State private var image: UIImage?
@@ -118,7 +120,9 @@ struct PhoneArtwork: View {
         }
         .task(id: "\(url ?? "")|\(sharperURL ?? "")") {
             if loadedURL != url || image == nil {
-                let loaded = await PhoneImageLoader.image(for: url, kind: kind)
+                let loaded = await lightenedIfAsked(
+                    PhoneImageLoader.image(for: url, kind: kind), url: url
+                )
                 guard !Task.isCancelled else { return }
                 withAnimation(.easeOut(duration: 0.2)) {
                     image = loaded
@@ -126,12 +130,21 @@ struct PhoneArtwork: View {
                 }
             }
             guard let sharperURL else { return }
-            guard let sharp = await PhoneImageLoader.image(for: sharperURL, kind: kind),
+            guard let sharp = await lightenedIfAsked(
+                      PhoneImageLoader.image(for: sharperURL, kind: kind), url: sharperURL
+                  ),
                   !Task.isCancelled else { return }
             // Same picture at a higher resolution: swapped without a fade.
             image = sharp
             loadedURL = url
         }
+    }
+}
+
+extension PhoneArtwork {
+    fileprivate func lightenedIfAsked(_ image: UIImage?, url: String?) async -> UIImage? {
+        guard lightensDarkInk, let image, let imageURL = url.flatMap(URL.init(string:)) else { return image }
+        return await DarkLogoInk.lightened(image, url: imageURL) ?? image
     }
 }
 
@@ -211,7 +224,11 @@ struct PhoneTitleLogo: View {
         }
         .task(id: meta.logoUrl) {
             guard meta.logoUrl != nil else { state = .failed; return }
-            let image = await PhoneImageLoader.image(for: meta.logoUrl, kind: .poster)
+            var image = await PhoneImageLoader.image(for: meta.logoUrl, kind: .poster)
+            // Black ink vanishes on the dark screens behind it.
+            if let loaded = image, let url = meta.logoUrl.flatMap(URL.init(string:)) {
+                image = await DarkLogoInk.lightened(loaded, url: url) ?? loaded
+            }
             guard !Task.isCancelled else { return }
             state = image.map(State.loaded) ?? .failed
         }

@@ -10256,13 +10256,8 @@ private struct CachedHeroLogo: View {
     @State private var outgoingOpacity = 0.0
     @State private var imageOpacity = 1.0
 
-    /// Black logo ink vanishes on the dark hero (`DarkLogoInk`). Apple TV
-    /// only for now.
-    #if os(tvOS)
+    /// Black logo ink vanishes on the dark hero (`DarkLogoInk`).
     private static let lightensDarkInk = true
-    #else
-    private static let lightensDarkInk = false
-    #endif
 
     private var showsLogoImage: Bool {
         image != nil || outgoingImage != nil

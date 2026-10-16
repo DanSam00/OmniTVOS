@@ -1162,12 +1162,27 @@ struct PhoneCollectionFolderCard: View {
         }
     }
 
+    /// Streaming services, studios and brands: a logo, drawn whole on the
+    /// tile as on the TV rather than cropped to fill it.
+    private var showsLogo: Bool {
+        switch folder.presentationStyle?.uppercased() {
+        case "STREAMING_SERVICE", "STUDIO_FRANCHISE", "BRAND_COLLECTION": return true
+        default: return false
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.08))
                 if let cover = folder.coverImageUrl, !cover.isEmpty {
-                    PhoneArtwork(url: cover, kind: folder.tileShape == .poster ? .poster : .backdrop)
+                    if showsLogo {
+                        PhoneArtwork(url: cover, contentMode: .fit, kind: .backdrop, lightensDarkInk: true)
+                            .padding(.horizontal, size.width * 0.1)
+                            .padding(.vertical, size.height * 0.1)
+                    } else {
+                        PhoneArtwork(url: cover, kind: folder.tileShape == .poster ? .poster : .backdrop)
+                    }
                 } else if let emoji = folder.coverEmoji, !emoji.isEmpty {
                     Text(emoji).font(.system(size: size.height * 0.4))
                 } else {

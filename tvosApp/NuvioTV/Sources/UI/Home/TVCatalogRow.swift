@@ -1541,14 +1541,7 @@ struct TVCollectionFolderCard: View {
         coverImageURL == nil && folder.coverEmoji != nil
     }
 
-    /// Apple TV only for now.
-    private var lightensDarkLogoInk: Bool {
-        #if os(tvOS)
-        usesLogoCoverPresentation
-        #else
-        false
-        #endif
-    }
+    private var lightensDarkLogoInk: Bool { usesLogoCoverPresentation }
 
     private var usesLogoCoverPresentation: Bool {
         let style = folder.presentationStyle?.uppercased()
