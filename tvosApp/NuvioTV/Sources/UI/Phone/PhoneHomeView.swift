@@ -1204,6 +1204,8 @@ struct PhoneCollectionFolderView: View {
     @State private var tab = 0
     @State private var isLoading = true
     @State private var errorMessage: String?
+    /// Why some sources failed while others loaded.
+    @State private var sourceNotice: String?
     private let repository: CatalogRepository = CinemetaCatalogRepository()
     private static let pageSize = 40
 
@@ -1246,6 +1248,12 @@ struct PhoneCollectionFolderView: View {
                         .padding(.horizontal, PhoneLayout.gutter)
                     }
                 }
+                if !isLoading, !shownItems.isEmpty, let sourceNotice {
+                    Label(sourceNotice, systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, PhoneLayout.gutter)
+                }
                 if isLoading {
                     ProgressView().frame(maxWidth: .infinity).padding(.top, 60)
                 } else if shownItems.isEmpty {
@@ -1267,6 +1275,7 @@ struct PhoneCollectionFolderView: View {
     private func load() async {
         isLoading = true
         errorMessage = nil
+        sourceNotice = nil
         let sources = folder.sources
         guard !sources.isEmpty else {
             rows = []
@@ -1301,6 +1310,8 @@ struct PhoneCollectionFolderView: View {
         rows = loaded.compactMap(\.1)
         if rows.allSatisfy({ $0.items.isEmpty }) {
             errorMessage = loaded.compactMap(\.2).first
+        } else if let failure = loaded.compactMap(\.2).first {
+            sourceNotice = "Some rows didn't load. \(failure)"
         }
         tab = 0
         isLoading = false

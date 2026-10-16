@@ -69,6 +69,9 @@ struct CollectionFolderBrowseView: View {
     @State private var catalogRows: [CollectionFolderCatalogRow] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
+    /// Why some sources failed while others loaded; the folder still shows
+    /// what did load.
+    @State private var sourceNotice: String?
     @State private var selectedTabIndex = 0
     @FocusState private var focusedItemID: String?
     @FocusState private var isLoadingFocusActive: Bool
@@ -238,6 +241,13 @@ struct CollectionFolderBrowseView: View {
         }
     }
 
+    private func sourceNoticeText(_ text: String) -> some View {
+        Label(text, systemImage: "exclamationmark.triangle.fill")
+            .font(.system(size: 20, weight: .medium))
+            .foregroundColor(.white.opacity(0.7))
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private var gridBrowser: some View {
         ZStack {
             Color.nuvioBackground(amoled: amoled, body: bodyColor)
@@ -248,6 +258,10 @@ struct CollectionFolderBrowseView: View {
 
                 if !tabLabels.isEmpty {
                     tabBar
+                }
+
+                if !isLoading, errorMessage == nil, let sourceNotice {
+                    sourceNoticeText(sourceNotice)
                 }
 
                 if isLoading {
@@ -289,6 +303,10 @@ struct CollectionFolderBrowseView: View {
               ScrollView {
                 VStack(alignment: .leading, spacing: 34) {
                     cinematicHero
+
+                    if !isLoading, errorMessage == nil, let sourceNotice {
+                        sourceNoticeText(sourceNotice)
+                    }
 
                     if isLoading {
                         BrandLoadingView(wordmarkWidth: 360)
@@ -774,6 +792,7 @@ struct CollectionFolderBrowseView: View {
     private func load() async {
         isLoading = true
         errorMessage = nil
+        sourceNotice = nil
         selectedTabIndex = 0
 
         let sources = folder.sources
@@ -859,6 +878,8 @@ struct CollectionFolderBrowseView: View {
         items = all
         if items.isEmpty, let firstFailureMessage {
             errorMessage = firstFailureMessage
+        } else if let firstFailureMessage {
+            sourceNotice = "Some rows didn't load. \(firstFailureMessage)"
         }
         isLoading = false
 

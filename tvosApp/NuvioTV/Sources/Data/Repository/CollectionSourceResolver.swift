@@ -3,6 +3,7 @@ import Foundation
 enum CollectionSourceError: LocalizedError {
     case invalidAddonSource
     case missingTmdbAPIKey
+    case tmdbKeyRejected
     case missingTmdbID(String)
     case missingTraktClientID
     case missingTraktListID
@@ -16,6 +17,8 @@ enum CollectionSourceError: LocalizedError {
             return "This add-on catalog source is incomplete."
         case .missingTmdbAPIKey:
             return "Enter a TMDB API key in Settings to load this folder."
+        case .tmdbKeyRejected:
+            return "TMDB rejected the API key. Enter a current key in Settings → Integrations."
         case .missingTmdbID(let sourceType):
             return "This TMDB \(sourceType.lowercased()) source has no ID."
         case .missingTraktClientID:
@@ -41,6 +44,23 @@ struct CollectionSourceResolver {
     var settings: UserDefaults = ProfileSettings.current
 
     func browse(_ source: NuvioCollectionSource, cursor: Int = 0) async throws -> CatalogPage {
+        do {
+            return try await browseSource(source, cursor: cursor)
+        } catch {
+            // Without this a failing source only shows as an empty row.
+            // Never log the request URL: it carries the API key.
+            if !(error is CancellationError), (error as? URLError)?.code != .cancelled {
+                Self.log(
+                    "collection.source failed provider=\(source.normalizedProvider) "
+                        + "type=\(source.tmdbSourceType ?? source.catalogId ?? "-") "
+                        + "title=\(source.title ?? "-") error=\(error.localizedDescription)"
+                )
+            }
+            throw error
+        }
+    }
+
+    private func browseSource(_ source: NuvioCollectionSource, cursor: Int) async throws -> CatalogPage {
         switch source.normalizedProvider {
         case "addon":
             guard let type = nonEmpty(source.type),
@@ -500,6 +520,9 @@ struct CollectionSourceResolver {
             throw CollectionSourceError.invalidResponse(provider)
         }
         guard 200..<300 ~= http.statusCode else {
+            if provider == "TMDB", http.statusCode == 401 {
+                throw CollectionSourceError.tmdbKeyRejected
+            }
             throw CollectionSourceError.requestFailed(provider, http.statusCode)
         }
         do {
@@ -507,6 +530,16 @@ struct CollectionSourceResolver {
         } catch {
             throw CollectionSourceError.invalidResponse(provider)
         }
+    }
+
+    private static func log(_ message: String) {
+        #if os(macOS)
+        MacDiagnostics.log(message)
+        #elseif os(iOS)
+        AetherPlaybackController.PhoneLogFile.log(message)
+        #else
+        print(message)
+        #endif
     }
 
     private static func nonEmpty(_ value: String?) -> String? {
