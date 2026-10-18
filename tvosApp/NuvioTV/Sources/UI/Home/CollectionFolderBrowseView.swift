@@ -82,6 +82,8 @@ struct CollectionFolderBrowseView: View {
     @State private var focusRestoreGeneration = 0
     @State private var watchedTitleKeys: Set<String> = []
     @State private var cachedCollectionMetadata: [String: NuvioMeta] = [:]
+    /// Neighbours' metadata being fetched ahead of the caret.
+    @State private var prefetchingMetadataKeys: Set<String> = []
     @State private var collectionEnrichmentTask: Task<Void, Never>?
     #if os(macOS)
     /// macOS has no focus engine, so the screen carries its own caret. Without
@@ -171,11 +173,19 @@ struct CollectionFolderBrowseView: View {
 
     var body: some View {
         Group {
+            #if os(macOS)
+            if usesRows {
+                homeStyleRowsBrowser
+            } else {
+                gridBrowser
+            }
+            #else
             if usesCinematicPresentation {
                 cinematicRowsBrowser
             } else {
                 gridBrowser
             }
+            #endif
         }
         .onExitCommand(perform: onBack)
         .onAppear {
@@ -298,6 +308,180 @@ struct CollectionFolderBrowseView: View {
             }
         }
     }
+
+    #if os(macOS)
+    /// Rows folders on the Mac, laid out as Home is: the focused title's art
+    /// behind, its logo and details held at the top, and the rows scrolling
+    /// beneath them, so a row brought into view stops under the details
+    /// rather than at the window's top edge, behind the menu button. Hero
+    /// height follows the Home layout (Modern or Compact). Until a title has
+    /// the caret the folder's own logo stands in.
+    private var homeStyleRowsBrowser: some View {
+        ZStack(alignment: .topLeading) {
+            cinematicBackdrop
+
+            folderBadge
+                .padding(.top, MacMenuMetrics.edgeTop + 6)
+                .padding(.trailing, 60)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+
+            VStack(alignment: .leading, spacing: 0) {
+                Group {
+                    if let meta = focusedMeta {
+                        TVHeroView(meta: meta) { onSelect(meta) }
+                            .equatable()
+                    } else {
+                        TVCollectionFolderHeroView(folder: folder)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                if isLoading {
+                    BrandLoadingView(wordmarkWidth: 360)
+                        .frame(maxWidth: .infinity, minHeight: 260)
+                        .overlay { loadingFocusAnchor }
+                } else if let errorMessage {
+                    Text(errorMessage)
+                        .font(.system(size: 28, weight: .medium))
+                        .foregroundColor(.white.opacity(0.7))
+                        .frame(maxWidth: .infinity, minHeight: 260)
+                } else if catalogRows.isEmpty {
+                    Text("No titles found in this folder")
+                        .font(.system(size: 28, weight: .medium))
+                        .foregroundColor(.white.opacity(0.7))
+                        .frame(maxWidth: .infinity, minHeight: 260)
+                } else {
+                    if let sourceNotice {
+                        sourceNoticeText(sourceNotice)
+                            .padding(.horizontal, TVLayout.rowLeading)
+                            .padding(.bottom, 8)
+                    }
+                    homeStyleRows
+                }
+            }
+        }
+        .ignoresSafeArea(edges: .top)
+    }
+
+    private var homeStyleRows: some View {
+        ScrollViewReader { macRowScroll in
+            ScrollView {
+                VStack(alignment: .leading, spacing: TVHomeLayout.sectionSpacing) {
+                    ForEach(catalogRows) { row in
+                        // A marker above the strip, as in `rowsContent`.
+                        Color.clear
+                            .frame(height: 0)
+                            .id("collection.row.\(row.id)")
+                        CollectionFolderHomeStyleRow(
+                            id: row.id,
+                            title: row.title,
+                            items: row.items,
+                            isLoadingMore: row.isLoadingMore,
+                            layoutMode: collectionRowLayoutMode,
+                            showPosterLabels: posterLabels,
+                            externalFocus: $focusedItemID,
+                            macFocusedCardKey: macCaretItemID,
+                            watchedTitleKeys: watchedTitleKeys,
+                            onFocus: { item in
+                                enrichCollectionItemIfNeeded(item)
+                                prefetchNeighbours(of: item, rowId: row.id)
+                            },
+                            onApproachEnd: { item in
+                                loadMoreRowIfNeeded(rowId: row.id, currentItem: item)
+                            },
+                            onLongPress: onLongPress,
+                            onSelect: onSelect
+                        )
+                    }
+                }
+                .padding(.top, TVHomeLayout.rowsTopPadding)
+                .padding(.bottom, 60)
+            }
+            .scrollIndicators(.hidden)
+            .modifier(MacScrollProxyCapture(proxy: macRowScroll, stored: $macScrollProxy))
+        }
+    }
+    /// The folder's logo, or its name, in the top-right corner: smaller than
+    /// the title logo in the hero, so it labels the page without competing.
+    @ViewBuilder
+    private var folderBadge: some View {
+        if let raw = folder.preferredTitleLogoURLString ?? folder.coverImageUrl,
+           let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            CachedFolderCover(url: url, lightensDarkInk: true) { image in
+                image
+                    .resizable()
+                    .scaledToFit()
+            } placeholder: {
+                Color.clear
+            }
+            .frame(width: 220, height: 64, alignment: .trailing)
+            .shadow(color: .black.opacity(0.45), radius: 8)
+            .allowsHitTesting(false)
+        } else {
+            Text(folder.title)
+                .font(.system(size: 26, weight: .semibold))
+                .foregroundColor(.white.opacity(0.85))
+                .lineLimit(1)
+                .shadow(color: .black.opacity(0.45), radius: 8)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// Gets the titles the caret can reach next ready before it gets there:
+    /// the ones either side in this row and the nearest few in the rows
+    /// above and below. Each is given its full metadata (the hero's logo and
+    /// description) and has its logo and backdrop loaded, so the hero
+    /// changes at once instead of filling in after the move.
+    private func prefetchNeighbours(of item: NuvioMeta, rowId: String) {
+        guard let rowIndex = catalogRows.firstIndex(where: { $0.id == rowId }),
+              let itemIndex = catalogRows[rowIndex].items.firstIndex(where: { $0.id == item.id })
+        else { return }
+        var targets: [NuvioMeta] = []
+        let row = catalogRows[rowIndex].items
+        for index in [itemIndex + 1, itemIndex - 1] where row.indices.contains(index) {
+            targets.append(row[index])
+        }
+        for adjacent in [rowIndex + 1, rowIndex - 1] where catalogRows.indices.contains(adjacent) {
+            let items = catalogRows[adjacent].items
+            for index in Set([0, 1, itemIndex, itemIndex + 1]).sorted() where items.indices.contains(index) {
+                targets.append(items[index])
+            }
+        }
+        for target in targets {
+            prefetchArt(of: target)
+            guard target.needsHeroMetadataEnrichment else { continue }
+            let key = "\(target.type.lowercased())\u{1f}\(target.id)"
+            if let cached = cachedCollectionMetadata[key] {
+                applyCollectionMetadata(cached, to: target.id)
+                continue
+            }
+            guard prefetchingMetadataKeys.insert(key).inserted else { continue }
+            Task { @MainActor in
+                defer { prefetchingMetadataKeys.remove(key) }
+                guard let fullMeta = try? await repository.refreshMetadata(id: target.id, type: target.type) else {
+                    return
+                }
+                cachedCollectionMetadata[key] = fullMeta
+                applyCollectionMetadata(fullMeta, to: target.id)
+                prefetchArt(of: target.fillingMissingHeroMetadata(from: fullMeta))
+            }
+        }
+    }
+
+    /// Loads a title's logo (lightened, as the hero shows it) and backdrop.
+    private func prefetchArt(of meta: NuvioMeta) {
+        let logo = meta.logoUrl.flatMap(URL.init(string:))
+        let backdrop = (meta.backgroundUrl ?? meta.posterUrl).flatMap(URL.init(string:))
+        Task.detached(priority: .utility) {
+            if let logo, let image = await BackdropImageCache.shared.image(for: logo) {
+                _ = await DarkLogoInk.lightened(image, url: logo)
+            }
+            if let backdrop {
+                _ = await BackdropImageCache.shared.image(for: backdrop)
+            }
+        }
+    }
+    #endif
 
     /// Rows-mode collections share the same cinematic identity treatment as
     /// network/company pages: full-bleed artwork, a large logo hero, then rails.
@@ -433,16 +617,24 @@ struct CollectionFolderBrowseView: View {
         return nil
     }
 
-    /// The focused title's art, which the Mac shows behind the folder in
-    /// place of the folder's own picture.
-    private var focusedBackdropURLString: String? {
+    /// The title under the Mac's caret.
+    private var focusedMeta: NuvioMeta? {
         #if os(macOS)
         // Row cards are keyed "row\u{1}item", grid cards by the item alone.
         guard let key = macCaretItemID ?? focusedItemID else { return nil }
         let id = key.split(separator: "\u{1}").last.map(String.init) ?? key
-        let meta = catalogRows.lazy.flatMap(\.items).first { $0.id == id }
+        return catalogRows.lazy.flatMap(\.items).first { $0.id == id }
             ?? items.first { $0.id == id }
-        guard let meta else { return nil }
+        #else
+        return nil
+        #endif
+    }
+
+    /// The focused title's art, which the Mac shows behind the folder in
+    /// place of the folder's own picture.
+    private var focusedBackdropURLString: String? {
+        #if os(macOS)
+        guard let meta = focusedMeta else { return nil }
         for candidate in [meta.backgroundUrl, meta.posterUrl] {
             let value = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if !value.isEmpty { return value }

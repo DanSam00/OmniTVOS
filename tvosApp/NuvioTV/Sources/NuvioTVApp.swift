@@ -9355,7 +9355,7 @@ let TVHomeRowPrefetchThreshold = 18
 /// of the hero frame — where a poster description's last line ends — matching
 /// Android Modern Home. A large top padding (copied from poster heroes) was
 /// making this line sit too high.
-private struct TVCollectionFolderHeroView: View {
+struct TVCollectionFolderHeroView: View {
     let folder: TVCollectionFolderItem
     @AppStorage(SettingsKey.homeLayout) private var homeLayout = SettingsDefault.homeLayout
 
@@ -9410,7 +9410,7 @@ private struct TVCollectionFolderHeroView: View {
     }
 }
 
-private struct TVHeroView: View {
+struct TVHeroView: View {
     let meta: NuvioMeta
     /// Continue Watching entry for this title, when one exists. Lets the hero
     /// say which episode is in progress, how much is left, and show the
