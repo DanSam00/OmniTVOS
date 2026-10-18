@@ -106,12 +106,6 @@ struct CollectionFolderBrowseView: View {
     private var usesRows: Bool {
         folder.viewMode.usesCatalogRows(homeLayout: homeLayout)
     }
-    private var usesCinematicPresentation: Bool {
-        guard usesRows else { return false }
-        return ["STREAMING_SERVICE", "STUDIO_FRANCHISE"].contains(
-            folder.presentationStyle?.uppercased() ?? ""
-        )
-    }
     /// A folder opened in Rows mode should retain Home-row behavior even when
     /// the top-level Home preference is Grid View. Compact remains compact;
     /// every other layout uses the normal portrait-to-landscape Home row.
@@ -173,19 +167,11 @@ struct CollectionFolderBrowseView: View {
 
     var body: some View {
         Group {
-            #if os(macOS)
             if usesRows {
                 homeStyleRowsBrowser
             } else {
                 gridBrowser
             }
-            #else
-            if usesCinematicPresentation {
-                cinematicRowsBrowser
-            } else {
-                gridBrowser
-            }
-            #endif
         }
         .onExitCommand(perform: onBack)
         .onAppear {
@@ -293,8 +279,6 @@ struct CollectionFolderBrowseView: View {
                         .foregroundColor(.white.opacity(0.7))
                         .frame(maxWidth: .infinity)
                     Spacer()
-                } else if usesRows {
-                    rowsContent
                 } else if displayedGridItems.isEmpty {
                     Spacer()
                     Text("No titles found in this folder")
@@ -309,20 +293,24 @@ struct CollectionFolderBrowseView: View {
         }
     }
 
-    #if os(macOS)
-    /// Rows folders on the Mac, laid out as Home is: the focused title's art
-    /// behind, its logo and details held at the top, and the rows scrolling
-    /// beneath them, so a row brought into view stops under the details
-    /// rather than at the window's top edge, behind the menu button. Hero
-    /// height follows the Home layout (Modern or Compact). Until a title has
-    /// the caret the folder's own logo stands in.
+    /// Rows folders, laid out as Home is: the focused title's art behind, its
+    /// logo and details held at the top, and the rows scrolling beneath them,
+    /// so a row brought into view stops under the details rather than at the
+    /// top edge (on the Mac, behind the menu button). Hero height follows the
+    /// Home layout (Modern or Compact). Until a title has focus the folder's
+    /// own logo stands in.
     private var homeStyleRowsBrowser: some View {
         ZStack(alignment: .topLeading) {
             cinematicBackdrop
 
             folderBadge
+                #if os(macOS)
                 .padding(.top, MacMenuMetrics.edgeTop + 6)
                 .padding(.trailing, 60)
+                #else
+                .padding(.top, 54)
+                .padding(.trailing, TVLayout.rowLeading)
+                #endif
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
 
             VStack(alignment: .leading, spacing: 0) {
@@ -368,7 +356,10 @@ struct CollectionFolderBrowseView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: TVHomeLayout.sectionSpacing) {
                     ForEach(catalogRows) { row in
-                        // A marker above the strip, as in `rowsContent`.
+                        // The anchor is a marker above the strip, not the strip
+                        // itself: a row is a container with its own horizontal
+                        // scrolling, and `scrollTo` aimed at one was accepted
+                        // and then ignored.
                         Color.clear
                             .frame(height: 0)
                             .id("collection.row.\(row.id)")
@@ -398,7 +389,11 @@ struct CollectionFolderBrowseView: View {
                 .padding(.bottom, 60)
             }
             .scrollIndicators(.hidden)
+            .focusSection()
+            .defaultFocusIfAvailable($focusedItemID, firstFocusID)
+            #if os(macOS)
             .modifier(MacScrollProxyCapture(proxy: macRowScroll, stored: $macScrollProxy))
+            #endif
         }
     }
     /// The folder's logo, or its name, in the top-right corner: smaller than
@@ -481,77 +476,6 @@ struct CollectionFolderBrowseView: View {
             }
         }
     }
-    #endif
-
-    /// Rows-mode collections share the same cinematic identity treatment as
-    /// network/company pages: full-bleed artwork, a large logo hero, then rails.
-    private var cinematicRowsBrowser: some View {
-        ZStack(alignment: .top) {
-            cinematicBackdrop
-
-            ScrollViewReader { macHeroScroll in
-              ScrollView {
-                VStack(alignment: .leading, spacing: 34) {
-                    cinematicHero
-
-                    if !isLoading, errorMessage == nil, let sourceNotice {
-                        sourceNoticeText(sourceNotice)
-                    }
-
-                    if isLoading {
-                        BrandLoadingView(wordmarkWidth: 360)
-                            .frame(maxWidth: .infinity, minHeight: 260)
-                            .overlay { loadingFocusAnchor }
-                    } else if let errorMessage {
-                        Text(errorMessage)
-                            .font(.system(size: 28, weight: .medium))
-                            .foregroundColor(.white.opacity(0.7))
-                            .frame(maxWidth: .infinity, minHeight: 260)
-                    } else if catalogRows.isEmpty {
-                        Text("No titles found in this folder")
-                            .font(.system(size: 28, weight: .medium))
-                            .foregroundColor(.white.opacity(0.7))
-                            .frame(maxWidth: .infinity, minHeight: 260)
-                    } else {
-                        ForEach(catalogRows) { row in
-                            // The anchor is a marker above the strip, not
-                            // the strip itself: a row is a container with its
-                            // own horizontal scrolling, and `scrollTo` aimed at
-                            // one was accepted and then ignored.
-                            Color.clear
-                                .frame(height: 0)
-                                .id("collection.row.\(row.id)")
-                            CollectionFolderHomeStyleRow(
-                                id: row.id,
-                                title: row.title,
-                                items: row.items,
-                                isLoadingMore: row.isLoadingMore,
-                                layoutMode: collectionRowLayoutMode,
-                                showPosterLabels: posterLabels,
-                                externalFocus: $focusedItemID,
-                                macFocusedCardKey: macCaretItemID,
-                                watchedTitleKeys: watchedTitleKeys,
-                                onFocus: enrichCollectionItemIfNeeded,
-                                onApproachEnd: { item in
-                                    loadMoreRowIfNeeded(rowId: row.id, currentItem: item)
-                                },
-                                onLongPress: onLongPress,
-                                onSelect: onSelect
-                            )
-                        }
-                    }
-                }
-                .padding(.bottom, 70)
-              }
-              .focusSection()
-              .defaultFocusIfAvailable($focusedItemID, firstFocusID)
-              #if os(macOS)
-              .modifier(MacScrollProxyCapture(proxy: macHeroScroll, stored: $macScrollProxy))
-              #endif
-            }
-        }
-        .ignoresSafeArea(edges: .top)
-    }
 
     private var cinematicBackdrop: some View {
         let backdropColor = Color.nuvioBackground(amoled: amoled, body: bodyColor)
@@ -617,78 +541,25 @@ struct CollectionFolderBrowseView: View {
         return nil
     }
 
-    /// The title under the Mac's caret.
+    /// The focused title: under the Mac's caret, or with tvOS focus (the
+    /// last one, while focus is elsewhere on the page).
     private var focusedMeta: NuvioMeta? {
-        #if os(macOS)
         // Row cards are keyed "row\u{1}item", grid cards by the item alone.
-        guard let key = macCaretItemID ?? focusedItemID else { return nil }
+        guard let key = macCaretItemID ?? focusedItemID ?? lastFocusedItemID else { return nil }
         let id = key.split(separator: "\u{1}").last.map(String.init) ?? key
         return catalogRows.lazy.flatMap(\.items).first { $0.id == id }
             ?? items.first { $0.id == id }
-        #else
-        return nil
-        #endif
     }
 
-    /// The focused title's art, which the Mac shows behind the folder in
-    /// place of the folder's own picture.
+    /// The focused title's art, shown behind the folder in place of the
+    /// folder's own picture.
     private var focusedBackdropURLString: String? {
-        #if os(macOS)
         guard let meta = focusedMeta else { return nil }
         for candidate in [meta.backgroundUrl, meta.posterUrl] {
             let value = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if !value.isEmpty { return value }
         }
         return nil
-        #else
-        return nil
-        #endif
-    }
-
-    private var cinematicHero: some View {
-        HStack(alignment: .bottom, spacing: 50) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(cinematicCategoryLabel)
-                    .font(.system(size: 32, weight: .medium))
-                    .foregroundColor(.white.opacity(0.72))
-
-                Text(folder.title)
-                    .font(.system(size: 64, weight: .bold))
-                    .foregroundColor(.white)
-                    .lineLimit(2)
-
-                Text("Movies and series • \(folder.sources.count) catalogs")
-                    .font(.system(size: 28, weight: .regular))
-                    .foregroundColor(.white.opacity(0.68))
-            }
-
-            Spacer(minLength: 20)
-
-            if let logo = folder.preferredTitleLogoURLString ?? folder.coverImageUrl,
-               let url = URL(string: logo) {
-                AsyncImage(url: url) { phase in
-                    if case .success(let image) = phase {
-                        image
-                            .resizable()
-                            .scaledToFit()
-                    } else {
-                        Text(folder.title)
-                            .font(.system(size: 30, weight: .semibold))
-                            .foregroundColor(.white)
-                    }
-                }
-                .frame(width: 520, height: 190)
-            }
-        }
-        .padding(.horizontal, TVLayout.rowLeading)
-        .padding(.top, 72)
-        .frame(maxWidth: .infinity, minHeight: 390, alignment: .bottom)
-    }
-
-    private var cinematicCategoryLabel: String {
-        folder.presentationStyle?.uppercased() == "STUDIO_FRANCHISE"
-            ? "Studio & Franchise"
-            : "Streaming Service"
     }
 
     private var header: some View {
@@ -740,60 +611,6 @@ struct CollectionFolderBrowseView: View {
         }
         .scrollClipDisabledIfAvailable()
         .focusSection()
-    }
-
-    /// Home-style vertical list of horizontal catalog strips.
-    private var rowsContent: some View {
-        Group {
-            if catalogRows.isEmpty {
-                Spacer()
-                Text("No titles found in this folder")
-                    .font(.system(size: 22))
-                    .foregroundColor(.white.opacity(0.7))
-                    .frame(maxWidth: .infinity)
-                Spacer()
-            } else {
-                ScrollViewReader { macRowScroll in
-                  ScrollView {
-                    VStack(alignment: .leading, spacing: TVHomeLayout.sectionSpacing) {
-                        ForEach(catalogRows) { row in
-                            // The anchor is a marker above the strip, not
-                            // the strip itself: a row is a container with its
-                            // own horizontal scrolling, and `scrollTo` aimed at
-                            // one was accepted and then ignored.
-                            Color.clear
-                                .frame(height: 0)
-                                .id("collection.row.\(row.id)")
-                            CollectionFolderHomeStyleRow(
-                                id: row.id,
-                                title: row.title,
-                                items: row.items,
-                                isLoadingMore: row.isLoadingMore,
-                                layoutMode: collectionRowLayoutMode,
-                                showPosterLabels: posterLabels,
-                                externalFocus: $focusedItemID,
-                                macFocusedCardKey: macCaretItemID,
-                                watchedTitleKeys: watchedTitleKeys,
-                                onFocus: enrichCollectionItemIfNeeded,
-                                onApproachEnd: { item in
-                                    loadMoreRowIfNeeded(rowId: row.id, currentItem: item)
-                                },
-                                onLongPress: onLongPress,
-                                onSelect: onSelect
-                            )
-                        }
-                    }
-                    .padding(.top, 8)
-                    .padding(.bottom, 60)
-                  }
-                  .focusSection()
-                  .defaultFocusIfAvailable($focusedItemID, firstFocusID)
-                  #if os(macOS)
-                  .modifier(MacScrollProxyCapture(proxy: macRowScroll, stored: $macScrollProxy))
-                  #endif
-                }
-            }
-        }
     }
 
     private var gridContent: some View {
