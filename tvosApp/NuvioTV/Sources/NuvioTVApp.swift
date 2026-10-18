@@ -2854,6 +2854,11 @@ struct CrossfadingBackdrop: View {
     @State private var isPaging = false
     /// How far the art travels, as a fraction of the width.
     private static let slideDistance: CGFloat = 0.04
+    /// With `parallax`, the art is overscanned (see `backdropImage`) and the
+    /// whole overscan hangs below the screen, this fraction of its height.
+    /// Home's scroll drift (`TVHomeParallaxScroll`) lifts the art by at most
+    /// this much, so its bottom edge never comes into view.
+    static let parallaxBleed: CGFloat = slideDistance * 2
     /// How far a paged picture moves inside its travelling window.
     private static let pageDepth: CGFloat = 0.5
     private static var pageDuration: Double { HeroPageEdge.duration }
@@ -2874,8 +2879,9 @@ struct CrossfadingBackdrop: View {
             }
             // Portrait poster fallbacks must be cropped inside the screen, not
             // enlarge the root Home layout and let tvOS pan the hero offscreen.
+            // The parallax overscan below the screen stays, for the drift.
             .frame(width: proxy.size.width, height: proxy.size.height)
-            .clipped()
+            .clipShape(BleedBelowRect(bleed: parallax ? Self.parallaxBleed : 0))
         }
         .task(id: url) {
             guard let url, url != loadedURL, let imageURL = URL(string: url) else {
@@ -2960,7 +2966,7 @@ struct CrossfadingBackdrop: View {
             backdropImage(uiImage, size: size)
                 .offset(x: -shift * size.width * Self.pageDepth)
                 .frame(width: size.width, height: size.height)
-                .clipped()
+                .clipShape(BleedBelowRect(bleed: Self.parallaxBleed))
                 .offset(x: shift * size.width)
         } else {
             backdropImage(uiImage, size: size)
@@ -2977,8 +2983,19 @@ struct CrossfadingBackdrop: View {
             // screen — critical for tall hero art (collection folder backdrops).
             .frame(width: size.width, height: size.height, alignment: alignment)
             // Just enough overscan that the sliding art never shows its edge.
-            .scaleEffect(parallax ? 1 + Self.slideDistance * 2 : 1)
-            .clipped()
+            // Grown from the top, so the top of the picture stays on screen
+            // and the extra height hangs below it for the scroll drift.
+            .scaleEffect(parallax ? 1 + Self.parallaxBleed : 1, anchor: .top)
+            .clipShape(BleedBelowRect(bleed: parallax ? Self.parallaxBleed : 0))
+    }
+}
+
+/// A rectangle clip extended below its frame by `bleed` of its height.
+struct BleedBelowRect: Shape {
+    var bleed: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        Path(CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height * (1 + bleed)))
     }
 }
 
@@ -3160,11 +3177,15 @@ struct TVGridHeroParallaxScroll: ViewModifier {
 /// scroll, eased so the focus engine's row-by-row jumps glide.
 struct TVHomeParallaxScroll: ViewModifier {
     let parallax: TVHomeParallax
+    /// The backdrop's height. The drift stops at the overscan hanging below
+    /// it (`CrossfadingBackdrop.parallaxBleed`): any further and the art's
+    /// bottom edge showed above the rows, with as much cut off the top.
+    let height: CGFloat
     private static let rate: CGFloat = 0.3
-    private static let maxDrift: CGFloat = 220
 
     func body(content: Content) -> some View {
-        let drift = min(max(parallax.offset, 0) * Self.rate, Self.maxDrift)
+        let maxDrift = height * CrossfadingBackdrop.parallaxBleed
+        let drift = min(max(parallax.offset, 0) * Self.rate, maxDrift)
         content
             .offset(y: -drift)
             .animation(.easeOut(duration: 0.35), value: drift)
@@ -4789,7 +4810,7 @@ struct TVHomeView: View {
                             onPlayingChange: { isHeroTrailerPlaying = $0 }
                         )
                     }
-                    .modifier(TVHomeParallaxScroll(parallax: homeParallax))
+                    .modifier(TVHomeParallaxScroll(parallax: homeParallax, height: proxy.size.height))
                     .clipped()
                 } else {
                     let backdropWidth = proxy.size.width * 0.65
@@ -4814,7 +4835,7 @@ struct TVHomeView: View {
                             HeroPageEdge.prefetch(featureItems.map(\.meta.logoUrl), around: featureIndex)
                         }
                         .frame(width: backdropWidth, height: backdropHeight, alignment: .topTrailing)
-                        .modifier(TVHomeParallaxScroll(parallax: homeParallax))
+                        .modifier(TVHomeParallaxScroll(parallax: homeParallax, height: backdropHeight))
                         // Inside the masks, so the trailer dissolves into the
                         // page on exactly the same edges the artwork does.
                         .overlay {
