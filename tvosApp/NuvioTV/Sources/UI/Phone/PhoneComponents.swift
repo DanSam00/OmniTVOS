@@ -94,11 +94,16 @@ struct PhoneArtwork: View {
     var kind: PhoneArtKind = .poster
     /// Lighten black ink so a logo shows on a dark tile (`DarkLogoInk`).
     var lightensDarkInk = false
+    /// Tried in order when `url` does not load (an episode still that was
+    /// never published, say), so the tile shows the show's art, not nothing.
+    var fallbacks: [String?] = []
 
     @Environment(\.displayScale) private var displayScale
     @State private var image: UIImage?
     @State private var loadedURL: String?
     @State private var pixelWidth: CGFloat = 0
+    /// A fallback is showing: `url` itself failed, so no sharper copy of it.
+    @State private var showsFallback = false
 
     private var sharperURL: String? {
         url.flatMap { PhoneArtUpgrade.sharper(than: $0, pixelWidth: pixelWidth, kind: kind) }
@@ -120,16 +125,25 @@ struct PhoneArtwork: View {
         }
         .task(id: "\(url ?? "")|\(sharperURL ?? "")") {
             if loadedURL != url || image == nil {
-                let loaded = await lightenedIfAsked(
+                var loaded = await lightenedIfAsked(
                     PhoneImageLoader.image(for: url, kind: kind), url: url
                 )
+                var fellBack = false
+                for fallback in fallbacks where loaded == nil && fallback != nil && fallback != url {
+                    guard !Task.isCancelled else { return }
+                    loaded = await lightenedIfAsked(
+                        PhoneImageLoader.image(for: fallback, kind: kind), url: fallback
+                    )
+                    fellBack = loaded != nil
+                }
                 guard !Task.isCancelled else { return }
+                showsFallback = fellBack
                 withAnimation(.easeOut(duration: 0.2)) {
                     image = loaded
                     loadedURL = url
                 }
             }
-            guard let sharperURL else { return }
+            guard !showsFallback, let sharperURL else { return }
             guard let sharp = await lightenedIfAsked(
                       PhoneImageLoader.image(for: sharperURL, kind: kind), url: sharperURL
                   ),

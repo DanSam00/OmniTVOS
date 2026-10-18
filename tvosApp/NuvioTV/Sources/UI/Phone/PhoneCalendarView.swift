@@ -192,7 +192,12 @@ struct PhoneCalendarView: View {
             HStack(alignment: .top, spacing: 12) {
                 Color.clear
                     .frame(width: 124, height: 70)
-                    .overlay { PhoneArtwork(url: entry.imageUrl ?? entry.backdropUrl ?? entry.posterUrl) }
+                    .overlay {
+                        PhoneArtwork(
+                            url: entry.imageUrl ?? entry.backdropUrl ?? entry.posterUrl,
+                            fallbacks: [entry.backdropUrl, entry.posterUrl]
+                        )
+                    }
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .overlay(alignment: .topLeading) {
                         if entry.isLiveNow {
