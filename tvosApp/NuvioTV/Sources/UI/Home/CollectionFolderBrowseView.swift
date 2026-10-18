@@ -73,6 +73,9 @@ struct CollectionFolderBrowseView: View {
     /// what did load.
     @State private var sourceNotice: String?
     @State private var selectedTabIndex = 0
+    /// Kept while the caret is on the tabs or the hero, so the art stays on
+    /// the last title rather than going back to the folder's.
+    @State private var lastFocusedBackdropURLString: String?
     @FocusState private var focusedItemID: String?
     @FocusState private var isLoadingFocusActive: Bool
     @State private var lastFocusedItemID: String?
@@ -215,6 +218,9 @@ struct CollectionFolderBrowseView: View {
         }
         .onChange(of: focusedItemID) { _, newValue in
             if let newValue { lastFocusedItemID = newValue }
+        }
+        .onChange(of: focusedBackdropURLString) { _, url in
+            if let url { lastFocusedBackdropURLString = url }
         }
         .onChange(of: isLoading) { _, loading in
             if loading {
@@ -367,19 +373,10 @@ struct CollectionFolderBrowseView: View {
         let backdropColor = Color.nuvioBackground(amoled: amoled, body: bodyColor)
 
         return ZStack {
-            if let url = cinematicBackdropURL {
-                AsyncImage(url: url) { phase in
-                    if case .success(let image) = phase {
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    }
-                }
+            CrossfadingBackdrop(url: cinematicBackdropURL?.absoluteString, placeholder: backdropColor)
+                .equatable()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
-            } else {
-                backdropColor
-            }
 
             GeometryReader { proxy in
                 LinearGradient(
@@ -428,11 +425,32 @@ struct CollectionFolderBrowseView: View {
 
     private var cinematicBackdropURL: URL? {
         let firstItem = catalogRows.lazy.flatMap { $0.items }.first
-        for candidate in [folder.heroBackdropUrl, firstItem?.backgroundUrl, firstItem?.posterUrl] {
+        let focused = focusedBackdropURLString ?? lastFocusedBackdropURLString
+        for candidate in [focused, folder.heroBackdropUrl, firstItem?.backgroundUrl, firstItem?.posterUrl] {
             let value = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if !value.isEmpty, let url = URL(string: value) { return url }
         }
         return nil
+    }
+
+    /// The focused title's art, which the Mac shows behind the folder in
+    /// place of the folder's own picture.
+    private var focusedBackdropURLString: String? {
+        #if os(macOS)
+        // Row cards are keyed "row\u{1}item", grid cards by the item alone.
+        guard let key = macCaretItemID ?? focusedItemID else { return nil }
+        let id = key.split(separator: "\u{1}").last.map(String.init) ?? key
+        let meta = catalogRows.lazy.flatMap(\.items).first { $0.id == id }
+            ?? items.first { $0.id == id }
+        guard let meta else { return nil }
+        for candidate in [meta.backgroundUrl, meta.posterUrl] {
+            let value = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !value.isEmpty { return value }
+        }
+        return nil
+        #else
+        return nil
+        #endif
     }
 
     private var cinematicHero: some View {
