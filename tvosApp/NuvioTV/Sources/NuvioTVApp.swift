@@ -3022,12 +3022,19 @@ enum HeroPageEdge {
 
     /// Loads the art of the slides beside `index`, so paging to one starts its
     /// slide at once instead of after a download.
-    static func prefetch(_ urls: [String?], around index: Int) {
+    ///
+    /// `logos`: these are title logos, which `CachedHeroLogo` shows only once
+    /// their dark ink is lightened (`DarkLogoInk`). That is done here too, or
+    /// the first time a slide comes in its logo appears afterwards, in place.
+    static func prefetch(_ urls: [String?], around index: Int, logos: Bool = false) {
         guard urls.count > 1 else { return }
         let neighbours = [index + 1, index - 1].map { ($0 + urls.count) % urls.count }
         for i in Set(neighbours) {
             guard let raw = urls[i], let url = URL(string: raw) else { continue }
-            Task.detached(priority: .utility) { _ = await BackdropImageCache.shared.image(for: url) }
+            Task.detached(priority: .utility) {
+                guard let image = await BackdropImageCache.shared.image(for: url), logos else { return }
+                _ = await DarkLogoInk.lightened(image, url: url)
+            }
         }
     }
 
@@ -4796,7 +4803,7 @@ struct TVHomeView: View {
                     // The slides either side, so paging starts its slide at once.
                     .task(id: featureIndex) {
                         HeroPageEdge.prefetch(featureItems.map { preferredBackdropURL(for: $0.meta) }, around: featureIndex)
-                        HeroPageEdge.prefetch(featureItems.map(\.meta.logoUrl), around: featureIndex)
+                        HeroPageEdge.prefetch(featureItems.map(\.meta.logoUrl), around: featureIndex, logos: true)
                     }
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .overlay {
@@ -4832,7 +4839,7 @@ struct TVHomeView: View {
                         // The slides either side, so paging starts its slide at once.
                         .task(id: featureIndex) {
                             HeroPageEdge.prefetch(featureItems.map { preferredBackdropURL(for: $0.meta) }, around: featureIndex)
-                            HeroPageEdge.prefetch(featureItems.map(\.meta.logoUrl), around: featureIndex)
+                            HeroPageEdge.prefetch(featureItems.map(\.meta.logoUrl), around: featureIndex, logos: true)
                         }
                         .frame(width: backdropWidth, height: backdropHeight, alignment: .topTrailing)
                         .modifier(TVHomeParallaxScroll(parallax: homeParallax, height: backdropHeight))
@@ -10174,7 +10181,7 @@ private struct TVGridHeroSlideshowView: View {
         }
         .task(id: index) {
             HeroPageEdge.prefetch(items.map { $0.backgroundUrl ?? $0.posterUrl }, around: index)
-            HeroPageEdge.prefetch(items.map(\.logoUrl), around: index)
+            HeroPageEdge.prefetch(items.map(\.logoUrl), around: index, logos: true)
         }
         .onChange(of: items.count) { _, count in
             if count == 0 { selectedIndex = 0 }
