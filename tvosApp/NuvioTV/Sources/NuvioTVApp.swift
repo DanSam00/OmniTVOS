@@ -8752,9 +8752,14 @@ enum TVHomeCatalogOrder {
            let stored = try? JSONDecoder().decode([String].self, from: data) {
             known = Set(stored)
         } else {
+            // Everything offered now counts as seen, not only Home's recorded
+            // rows: a device whose Home kept no record (the iPhone's didn't)
+            // otherwise took every add-on catalog for new and held them all
+            // back. Only catalogs that appear after this are new.
             known = Set(snapshotRows().compactMap(\.settingsKey))
                 .union(removedKeys())
                 .union(storedDisabledCatalogKeys())
+                .union(keys)
             persist(known, forKey: SettingsKey.homeCatalogKnown)
         }
         let fresh = Set(keys).subtracting(known).subtracting(shownOnHomeKeys())
@@ -8768,6 +8773,34 @@ enum TVHomeCatalogOrder {
         MacDiagnostics.log("catalogs.new heldBack=" + String(fresh.count))
         #endif
         return fresh
+    }
+
+    /// One-time repair for profiles whose iPhone held back every add-on
+    /// catalog as new (its Home kept no record of its rows, so the first
+    /// hold-back saw an empty Home). Puts back each removed catalog the
+    /// account still has enabled. A row the user removed is recorded as
+    /// disabled, locally and in the account, so it stays removed; a catalog
+    /// that is genuinely new isn't in the account's list, so it stays held.
+    /// Waits for the account's layout to have been pulled.
+    static func repairWronglyHeldBackCatalogsIfNeeded() {
+        let store = ProfileSettings.current
+        let flag = "omni.home.heldBackRepair.v1"
+        guard !store.bool(forKey: flag) else { return }
+        let accountKeys = Set(syncedCatalogOrderIndex().keys)
+        guard !accountKeys.isEmpty else { return }
+        store.set(true, forKey: flag)
+        holdBackLock.lock()
+        let removed = removedKeys()
+        let restore = removed
+            .intersection(accountKeys)
+            .subtracting(storedDisabledCatalogKeys())
+            .filter { !$0.hasPrefix(TVHomeSection.collectionIdPrefix) }
+        if !restore.isEmpty {
+            persist(removed.subtracting(restore), forKey: SettingsKey.homeCatalogRemoved)
+        }
+        holdBackLock.unlock()
+        guard !restore.isEmpty else { return }
+        NotificationCenter.default.post(name: changedNotification, object: nil)
     }
 
     /// Catalogs put on Home before their add-on first loaded (Omni's default
@@ -9036,7 +9069,7 @@ enum TVHomeCatalogOrder {
                     "addon_id": "",
                     "type": "",
                     "catalog_id": "",
-                    "enabled": isRowEnabled(row),
+                    "enabled": isRowEnabledForAccount(row),
                     "order": items.count,
                     "custom_title": "",
                     "is_collection": true,
@@ -9053,7 +9086,7 @@ enum TVHomeCatalogOrder {
                 "addon_id": source.addonId,
                 "type": source.contentType,
                 "catalog_id": source.catalogId,
-                "enabled": isRowEnabled(row),
+                "enabled": isRowEnabledForAccount(row),
                 "order": items.count,
                 "custom_title": "",
                 "is_collection": false,
@@ -9089,6 +9122,19 @@ enum TVHomeCatalogOrder {
             return !disabledCollectionIds().contains(id)
         }
         return !disabledCatalogKeys().contains(key)
+    }
+
+    /// The row's state as the account should hear it: hidden only when the
+    /// user hid or removed it (both record it as disabled). A catalog held
+    /// back as new is local to this device; sent as disabled, it vanished
+    /// from Home on every other device at their next pull.
+    private static func isRowEnabledForAccount(_ row: SnapshotRow) -> Bool {
+        guard let key = row.settingsKey else { return true }
+        if key.hasPrefix(TVHomeSection.collectionIdPrefix) {
+            let id = String(key.dropFirst(TVHomeSection.collectionIdPrefix.count))
+            return !storedDisabledCollectionIds().contains(id)
+        }
+        return !storedDisabledCatalogKeys().contains(key)
     }
 
     /// Hides or restores one Home row. Writes the same profile settings the

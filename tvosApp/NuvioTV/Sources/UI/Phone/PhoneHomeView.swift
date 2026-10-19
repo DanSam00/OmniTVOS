@@ -57,6 +57,7 @@ final class PhoneHomeLoader: ObservableObject {
         isLoading = true
         errorMessage = nil
         defer { if !Task.isCancelled { isLoading = false } }
+        TVHomeCatalogOrder.repairWronglyHeldBackCatalogsIfNeeded()
         do {
             for try await catalogs in repository.homeCatalogsProgressively() {
                 try Task.checkCancellation()
@@ -66,6 +67,18 @@ final class PhoneHomeLoader: ObservableObject {
                 sections = TVHomeCatalogOrder.apply(to: built)
                     .filter { !$0.items.isEmpty && seen.insert($0.id).inserted }
             }
+            try Task.checkCancellation()
+            // Home's record of its rows, as the TV and Mac keep: Settings'
+            // Layout list is built from it, and so is the set of catalogs
+            // counted as already seen. Without it every add-on catalog on
+            // the iPhone was taken for new and held back in Add Catalogs.
+            // Written once the load finishes, so a slow add-on's rows aren't
+            // left out.
+            TVHomeCatalogOrder.writeSnapshot(
+                collectionRows.filter(\.isPinnedCollection)
+                    + sections
+                    + collectionRows.filter { !$0.isPinnedCollection }
+            )
         } catch is CancellationError {
         } catch {
             if sections.isEmpty { errorMessage = error.localizedDescription }
