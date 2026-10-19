@@ -396,12 +396,14 @@ struct CollectionFolderBrowseView: View {
             #endif
         }
     }
-    /// The folder's logo, or its name, in the top-right corner: smaller than
-    /// the title logo in the hero, so it labels the page without competing.
+    /// The folder's title logo, or its name, in the top-right corner: smaller
+    /// than the title logo in the hero, so it labels the page without
+    /// competing. Never the tile's cover, which is often a picture (NFL's is
+    /// a football on grass) rather than a logo.
     @ViewBuilder
     private var folderBadge: some View {
-        if let raw = folder.preferredTitleLogoURLString ?? folder.coverImageUrl,
-           let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
+        if let raw = folder.preferredTitleLogoURLString,
+           let url = URL(string: raw) {
             CachedFolderCover(url: url, lightensDarkInk: true) { image in
                 image
                     .resizable()
