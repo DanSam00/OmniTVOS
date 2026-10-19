@@ -17,6 +17,17 @@ struct PhoneDetailsView: View {
     @State private var pickerEpisode: NuvioVideo?
     @State private var isSourcesPresented = false
     @State private var isResolvingDebrid = false
+    /// Play was pressed: the best source for the connection plays as soon
+    /// as one is found (Smart Stream Selection), the list otherwise.
+    @State private var isSmartPlayPending = false
+    @AppStorage(SettingsKey.smartStreamSelection) private var smartStreamSelection = true
+    @AppStorage(SettingsKey.smartStreamUseTopResult) private var smartStreamUseTopResult = false
+    @AppStorage(SettingsKey.smartStreamQuality) private var smartStreamQuality = AutoStreamQuality.preference
+    @AppStorage(SettingsKey.smartSubtitleMatching) private var smartSubtitleMatching = true
+    @AppStorage(SettingsKey.subtitleLanguages) private var subtitleLanguages = ""
+    @AppStorage(SettingsKey.subtitleLanguage) private var subtitleLanguage = "System"
+    @AppStorage(SettingsKey.subtitleLanguageSecondary) private var subtitleLanguageSecondary = "None"
+    @AppStorage(SettingsKey.subtitleLanguageTertiary) private var subtitleLanguageTertiary = "None"
     /// "season:episode" keys of watched episodes, for the eye markers.
     @State private var watchedEpisodeKeys: Set<String> = []
     /// Side safe-area inset (the Dynamic Island in landscape), zero upright.
@@ -76,9 +87,20 @@ struct PhoneDetailsView: View {
         }
         .onDisappear { viewModel.cancelAllTasks() }
         .onChange(of: viewModel.uiState.isLoadingStreams) { _, loading in
+            if let meta = viewModel.uiState.meta { finishSmartPlay(meta: meta) }
             guard !loading, preparingDownloadId != nil, let meta = viewModel.uiState.meta else { return }
             chooseDownload(meta: meta)
         }
+        .onChange(of: viewModel.uiState.streams.count) { _, _ in
+            if let meta = viewModel.uiState.meta { finishSmartPlay(meta: meta) }
+        }
+        .overlay(alignment: .bottom) {
+            if isSmartPlayPending, let meta = viewModel.uiState.meta {
+                smartPlayBanner(meta: meta)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: isSmartPlayPending)
         .onChange(of: isSourcesPresented) { _, presented in
             if !presented { isPickingDownload = false }
         }
@@ -325,9 +347,9 @@ struct PhoneDetailsView: View {
             Button {
                 if meta.isSeries {
                     let next = nextEpisode(meta)
-                    openSources(meta: meta, episode: next)
+                    startPlayback(meta: meta, episode: next)
                 } else if !playDownloaded(meta) {
-                    openSources(meta: meta, episode: nil)
+                    startPlayback(meta: meta, episode: nil)
                 }
             } label: {
                 Label(playLabel(meta), systemImage: "play.fill")
@@ -336,6 +358,14 @@ struct PhoneDetailsView: View {
                     .padding(.vertical, 12)
                     .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .foregroundStyle(.black)
+            }
+            // Long-press for the full list instead of the automatic pick.
+            .contextMenu {
+                Button {
+                    openSources(meta: meta, episode: meta.isSeries ? nextEpisode(meta) : nil)
+                } label: {
+                    Label("Choose Source", systemImage: "list.bullet")
+                }
             }
 
             if !meta.isSeries {
@@ -617,13 +647,20 @@ struct PhoneDetailsView: View {
                         onTap: {
                             // A downloaded episode plays from the device.
                             if !playDownloaded(meta: meta, contentId: episode.id) {
-                                openSources(meta: meta, episode: episode)
+                                startPlayback(meta: meta, episode: episode)
                             }
                         }
                     ) {
                         PhoneEpisodeRow(episode: episode, fallbackArt: meta.backgroundUrl, isWatched: isWatched) {
                             downloadControl(meta: meta, episode: episode)
                                 .frame(width: 40, height: 40)
+                        }
+                    }
+                    .contextMenu {
+                        Button {
+                            openSources(meta: meta, episode: episode)
+                        } label: {
+                            Label("Choose Source", systemImage: "list.bullet")
                         }
                     }
                 }
@@ -686,12 +723,123 @@ struct PhoneDetailsView: View {
 
     // MARK: Streams
 
-    private func openSources(meta: NuvioMeta, episode: NuvioVideo?) {
-        let changed = pickerEpisode?.id != episode?.id
-        pickerEpisode = episode
-        if changed || viewModel.uiState.streamGroups.isEmpty {
-            prepareStreams(meta: meta, episode: episode, force: false)
+    /// Play: the best source for this connection starts by itself (Smart
+    /// Stream Selection, on by default with Auto quality); with it off, the
+    /// list opens as before.
+    private func startPlayback(meta: NuvioMeta, episode: NuvioVideo?) {
+        SmartPlayDefaults.applyIfNeeded()
+        guard smartStreamSelection else {
+            openSources(meta: meta, episode: episode)
+            return
         }
+        pickerEpisode = episode
+        isSmartPlayPending = true
+        // Always for this title or episode: sources already on hand may be
+        // another title's. The load is keyed and cached, so a repeat is free.
+        prepareStreams(meta: meta, episode: episode, force: false)
+        finishSmartPlay(meta: meta)
+    }
+
+    /// Plays the pick once it's good enough to start early, or once every
+    /// add-on has answered; opens the list when nothing playable came back.
+    private func finishSmartPlay(meta: NuvioMeta) {
+        guard isSmartPlayPending else { return }
+        let state = viewModel.uiState
+        let store = ProfileSettings.current
+        let debrid = DebridResolver(store: store).isEnabled
+        let cachedOnly = (store.object(forKey: SettingsKey.cachedOnlyStreams) as? Bool) ?? false
+        let candidate: NuvioStream?
+        if smartStreamUseTopResult {
+            candidate = PhoneSourcesSheet.displayedStreams(state: state).first
+        } else {
+            candidate = SmartPlaybackSelector.bestStream(
+                from: state.streams,
+                qualityPreference: smartStreamQuality,
+                subtitleLanguages: SubtitleLanguagePreferences.ordered(
+                    encoded: subtitleLanguages,
+                    primary: subtitleLanguage,
+                    secondary: subtitleLanguageSecondary,
+                    tertiary: subtitleLanguageTertiary
+                ),
+                shouldMatchSubtitles: smartSubtitleMatching,
+                includeDebrid: debrid,
+                preferredTags: LastStreamQualityStore.load(metaId: meta.id),
+                cachedOnly: cachedOnly,
+                runtimeMinutes: AutoStreamQuality.runtimeMinutes(meta.runtime),
+                title: meta.name
+            )
+        }
+        if let stream = candidate {
+            // While add-ons are still answering, start early only on a
+            // stream that already meets the target.
+            let ready: Bool = {
+                if !state.isLoadingStreams { return true }
+                if SmartPlaybackSelector.isLowQualityOrTicketStream(stream) { return false }
+                let tags = StreamQualityTags.parse(stream: stream)
+                let resolution = tags.resolution > 0 ? tags.resolution : SmartPlaybackSelector.inferredResolution(for: stream)
+                let target: Int
+                if smartStreamQuality == AutoStreamQuality.preference {
+                    target = ConnectionSpeed.shared.budgetMbps < 6 ? 720 : 1080
+                } else {
+                    target = smartStreamQuality == "720p" ? 720 : 1080
+                }
+                if debrid { return tags.isCached && resolution >= target }
+                return resolution >= target
+            }()
+            guard ready else { return }
+            // A cinema copy may be all that's arrived so far: wait for the rest.
+            if SmartPlaybackSelector.isCinemaCopy(stream), state.isLoadingStreams { return }
+            isSmartPlayPending = false
+            if SmartPlaybackSelector.isCinemaCopy(stream) {
+                // Only cinema copies on offer: the viewer decides.
+                isSourcesPresented = true
+                return
+            }
+            #if OMNI_DEBUG_TOOLS
+            NSLog("SmartPlay: %@ -> %@ | %@", meta.name, stream.name ?? "-", (stream.description ?? stream.filename ?? "-").replacingOccurrences(of: "\n", with: " "))
+            #endif
+            play(stream, meta: meta)
+        } else if !state.isLoadingStreams {
+            isSmartPlayPending = false
+            isSourcesPresented = true
+        }
+    }
+
+    /// While the pick is being made: what's happening, and a way to choose.
+    private func smartPlayBanner(meta: NuvioMeta) -> some View {
+        HStack(spacing: 12) {
+            ProgressView().tint(.white)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Finding the best source")
+                    .font(.subheadline.weight(.semibold))
+                Text(ConnectionSpeed.shared.summary)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.7))
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Button("Choose") {
+                isSmartPlayPending = false
+                isSourcesPresented = true
+            }
+            .font(.subheadline.weight(.semibold))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.white.opacity(0.18), in: Capsule())
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .glassEffect(.regular.tint(.black.opacity(0.3)), in: .capsule)
+        .padding(.horizontal, PhoneLayout.gutter)
+        .padding(.bottom, 12)
+    }
+
+    private func openSources(meta: NuvioMeta, episode: NuvioVideo?) {
+        isSmartPlayPending = false
+        pickerEpisode = episode
+        // Keyed and cached, so cheap to repeat; skipping it on "same
+        // episode" let a movie list another movie's sources.
+        prepareStreams(meta: meta, episode: episode, force: false)
         isSourcesPresented = true
     }
 

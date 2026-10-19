@@ -30,6 +30,8 @@ struct NuvioTVApp: App {
         let diskCapacity = isLegacyDevice ? (60 * 1024 * 1024) : (150 * 1024 * 1024)
         URLCache.shared.memoryCapacity = memCapacity
         URLCache.shared.diskCapacity = diskCapacity
+        // Measures the connection so Play can pick a source it can carry.
+        ConnectionSpeed.shared.start()
     }
 
     var body: some Scene {

@@ -6565,9 +6565,9 @@ private struct PlaybackSettingsView: View {
     @AppStorage(SettingsKey.playerEngine) private var playerEngine = "Auto"
     @AppStorage(SettingsKey.externalPlayer) private var externalPlayer = ExternalPlayer.builtIn.rawValue
     @AppStorage(SettingsKey.externalPlayerForwardSubtitles) private var externalPlayerForwardSubtitles = true
-    @AppStorage(SettingsKey.smartStreamSelection) private var smartStreamSelection = false
+    @AppStorage(SettingsKey.smartStreamSelection) private var smartStreamSelection = true
     @AppStorage(SettingsKey.smartStreamUseTopResult) private var smartStreamUseTopResult = false
-    @AppStorage(SettingsKey.smartStreamQuality) private var smartStreamQuality = "Highest"
+    @AppStorage(SettingsKey.smartStreamQuality) private var smartStreamQuality = AutoStreamQuality.preference
     @AppStorage(SettingsKey.smartSubtitleMatching) private var smartSubtitleMatching = true
     @AppStorage(SettingsKey.cachedOnlyStreams) private var cachedOnlyStreams = false
     @AppStorage(SettingsKey.preferHardwareDecodedStreams) private var preferHardwareDecodedStreams = true
@@ -6597,7 +6597,7 @@ private struct PlaybackSettingsView: View {
 
     private let engines = ["Auto", "AetherEngine", "MPVKit"]
     private let externalPlayers = ExternalPlayer.settingsOptions
-    private let streamQualities = ["Highest", "4K", "1080p", "720p", "Smallest"]
+    private let streamQualities = [AutoStreamQuality.preference, "Highest", "4K", "1080p", "720p", "Smallest"]
     private let frameRateModes = ["Off", "On start/stop", "Always"]
     /// Buffer profiles: Auto scales to RAM; Conservative/Large match product names;
     /// legacy Small/Medium/Large keys still work via PlaybackCacheSettings.
@@ -6808,7 +6808,7 @@ private struct PlaybackSettingsView: View {
 
                 SettingsOptionRow(
                     title: L10n.string("tvos_settings_stream_quality", fallback: "Stream Quality"),
-                    subtitle: L10n.string("tvos_settings_quality_target_used_when_selecting_a_lin_74ea86c2", fallback: "Quality target used when selecting a link; resume also matches last DV/HDR/Atmos"),
+                    subtitle: L10n.string("tvos_settings_quality_target_used_when_selecting_a_lin_74ea86c2", fallback: "Quality target used when selecting a link; resume also matches last DV/HDR/Atmos") + (smartStreamQuality == AutoStreamQuality.preference ? " · Auto: " + ConnectionSpeed.shared.summary : ""),
                     selection: $smartStreamQuality,
                     options: streamQualities,
                     accentColor: accentColor

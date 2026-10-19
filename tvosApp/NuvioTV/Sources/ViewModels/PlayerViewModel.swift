@@ -97,6 +97,7 @@ class PlayerViewModel: ObservableObject {
     @Published private(set) var isLiveStream = false
     /// Current download rate, megabits per second, while a stream is fetching.
     @Published private(set) var networkSpeedMbps: Double = 0
+    private var peakNetworkSpeedMbps: Double = 0
     /// True while playback is stalled waiting on the network — distinct from
     /// the ordinary startup spinner, which is not a connection problem.
     @Published private(set) var isStalledOnNetwork = false
@@ -1711,6 +1712,9 @@ class PlayerViewModel: ObservableObject {
         // for every hundredth of a megabit.
         let speed = c.networkSpeedMbps
         if abs(speed - networkSpeedMbps) > 0.1 { networkSpeedMbps = speed }
+        // The fastest the buffer filled: what the connection carried, for
+        // the next pick of a source (ConnectionSpeed).
+        if speed > peakNetworkSpeedMbps { peakNetworkSpeedMbps = speed }
         // A stall mid-playback means the connection could not keep up; the
         // startup spinner is not that, so `didReportPlaybackStarted` gates it.
         let stalled = c.isPlayerLoading && c.isPlayerPlaying
@@ -2001,6 +2005,10 @@ class PlayerViewModel: ObservableObject {
     }
 
     func shutdown() {
+        if peakNetworkSpeedMbps > 0 {
+            ConnectionSpeed.shared.recordPlayback(mbps: peakNetworkSpeedMbps)
+            peakNetworkSpeedMbps = 0
+        }
         guard !didShutdown else { return }
         if PictureInPictureManager.shared.isPictureInPictureActive {
             // Keep playback and session alive for PiP

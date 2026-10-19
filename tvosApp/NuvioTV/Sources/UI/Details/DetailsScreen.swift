@@ -55,9 +55,9 @@ struct DetailsScreen: View {
     @State private var macDownloadMenu: MacDownloadMenu?
     #endif
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @AppStorage(SettingsKey.smartStreamSelection) private var smartStreamSelection = false
+    @AppStorage(SettingsKey.smartStreamSelection) private var smartStreamSelection = true
     @AppStorage(SettingsKey.smartStreamUseTopResult) private var smartStreamUseTopResult = false
-    @AppStorage(SettingsKey.smartStreamQuality) private var smartStreamQuality = "Highest"
+    @AppStorage(SettingsKey.smartStreamQuality) private var smartStreamQuality = AutoStreamQuality.preference
     @AppStorage(SettingsKey.smartSubtitleMatching) private var smartSubtitleMatching = true
     @AppStorage(SettingsKey.subtitleLanguages) private var subtitleLanguages = ""
     @AppStorage(SettingsKey.subtitleLanguage) private var subtitleLanguage = "System"
@@ -538,6 +538,7 @@ struct DetailsScreen: View {
 
     private func startStreamFlow(streamId: String, type: String, reload: Bool, forceManualPicker: Bool = false) {
         guard let meta = viewModel.uiState.meta else { return }
+        SmartPlayDefaults.applyIfNeeded()
 
         if forceManualPicker || !smartStreamSelection {
             isSmartPlaybackPending = false
@@ -591,7 +592,9 @@ struct DetailsScreen: View {
                 shouldMatchSubtitles: smartSubtitleMatching,
                 includeDebrid: debrid.isEnabled,
                 preferredTags: LastStreamQualityStore.load(metaId: meta.id),
-                cachedOnly: cachedOnly
+                cachedOnly: cachedOnly,
+                runtimeMinutes: AutoStreamQuality.runtimeMinutes(meta.runtime),
+                title: meta.name
             )
         }
 
@@ -599,9 +602,17 @@ struct DetailsScreen: View {
             let isIdealMatch: Bool = {
                 if !viewModel.uiState.isLoadingStreams { return true }
                 if SmartPlaybackSelector.isLowQualityOrTicketStream(stream) { return false }
+                // Only cinema copies so far: wait for the rest to answer.
+                if SmartPlaybackSelector.isCinemaCopy(stream) { return false }
                 let tags = StreamQualityTags.parse(stream: stream)
                 let res = tags.resolution > 0 ? tags.resolution : SmartPlaybackSelector.inferredResolution(for: stream)
-                let targetRes = (smartStreamQuality == "720p") ? 720 : 1080
+                let targetRes: Int
+                if smartStreamQuality == AutoStreamQuality.preference {
+                    // Start early only on a stream the connection can carry.
+                    targetRes = ConnectionSpeed.shared.budgetMbps < 6 ? 720 : 1080
+                } else {
+                    targetRes = (smartStreamQuality == "720p") ? 720 : 1080
+                }
                 if debrid.isEnabled {
                     return tags.isCached && res >= targetRes
                 }
@@ -610,7 +621,13 @@ struct DetailsScreen: View {
 
             if isIdealMatch {
                 isSmartPlaybackPending = false
-                playStream(stream, meta: meta)
+                if SmartPlaybackSelector.isCinemaCopy(stream) {
+                    // Only cinema copies on offer: the viewer decides.
+                    PlaybackStartupTiming.cancel()
+                    isStreamPickerPresented = true
+                } else {
+                    playStream(stream, meta: meta)
+                }
             }
         } else if !viewModel.uiState.isLoadingStreams && (viewModel.uiState.streamsEmptyReason != nil || !viewModel.uiState.streamGroups.isEmpty) {
             PlaybackStartupTiming.cancel()
@@ -1886,7 +1903,9 @@ enum SmartPlaybackSelector {
         shouldMatchSubtitles: Bool,
         includeDebrid: Bool = false,
         preferredTags: StreamQualityTags? = nil,
-        cachedOnly: Bool = false
+        cachedOnly: Bool = false,
+        runtimeMinutes: Int? = nil,
+        title: String? = nil
     ) -> NuvioStream? {
         rankedStreams(
             from: streams,
@@ -1895,7 +1914,9 @@ enum SmartPlaybackSelector {
             shouldMatchSubtitles: shouldMatchSubtitles,
             includeDebrid: includeDebrid,
             preferredTags: preferredTags,
-            cachedOnly: cachedOnly
+            cachedOnly: cachedOnly,
+            runtimeMinutes: runtimeMinutes,
+            title: title
         ).first
     }
 
@@ -1907,7 +1928,9 @@ enum SmartPlaybackSelector {
         shouldMatchSubtitles: Bool,
         includeDebrid: Bool = false,
         preferredTags: StreamQualityTags? = nil,
-        cachedOnly: Bool = false
+        cachedOnly: Bool = false,
+        runtimeMinutes: Int? = nil,
+        title: String? = nil
     ) -> [NuvioStream] {
         let playable = streams.enumerated().compactMap { index, stream -> (index: Int, stream: NuvioStream)? in
             if let url = stream.url?.trimmingCharacters(in: .whitespacesAndNewlines), !url.isEmpty {
@@ -1933,7 +1956,61 @@ enum SmartPlaybackSelector {
             let res = tags.resolution > 0 ? tags.resolution : inferredResolution(for: item.stream)
             return !isLowQualityOrTicketStream(item.stream) && res >= 720
         }
-        let candidatePool = validCandidates.isEmpty ? candidates : validCandidates
+        var candidatePool = validCandidates.isEmpty ? candidates : validCandidates
+        // Add-ons match by title search and sometimes list a different film
+        // under this one ("La bestia en la jungla" for Heart of the Beast).
+        // A pick made for the viewer must name the title; if none do (titles
+        // in another script, say), nothing is excluded.
+        if let title {
+            let words = titleWords(title)
+            let named = candidatePool.filter { namesTitle($0.stream, words: words) }
+            if !named.isEmpty { candidatePool = named }
+        }
+        // Cinema copies (cam, TeleSync, telecine, screener) only when there
+        // is nothing else: a "1080p" TeleSync otherwise outranked a proper
+        // 720p release.
+        let properReleases = candidatePool.filter { !isCinemaCopy($0.stream) }
+        if !properReleases.isEmpty { candidatePool = properReleases }
+
+        // Auto: settle the resolution by what the connection can sustain,
+        // then rank within it as for that fixed preference.
+        var qualityPreference = qualityPreference
+        var autoBitrates: [Int: Double] = [:]
+        var autoPreferSmaller = false
+        if qualityPreference == AutoStreamQuality.preference {
+            let plan = AutoStreamQuality.plan()
+            autoPreferSmaller = plan.preferSmaller
+            let measured = candidatePool.map { item -> (index: Int, resolution: Int, mbps: Double) in
+                let tags = StreamQualityTags.parse(stream: item.stream)
+                let resolution = tags.resolution > 0 ? tags.resolution : inferredResolution(for: item.stream)
+                let mbps = AutoStreamQuality.bitrateMbps(
+                    sizeBytes: StreamPickerListBuilder.sizeBytes(for: item.stream),
+                    resolution: resolution,
+                    runtimeMinutes: runtimeMinutes
+                )
+                return (item.index, resolution, mbps)
+            }
+            for entry in measured { autoBitrates[entry.index] = entry.mbps }
+            let fitting = measured.filter { $0.resolution <= plan.maxResolution && $0.mbps <= plan.budgetMbps }
+            let chosen: [(index: Int, resolution: Int, mbps: Double)]
+            if let target = fitting.map(\.resolution).max() {
+                chosen = fitting.filter { $0.resolution == target }
+            } else if let lightest = measured.filter({ $0.resolution <= plan.maxResolution }).min(by: { $0.mbps < $1.mbps })
+                        ?? measured.min(by: { $0.mbps < $1.mbps }) {
+                // Nothing fits: the lightest stream is the best chance.
+                chosen = measured.filter { $0.resolution == lightest.resolution }
+            } else {
+                chosen = []
+            }
+            if !chosen.isEmpty {
+                let keep = Set(chosen.map(\.index))
+                candidatePool = candidatePool.filter { keep.contains($0.index) }
+                let target = chosen[0].resolution
+                qualityPreference = target >= 2160 ? "4K" : target >= 1080 ? "1080p" : "720p"
+            } else {
+                qualityPreference = "1080p"
+            }
+        }
 
         let preferHardware = ProfileSettings.current.object(forKey: SettingsKey.preferHardwareDecodedStreams) as? Bool ?? true
 
@@ -1966,7 +2043,9 @@ enum SmartPlaybackSelector {
             } else {
                 hardwareBoost = 0
             }
-            return (index, stream, subtitleScore + qualityScore + featureScore + resumeScore + cachedBoost + lowQualityPenalty + hardwareBoost)
+            // On cellular, the smaller of two otherwise equal files.
+            let sizePenalty = autoPreferSmaller ? -Int((autoBitrates[index] ?? 0) * 500) : 0
+            return (index, stream, subtitleScore + qualityScore + featureScore + resumeScore + cachedBoost + lowQualityPenalty + hardwareBoost + sizePenalty)
         }
 
         return ranked.sorted { lhs, rhs in
@@ -2038,6 +2117,49 @@ enum SmartPlaybackSelector {
             seen.insert(subtitle.url).inserted
         }
     }
+
+    private static let titleStopWords: Set<String> = [
+        "the", "a", "an", "of", "and", "in", "on", "to", "for", "at", "by",
+        "la", "el", "le", "les", "de", "des", "du", "der", "die", "das", "y", "et", "und"
+    ]
+
+    /// The words that identify a title: lowercased, accents folded, small
+    /// words dropped. "Heart of the Beast" gives ["heart", "beast"].
+    static func titleWords(_ title: String) -> [String] {
+        let folded = title.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil).lowercased()
+        let words = folded.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
+        let significant = words.filter { !titleStopWords.contains($0) }
+        return significant.isEmpty ? words : significant
+    }
+
+    /// True when the stream's release text contains most of the title's
+    /// words (all of them for a title of one or two words).
+    static func namesTitle(_ stream: NuvioStream, words: [String]) -> Bool {
+        guard !words.isEmpty else { return true }
+        let text = "\(stream.name ?? "") \(stream.description ?? "") \(stream.filename ?? "")"
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil).lowercased()
+        let tokens = Set(text.components(separatedBy: CharacterSet.alphanumerics.inverted))
+        let found = words.filter { tokens.contains($0) }.count
+        let needed = words.count <= 2 ? words.count : Int((Double(words.count) * 0.6).rounded(.up))
+        return found >= needed
+    }
+
+    /// A cam, TeleSync, telecine or screener: recorded in or leaked from a
+    /// cinema, never something to start on the viewer's behalf.
+    static func isCinemaCopy(_ stream: NuvioStream) -> Bool {
+        let quality = StreamPickerListBuilder.streamQuality(for: stream)
+        if [.cam, .ts, .tc, .scr].contains(quality) { return true }
+        // The quality parser knows the short tags; releases also spell them
+        // out ("TELESYNC", "HDCAM", "DVDSCR").
+        let text = "\(stream.name ?? "") \(stream.description ?? "") \(stream.filename ?? "")".lowercased()
+        let tokens = Set(text.components(separatedBy: CharacterSet.alphanumerics.inverted))
+        return !tokens.isDisjoint(with: cinemaCopyTokens)
+    }
+
+    private static let cinemaCopyTokens: Set<String> = [
+        "telesync", "telecine", "camrip", "hdcam", "hdts", "hqcam", "hdtc",
+        "screener", "dvdscr", "bdscr", "webscr", "tsrip", "pdvd", "predvd"
+    ]
 
     static func isLowQualityOrTicketStream(_ stream: NuvioStream) -> Bool {
         isLowQualityOrTicketStream(stream, resolution: StreamPickerListBuilder.resolution(for: stream))
@@ -2711,7 +2833,7 @@ struct TvDetailsContent: View {
     @State private var restoreEpisodeKey: String?
     @State private var restoreGeneration = 0
     @Environment(\.isEnabled) private var isEnabled
-    @AppStorage(SettingsKey.smartStreamSelection) private var smartStreamSelection = false
+    @AppStorage(SettingsKey.smartStreamSelection) private var smartStreamSelection = true
     /// Bumped whenever a watched mark or a progress write lands. Resume progress
     /// is read straight from the stores below rather than from `uiState`, so
     /// without this the episode strip keeps drawing the bar it rendered with —
@@ -5475,7 +5597,7 @@ private struct TvDetailsEpisodes: View {
     @State private var pendingCatchUpEpisodes: [NuvioVideo] = []
     @State private var showCatchUpPrompt = false
     @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
-    @AppStorage(SettingsKey.smartStreamSelection) private var smartStreamSelection = false
+    @AppStorage(SettingsKey.smartStreamSelection) private var smartStreamSelection = true
 
     init(
         meta: NuvioMeta,
