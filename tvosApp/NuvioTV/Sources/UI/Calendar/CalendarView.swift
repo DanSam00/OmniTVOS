@@ -1090,7 +1090,7 @@ private struct DayCell: View {
                 // dropping the title row.
                 HStack(spacing: 5) {
                     ForEach(entries.prefix(3)) { entry in
-                        DayThumb(url: entry.posterUrl ?? entry.imageUrl)
+                        DayThumb(entry: entry)
                     }
                     Spacer(minLength: 0)
                 }
@@ -1107,20 +1107,35 @@ private struct DayCell: View {
     }
 }
 
+/// A day's poster, falling back as `EntryArtwork` does when one fails.
 private struct DayThumb: View {
-    let url: String?
+    let entry: CalendarEntry
+    @State private var attempt = 0
+
+    private var candidates: [String] {
+        var out: [String] = []
+        for value in [entry.posterUrl, entry.imageUrl, entry.backdropUrl] {
+            guard let value, !value.isEmpty, !out.contains(value) else { continue }
+            out.append(value)
+        }
+        return out
+    }
 
     var body: some View {
         ZStack {
             Color.white.opacity(0.08)
-            if let url, let parsed = URL(string: url) {
+            if attempt < candidates.count, let parsed = URL(string: candidates[attempt]) {
                 AsyncImage(url: parsed) { phase in
-                    if case .success(let image) = phase {
+                    switch phase {
+                    case .success(let image):
                         image.resizable().aspectRatio(contentMode: .fill)
-                    } else {
+                    case .failure:
+                        Color.clear.onAppear { attempt += 1 }
+                    default:
                         Color.clear
                     }
                 }
+                .id(attempt)
             }
         }
         .frame(width: 62, height: 92)
