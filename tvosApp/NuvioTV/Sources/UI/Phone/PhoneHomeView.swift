@@ -58,6 +58,7 @@ final class PhoneHomeLoader: ObservableObject {
         errorMessage = nil
         defer { if !Task.isCancelled { isLoading = false } }
         TVHomeCatalogOrder.repairWronglyHeldBackCatalogsIfNeeded()
+        SmartPlayDefaults.applyIfNeeded()
         do {
             for try await catalogs in repository.homeCatalogsProgressively() {
                 try Task.checkCancellation()

@@ -1271,9 +1271,13 @@ struct ContentView: View {
                 profileId: profileId
             )
         let itemStreamURL = item.streamUrl.trimmingCharacters(in: .whitespacesAndNewlines)
-        let streamURL = [itemStreamURL, storedStream?.url]
+        let savedURL = [itemStreamURL, storedStream?.url]
             .compactMap { $0 }
             .first { !$0.isEmpty && Self.isPlayableStreamURL($0) } ?? ""
+        // The saved source may be too heavy here (a 4K file played on the
+        // TV, resumed on the phone or over cellular): pick afresh for this
+        // device and connection.
+        let streamURL = Self.savedSourceFitsConnection(url: savedURL, metaId: item.meta.id, profileId: profileId) ? savedURL : ""
         let httpHeaders = streamURL == storedStream?.url ? (storedStream?.httpHeaders ?? [:]) : [:]
         if !streamURL.isEmpty, let url = URL(string: streamURL) {
             presentPlayback(
@@ -1293,20 +1297,22 @@ struct ContentView: View {
         continueWatchingPlaybackTask = Task {
             let prepared: PreparedNextStream?
             if let episode = context.current {
-                prepared = await Self.resolveNextEpisodeStream(episode: episode, profileId: profileId)
+                prepared = await Self.resolveNextEpisodeStream(episode: episode, profileId: profileId, meta: item.meta)
             } else if item.meta.isSeries, let numbers = item.episodeNumbers {
                 prepared = await Self.resolveStream(
                     contentId: "\(item.meta.id):\(numbers.season):\(numbers.episode)",
                     type: "series",
                     subtitleLine: item.episodeSubtitle ?? "",
-                    profileId: profileId
+                    profileId: profileId,
+                    meta: item.meta
                 )
             } else {
                 prepared = await Self.resolveStream(
                     contentId: item.meta.id,
                     type: item.meta.type,
                     subtitleLine: item.episodeSubtitle ?? "",
-                    profileId: profileId
+                    profileId: profileId,
+                    meta: item.meta
                 )
             }
 
@@ -1336,6 +1342,23 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    /// False when Auto quality is on and the saved source is above the
+    /// resolution this device and connection should play, judged by the
+    /// quality remembered for the title and by the URL's own text.
+    private static func savedSourceFitsConnection(url: String, metaId: String, profileId: String?) -> Bool {
+        guard !url.isEmpty else { return true }
+        let store = ProfileSettings.store(for: profileId)
+        let quality = store.string(forKey: SettingsKey.smartStreamQuality) ?? AutoStreamQuality.preference
+        guard quality == AutoStreamQuality.preference else { return true }
+        let limit = AutoStreamQuality.plan().maxResolution
+        var resolution = LastStreamQualityStore.load(metaId: metaId, profileId: profileId)?.resolution ?? 0
+        if resolution == 0 {
+            let text = (url.removingPercentEncoding ?? url).lowercased()
+            if text.contains("2160p") || text.contains("4k") || text.contains("uhd") { resolution = 2160 }
+        }
+        return resolution == 0 || resolution <= limit
     }
 
     /// Opens Details with the stream picker already raised for the episode the
@@ -2301,7 +2324,7 @@ struct ContentView: View {
     /// seamless auto-advance: fetches the episode's streams (concurrently) and
     /// applies the same smart selection the details screen uses. Returns nil when
     /// nothing real is available, so the player falls back to a normal end.
-    private static func resolveNextEpisodeStream(episode: NuvioVideo, profileId: String?) async -> PreparedNextStream? {
+    private static func resolveNextEpisodeStream(episode: NuvioVideo, profileId: String?, meta: NuvioMeta? = nil) async -> PreparedNextStream? {
         let subtitleLine = "S\(episode.season) · E\(episode.episode) · \(episode.title)"
         #if os(iOS) || os(macOS)
         // Downloaded: plays from the device, connection or not.
@@ -2317,7 +2340,8 @@ struct ContentView: View {
             contentId: episode.id,
             type: "series",
             subtitleLine: "S\(episode.season) · E\(episode.episode) · \(episode.title)",
-            profileId: profileId
+            profileId: profileId,
+            meta: meta
         )
     }
 
@@ -2330,13 +2354,16 @@ struct ContentView: View {
         type: String,
         subtitleLine: String,
         profileId: String?,
-        excludingURLs: Set<String> = []
+        excludingURLs: Set<String> = [],
+        meta: NuvioMeta? = nil,
+        allowCinemaCopy: Bool = false
     ) async -> PreparedNextStream? {
         let streams = await StreamsRepository.shared.collectStreams(type: type, videoId: contentId)
         guard !streams.isEmpty else { return nil }
 
         let store = ProfileSettings.store(for: profileId)
-        let quality = store.string(forKey: SettingsKey.smartStreamQuality) ?? "Highest"
+        SmartPlayDefaults.applyIfNeeded(store: store)
+        let quality = store.string(forKey: SettingsKey.smartStreamQuality) ?? AutoStreamQuality.preference
         let matchSubtitles = store.object(forKey: SettingsKey.smartSubtitleMatching) as? Bool ?? true
         let languages = SubtitleLanguagePreferences.orderedFromDefaults(defaults: store)
         let cachedOnly = (store.object(forKey: SettingsKey.cachedOnlyStreams) as? Bool) ?? false
@@ -2366,10 +2393,22 @@ struct ContentView: View {
                 shouldMatchSubtitles: matchSubtitles,
                 includeDebrid: debrid.isEnabled,
                 preferredTags: preferredTags,
-                cachedOnly: cachedOnly
+                cachedOnly: cachedOnly,
+                runtimeMinutes: AutoStreamQuality.runtimeMinutes(meta?.runtime),
+                title: meta?.name
             )
         }
         guard !ranked.isEmpty else { return nil }
+        // Started on the viewer's behalf (resume, next episode, a
+        // recommendation): never a cinema copy. When that's all there is,
+        // nil sends them to the source list instead. A failing stream being
+        // replaced may be one they chose, so that path allows them.
+        if !allowCinemaCopy, let first = ranked.first, SmartPlaybackSelector.isCinemaCopy(first) {
+            return nil
+        }
+        #if OMNI_DEBUG_TOOLS
+        NSLog("SmartPlay(resolve): %@ -> %@", meta?.name ?? contentId, (ranked.first?.description ?? ranked.first?.filename ?? "-").replacingOccurrences(of: "\n", with: " "))
+        #endif
 
         let (season, episode) = Self.seasonEpisode(fromContentId: contentId)
         for candidate in ranked {
@@ -2534,7 +2573,9 @@ struct ContentView: View {
         shouldMatchSubtitles: Bool,
         includeDebrid: Bool,
         preferredTags: StreamQualityTags? = nil,
-        cachedOnly: Bool = false
+        cachedOnly: Bool = false,
+        runtimeMinutes: Int? = nil,
+        title: String? = nil
     ) -> [NuvioStream] {
         SmartPlaybackSelector.rankedStreams(
             from: streams,
@@ -2543,7 +2584,9 @@ struct ContentView: View {
             shouldMatchSubtitles: shouldMatchSubtitles,
             includeDebrid: includeDebrid,
             preferredTags: preferredTags,
-            cachedOnly: cachedOnly
+            cachedOnly: cachedOnly,
+            runtimeMinutes: runtimeMinutes,
+            title: title
         )
     }
 
@@ -2614,7 +2657,7 @@ struct ContentView: View {
             autoPlayNextEnabled: autoPlayNext,
             autoPlayNextCountdownSeconds: autoPlayNextCountdown,
             resolveNextStream: (isTrailer || !meta.isSeries) ? nil : { episode in
-                await Self.resolveNextEpisodeStream(episode: episode, profileId: profileViewModel.activeProfile?.id)
+                await Self.resolveNextEpisodeStream(episode: episode, profileId: profileViewModel.activeProfile?.id, meta: meta)
             },
             reloadCurrentStream: isTrailer ? nil : { excludedURLs in
                 let profileId = profileViewModel.activeProfile?.id
@@ -2625,7 +2668,9 @@ struct ContentView: View {
                         type: "series",
                         subtitleLine: "S\(episode.season) · E\(episode.episode) · \(episode.title)",
                         profileId: profileId,
-                        excludingURLs: excluded
+                        excludingURLs: excluded,
+                        meta: meta,
+                        allowCinemaCopy: true
                     )
                 }
                 return await Self.resolveStream(
@@ -2633,7 +2678,9 @@ struct ContentView: View {
                     type: meta.type,
                     subtitleLine: subtitle,
                     profileId: profileId,
-                    excludingURLs: excluded
+                    excludingURLs: excluded,
+                    meta: meta,
+                    allowCinemaCopy: true
                 )
             },
             fetchPlaybackSources: isTrailer ? nil : { contentId, type in
@@ -2694,7 +2741,8 @@ struct ContentView: View {
                 contentId: meta.id,
                 type: meta.type,
                 subtitleLine: "",
-                profileId: profileId
+                profileId: profileId,
+                meta: meta
             )
             guard !Task.isCancelled else { return }
             if let prepared {
@@ -7071,6 +7119,8 @@ struct TVHomeView: View {
             isLoading = false
             return
         }
+        // Auto stream quality from the first Home, so Settings shows it.
+        SmartPlayDefaults.applyIfNeeded()
         // Progress is local/account-synced state and does not depend on the
         // catalog network request below. Publish it first so Home is useful
         // even while a large add-on is still resolving its rows.

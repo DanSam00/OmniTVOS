@@ -414,8 +414,7 @@ enum AutoStreamQuality {
 enum SmartPlayDefaults {
     private static let flag = "omni.smartPlay.autoDefault.v1"
 
-    static func applyIfNeeded() {
-        let store = ProfileSettings.current
+    static func applyIfNeeded(store: UserDefaults = ProfileSettings.current) {
         guard !store.bool(forKey: flag) else { return }
         store.set(true, forKey: flag)
         store.set(true, forKey: SettingsKey.smartStreamSelection)
