@@ -67,6 +67,8 @@
 	<string>Omni uses your local network to find Chromecast and other Cast devices.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>This app does not require microphone access.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>NSUserActivityTypes</key>
 	<array>
 		<string>com.saminaden.omni.watching</string>

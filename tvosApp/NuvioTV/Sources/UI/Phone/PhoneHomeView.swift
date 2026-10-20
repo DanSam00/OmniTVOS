@@ -9,7 +9,10 @@ import SwiftUI
 @MainActor
 final class PhoneHomeLoader: ObservableObject {
     @Published private(set) var sections: [TVHomeSection] = []
-    @Published private(set) var continueWatching: [ContinueWatchingItem] = []
+    @Published private(set) var continueWatching: [ContinueWatchingItem] = [] {
+        // The Continue Watching widget shows exactly this row.
+        didSet { ContinueWatchingStore.publishHomeRowToTopShelf(continueWatching) }
+    }
     /// The synced collections, one row of folder cards each, as on the TV.
     @Published private(set) var collectionRows: [TVHomeSection] = TVHomeSection.collectionRows()
     @Published private(set) var isLoading = false

@@ -2429,7 +2429,8 @@ enum ContinueWatchingStore {
                 title: item.meta.name,
                 subtitle: subtitleParts.isEmpty ? nil : subtitleParts.joined(separator: "  ·  "),
                 imageURL: item.meta.posterUrl,
-                progress: item.isUpNextEntry ? nil : fraction
+                progress: item.isUpNextEntry ? nil : fraction,
+                backdropURL: item.episodeArtworkURL ?? item.meta.backgroundUrl
             )
         }
         TopShelfFeedStore.write(Array(entries))

@@ -3,6 +3,7 @@ import Foundation
 import UserNotifications
 #if os(iOS)
 import UIKit
+import WidgetKit
 #else
 import AppKit
 #endif
@@ -46,8 +47,19 @@ enum EpisodeReminders {
 
     /// At launch and on returning to the app. Loads the followed shows'
     /// guides itself, at most every few hours.
+    /// Also keeps the iPhone's Upcoming widget filled when one is on the
+    /// Home Screen, alerts or not.
     static func refresh(force: Bool = false) async {
-        guard isEnabled else { return }
+        #if os(iOS)
+        let feedsWidget = await upcomingWidgetIsInstalled()
+        #else
+        let feedsWidget = false
+        #endif
+        guard isEnabled || feedsWidget else { return }
+        #if os(iOS)
+        // A widget just added has nothing to show yet: fill it now.
+        let force = force || (feedsWidget && UpcomingEpisodeFeedStore.read() == nil)
+        #endif
         let defaults = UserDefaults.standard
         if !force, let last = defaults.object(forKey: lastRefreshKey) as? Date,
            Date().timeIntervalSince(last) < refreshInterval {
@@ -56,16 +68,58 @@ enum EpisodeReminders {
         defaults.set(Date(), forKey: lastRefreshKey)
         let calendar = CalendarViewModel()
         await calendar.load()
-        await schedule(calendar.upcomingEpisodes(days: lookAheadDays))
+        let entries = calendar.upcomingEpisodes(days: lookAheadDays)
+        #if os(iOS)
+        publishToWidget(entries)
+        #endif
+        if isEnabled { await schedule(entries) }
     }
 
     /// The Calendar tab has just loaded the same data: use it.
     static func calendarDidLoad(_ calendar: CalendarViewModel) {
+        let entries = calendar.upcomingEpisodes(days: lookAheadDays)
+        #if os(iOS)
+        publishToWidget(entries)
+        #endif
         guard isEnabled else { return }
         UserDefaults.standard.set(Date(), forKey: lastRefreshKey)
-        let entries = calendar.upcomingEpisodes(days: lookAheadDays)
         Task { await schedule(entries) }
     }
+
+    #if os(iOS)
+    private static func upcomingWidgetIsInstalled() async -> Bool {
+        let configurations = (try? await WidgetCenter.shared.currentConfigurations()) ?? []
+        return configurations.contains { $0.kind == OmniWidgetKind.upcoming }
+    }
+
+    /// Hands the next releases to the Upcoming widget, with their artwork.
+    private static func publishToWidget(_ entries: [CalendarEntry]) {
+        let feed = entries.prefix(24).compactMap { entry -> UpcomingEpisodeEntry? in
+            guard let day = CalendarDayKey.date(fromDayKey: entry.dayKey) else { return nil }
+            return UpcomingEpisodeEntry(
+                id: entry.id,
+                metaId: entry.metaId,
+                type: entry.type,
+                title: entry.title,
+                episodeCode: entry.episodeCode,
+                episodeTitle: entry.episodeTitle,
+                airDate: Calendar.current.startOfDay(for: day),
+                posterURL: entry.posterUrl,
+                imageURL: entry.imageUrl ?? entry.backdropUrl
+            )
+        }
+        guard UpcomingEpisodeFeedStore.read()?.entries != feed else { return }
+        UpcomingEpisodeFeedStore.write(feed)
+        WidgetCenter.shared.reloadTimelines(ofKind: OmniWidgetKind.upcoming)
+        let sources = feed.flatMap { [$0.posterURL, $0.imageURL].compactMap { $0 } }
+        Task {
+            if await WidgetArtworkCache.fill(sources) {
+                WidgetCenter.shared.reloadTimelines(ofKind: OmniWidgetKind.upcoming)
+            }
+            WidgetArtworkCache.pruneToFeeds()
+        }
+    }
+    #endif
 
     private static func schedule(_ entries: [CalendarEntry]) async {
         let center = UNUserNotificationCenter.current()

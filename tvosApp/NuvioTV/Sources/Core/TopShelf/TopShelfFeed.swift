@@ -5,6 +5,9 @@ import UIKit
 #if canImport(TVServices)
 import TVServices
 #endif
+#if os(iOS) && canImport(WidgetKit)
+import WidgetKit
+#endif
 
 // MARK: - Top Shelf feed
 //
@@ -17,15 +20,17 @@ import TVServices
 
 /// App Group shared between the app and the Top Shelf extension. Must match the
 /// `com.apple.security.application-groups` entitlement on both targets.
-/// The companion extension uses the main app's bundle identifier plus the
-/// `.TopShelf` suffix. Derive the shared container from that base identifier
-/// so locally signed builds with a different bundle ID keep their shelf feed.
+/// The companion extensions use the main app's bundle identifier plus a
+/// `.TopShelf` (Apple TV) or `.Widgets` (iPhone) suffix. Derive the shared
+/// container from that base identifier so locally signed builds with a
+/// different bundle ID keep their feed. The iPhone app's group is therefore
+/// `group.com.saminaden.omni.ios`, apart from the Apple TV's.
 public let topShelfAppGroupID: String = {
-    let bundleID = Bundle.main.bundleIdentifier ?? "com.nuvio.app.tv"
-    let mainAppBundleID = bundleID.hasSuffix(".TopShelf")
-        ? String(bundleID.dropLast(".TopShelf".count))
-        : bundleID
-    return "group.\(mainAppBundleID)"
+    var bundleID = Bundle.main.bundleIdentifier ?? "com.nuvio.app.tv"
+    for suffix in [".TopShelf", ".Widgets"] where bundleID.hasSuffix(suffix) {
+        bundleID = String(bundleID.dropLast(suffix.count))
+    }
+    return "group.\(bundleID)"
 }()
 
 /// One card on the Top Shelf row.
@@ -40,10 +45,13 @@ public struct TopShelfEntry: Codable, Equatable {
     public let artworkFileName: String?
     /// Fractional progress 0...1, drawn as the card's progress bar.
     public let progress: Double?
+    /// Landscape art (episode still, else the show's backdrop) for the iPhone
+    /// widgets. Optional so older feeds still decode.
+    public let backdropURL: String?
 
     public init(contentId: String, contentType: String, title: String,
                 subtitle: String?, imageURL: String?, progress: Double?,
-                artworkFileName: String? = nil) {
+                artworkFileName: String? = nil, backdropURL: String? = nil) {
         self.contentId = contentId
         self.contentType = contentType
         self.title = title
@@ -51,6 +59,7 @@ public struct TopShelfEntry: Codable, Equatable {
         self.imageURL = imageURL
         self.progress = progress
         self.artworkFileName = artworkFileName
+        self.backdropURL = backdropURL
     }
 
     fileprivate func withArtworkFileName(_ artworkFileName: String?) -> TopShelfEntry {
@@ -61,7 +70,8 @@ public struct TopShelfEntry: Codable, Equatable {
             subtitle: subtitle,
             imageURL: imageURL,
             progress: progress,
-            artworkFileName: artworkFileName
+            artworkFileName: artworkFileName,
+            backdropURL: backdropURL
         )
     }
 
@@ -102,6 +112,18 @@ public enum TopShelfFeedStore {
 
     /// Called by the app whenever Continue Watching changes.
     public static func write(_ entries: [TopShelfEntry]) {
+        #if os(iOS)
+        // iPhone: the widgets draw their own labels, so store plain scaled
+        // art rather than the Top Shelf's captioned posters.
+        guard read()?.entries != entries else { return }
+        writeFeed(entries)
+        reloadWidgets()
+        let sources = entries.flatMap { [$0.imageURL, $0.backdropURL].compactMap { $0 } }
+        Task {
+            if await WidgetArtworkCache.fill(sources) { reloadWidgets() }
+            WidgetArtworkCache.pruneToFeeds()
+        }
+        #else
         let decoratedEntries = entries.map { entry in
             guard entry.imageURL != nil, entry.subtitle != nil else { return entry }
             return entry.withArtworkFileName(artworkFileName(for: entry))
@@ -114,7 +136,16 @@ public enum TopShelfFeedStore {
         }
         #endif
         notifyTopShelfContentChanged()
+        #endif
     }
+
+    #if os(iOS)
+    private static func reloadWidgets() {
+        #if canImport(WidgetKit)
+        WidgetCenter.shared.reloadTimelines(ofKind: OmniWidgetKind.continueWatching)
+        #endif
+    }
+    #endif
 
     /// Resolves a rendered artwork file that both the app and extension can
     /// read from their shared App Group.

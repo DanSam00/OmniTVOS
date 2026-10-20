@@ -660,6 +660,9 @@ struct ContentView: View {
                 EpisodeReminders.installDelegate()
                 Task { await EpisodeReminders.refresh() }
                 #endif
+                #if os(iOS)
+                DownloadLiveActivity.shared.start()
+                #endif
             default:
                 break
             }
