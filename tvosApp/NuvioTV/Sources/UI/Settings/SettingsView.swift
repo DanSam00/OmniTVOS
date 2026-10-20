@@ -3869,10 +3869,6 @@ private struct IntegrationSettingsView: View {
 
     @StateObject private var traktViewModel: TraktSettingsViewModel
     @StateObject private var simklViewModel: SimklSettingsViewModel
-    @AppStorage private var traktClientID: String
-    @AppStorage private var traktClientSecret: String
-    @State private var traktClientIDDraft: String
-    @State private var traktClientSecretDraft: String
     @AppStorage(SettingsKey.tmdbEnabled) private var tmdbEnabled = false
     @AppStorage(SettingsKey.tmdbApiKey) private var tmdbApiKey = ""
     @AppStorage(SettingsKey.mdbListEnabled) private var mdbListEnabled = false
@@ -3996,26 +3992,12 @@ private struct IntegrationSettingsView: View {
         let profileStore = ProfileSettings.store(for: profileID)
         let trimmedProfileID = profileID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let profileScope = trimmedProfileID.isEmpty ? "default" : trimmedProfileID
-        let storedTraktClientID = profileStore.string(forKey: SettingsKey.traktClientID) ?? ""
-        let storedTraktClientSecret = profileStore.string(forKey: SettingsKey.traktClientSecret) ?? ""
         _traktViewModel = StateObject(
             wrappedValue: TraktSettingsViewModel(store: profileStore)
         )
         _simklViewModel = StateObject(
             wrappedValue: SimklSettingsViewModel(store: profileStore, profileScope: profileScope)
         )
-        _traktClientID = AppStorage(
-            wrappedValue: "",
-            SettingsKey.traktClientID,
-            store: profileStore
-        )
-        _traktClientSecret = AppStorage(
-            wrappedValue: "",
-            SettingsKey.traktClientSecret,
-            store: profileStore
-        )
-        _traktClientIDDraft = State(initialValue: storedTraktClientID)
-        _traktClientSecretDraft = State(initialValue: storedTraktClientSecret)
     }
 
     var body: some View {
@@ -4139,26 +4121,8 @@ private struct IntegrationSettingsView: View {
                     fallback: "Watchlist, progress, history, comments, and recommendations"
                 )
             ) {
-                SettingsTextFieldRow(
-                    title: "Trakt Client ID",
-                    subtitle: "Create an API app at trakt.tv/oauth/applications",
-                    placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
-                    text: $traktClientIDDraft
-                )
-
-                SettingsTextFieldRow(
-                    title: "Trakt Client Secret",
-                    subtitle: L10n.string(
-                        "tvos_settings_stored_locally_on_this_apple_tv",
-                        fallback: "Stored locally on this Apple TV"
-                    ),
-                    placeholder: L10n.string("debrid_not_set", fallback: "Not set"),
-                    text: $traktClientSecretDraft,
-                    isSecure: true
-                )
-
-                SettingsInfoRow(title: "Trakt Redirect URI", value: TraktConfig.redirectURI)
-
+                // Omni carries its own Trakt Client ID, so there is no app to
+                // register and nothing to enter: Connect shows the code.
                 TraktConnectionSettingsCard(
                     viewModel: traktViewModel,
                     accentColor: accentColor,
@@ -4356,16 +4320,11 @@ private struct IntegrationSettingsView: View {
             !debridApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var traktCredentialsReady: Bool {
-        !traktClientIDDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !traktClientSecretDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
+    private var traktCredentialsReady: Bool { TraktConfig.isConfigured(in: ProfileSettings.current) }
 
     private var simklCredentialsReady: Bool { SimklConfig.isConfigured(in: ProfileSettings.current) }
 
     private func connectTrakt() {
-        traktClientID = traktClientIDDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        traktClientSecret = traktClientSecretDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         traktViewModel.credentialsDidChange()
         guard traktViewModel.credentialsConfigured else { return }
         showingTraktLogin = true
@@ -5305,7 +5264,7 @@ private struct TraktConnectionSettingsCard: View {
                     title: viewModel.mode == .awaitingApproval ? L10n.string("tvos_settings_continue_trakt_login", fallback: "Continue Trakt Login") : L10n.string("tvos_settings_connect_with_trakt", fallback: "Connect with Trakt"),
                     subtitle: credentialsReady
                         ? L10n.string("tvos_settings_scan_qr_or_enter_code_trakt", fallback: "Scan the QR or enter the code at trakt.tv/activate")
-                        : L10n.string("tvos_settings_enter_trakt_credentials_first", fallback: "Enter your Trakt Client ID and Client Secret first"),
+                        : L10n.string("tvos_settings_enter_trakt_client_id_first", fallback: "Enter your Trakt Client ID first"),
                     value: viewModel.mode == .awaitingApproval ? L10n.string("tvos_settings_resume", fallback: "Resume") : L10n.string("tvos_settings_connect", fallback: "Connect"),
                     accentColor: accentColor
                 ) {

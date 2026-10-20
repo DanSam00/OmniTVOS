@@ -3,32 +3,36 @@ import SwiftUI
 
 enum TraktConfig {
     static let apiBaseURL = "https://api.trakt.tv"
-    static let redirectURI = "urn:ietf:wg:oauth:2.0:oob"
+    /// Trakt moved the oauth/* endpoints to their own host.
+    static let authBaseURL = "https://auth.trakt.tv"
+    /// Sign-in uses the device-code flow, so this is never visited; it only has to
+    /// match the app's registered redirect for token refreshes. Trakt's
+    /// Development apps accept localhost only (the old OOB URN is rejected).
+    static let redirectURI = "http://localhost"
+
+    /// Omni's own Trakt API app ("Omni", a Development app on trakt.tv).
+    /// Built in so people sign in with just a code, without registering an app
+    /// of their own. Trakt treats the Client ID as public, and the device-code
+    /// flow needs no secret, so it is safe to ship.
+    static let builtInClientID = "nMdDVkatKMeldhIvaacMXVbJahNHB4Ul_f3aCPfe-K0"
 
     static var clientID: String {
         clientID(in: ProfileSettings.current)
     }
 
-    static var clientSecret: String {
-        clientSecret(in: ProfileSettings.current)
-    }
-
     static var isConfigured: Bool {
-        !clientID.isEmpty && !clientSecret.isEmpty
+        isConfigured(in: ProfileSettings.current)
     }
 
+    /// Always Omni's own app. A Client ID saved by an older build belonged to a
+    /// self-registered app; a connection made under it is cleared by the Client
+    /// ID check, and the user signs in again once.
     static func clientID(in store: UserDefaults) -> String {
-        store.string(forKey: SettingsKey.traktClientID)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    }
-
-    static func clientSecret(in store: UserDefaults) -> String {
-        store.string(forKey: SettingsKey.traktClientSecret)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        builtInClientID
     }
 
     static func isConfigured(in store: UserDefaults) -> Bool {
-        !clientID(in: store).isEmpty && !clientSecret(in: store).isEmpty
+        !clientID(in: store).isEmpty
     }
 
     static var userAgent: String {
@@ -485,24 +489,20 @@ private struct TraktDeviceCodeRequest: Encodable {
 private struct TraktDeviceTokenRequest: Encodable {
     let code: String
     let clientID: String
-    let clientSecret: String
     enum CodingKeys: String, CodingKey {
         case code
         case clientID = "client_id"
-        case clientSecret = "client_secret"
     }
 }
 
 private struct TraktRefreshTokenRequest: Encodable {
     let refreshToken: String
     let clientID: String
-    let clientSecret: String
     let redirectURI: String
     let grantType = "refresh_token"
     enum CodingKeys: String, CodingKey {
         case refreshToken = "refresh_token"
         case clientID = "client_id"
-        case clientSecret = "client_secret"
         case redirectURI = "redirect_uri"
         case grantType = "grant_type"
     }
@@ -511,11 +511,9 @@ private struct TraktRefreshTokenRequest: Encodable {
 private struct TraktRevokeRequest: Encodable {
     let token: String
     let clientID: String
-    let clientSecret: String
     enum CodingKeys: String, CodingKey {
         case token
         case clientID = "client_id"
-        case clientSecret = "client_secret"
     }
 }
 
@@ -600,7 +598,7 @@ final class TraktAuthService {
 
     func startDeviceAuth() async throws -> TraktDeviceCodeResponse {
         guard hasRequiredCredentials() else {
-            throw TraktServiceError.message("Enter your Trakt Client ID and Client Secret first.")
+            throw TraktServiceError.message("Enter your Trakt Client ID first.")
         }
 
         let state = currentState()
@@ -629,7 +627,7 @@ final class TraktAuthService {
 
     func pollDeviceToken() async -> TraktPollResult {
         guard hasRequiredCredentials() else {
-            return .failed("Enter your Trakt Client ID and Client Secret first.")
+            return .failed("Enter your Trakt Client ID first.")
         }
         let state = currentState()
         guard state.hasActiveDeviceFlow(in: store),
@@ -643,8 +641,7 @@ final class TraktAuthService {
                 path: "oauth/device/token",
                 body: TraktDeviceTokenRequest(
                     code: deviceCode,
-                    clientID: clientID,
-                    clientSecret: clientSecret
+                    clientID: clientID
                 ),
                 authorized: false
             )
@@ -693,7 +690,6 @@ final class TraktAuthService {
                 body: TraktRefreshTokenRequest(
                     refreshToken: refreshToken,
                     clientID: clientID,
-                    clientSecret: clientSecret,
                     redirectURI: TraktConfig.redirectURI
                 ),
                 authorized: false
@@ -718,8 +714,7 @@ final class TraktAuthService {
                 path: "oauth/revoke",
                 body: TraktRevokeRequest(
                     token: accessToken,
-                    clientID: clientID,
-                    clientSecret: clientSecret
+                    clientID: clientID
                 ),
                 authorized: false
             )
@@ -840,7 +835,8 @@ final class TraktAuthService {
     }
 
     private func baseRequest(path: String) -> URLRequest {
-        let normalizedBase = TraktConfig.apiBaseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let base = path.hasPrefix("oauth/") ? TraktConfig.authBaseURL : TraktConfig.apiBaseURL
+        let normalizedBase = base.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let url = URL(string: "\(normalizedBase)/\(path)")!
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
@@ -852,7 +848,6 @@ final class TraktAuthService {
     }
 
     private var clientID: String { TraktConfig.clientID(in: store) }
-    private var clientSecret: String { TraktConfig.clientSecret(in: store) }
 
     private func isTokenExpiredOrExpiring(_ state: TraktAuthState) -> Bool {
         guard let createdAt = state.createdAt, let expiresIn = state.expiresIn else { return true }
@@ -875,7 +870,7 @@ final class TraktAuthService {
 
     private static func friendlyTraktError(_ raw: String?, status: Int) -> String? {
         if status == 401 || status == 403 {
-            return raw ?? "Trakt rejected the Client ID or Client Secret. Check both values and try again."
+            return raw ?? "Trakt refused the sign-in. Try again in a moment."
         }
         if status == 429 {
             return raw ?? "Trakt is rate limiting login attempts. Wait a few minutes and try again."
@@ -2670,7 +2665,7 @@ final class TraktSettingsViewModel: ObservableObject {
     func connect() {
         guard !isLoading else { return }
         guard credentialsConfigured else {
-            errorMessage = "Enter your Trakt Client ID and Client Secret first."
+            errorMessage = "Enter your Trakt Client ID first."
             return
         }
         isLoading = true
