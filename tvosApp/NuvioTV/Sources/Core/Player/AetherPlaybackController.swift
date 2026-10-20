@@ -1682,6 +1682,11 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
     private let aiSubtitleStartupHoldTimeout: TimeInterval = 6
     private var needsForegroundReload = false
     private var playbackWasPlayingBeforeBackground = false
+    /// PiP was running at some point while the app was in the background
+    /// (the iPhone starts it on the way out). PiP keeps the pipeline alive,
+    /// so the return needs no reload even when PiP has already closed by
+    /// then, as it does when the viewer comes back to the app.
+    private var pictureInPictureCarriedBackground = false
     private var foregroundReloadTask: Task<Void, Never>?
     private var lifecycleReloadToken: UInt64 = 0
 
@@ -2127,10 +2132,16 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
         NotificationCenter.default.removeObserver(self)
     }
 
+    /// Called by `PictureInPictureManager` when PiP starts.
+    func pictureInPictureDidStart() {
+        if needsForegroundReload { pictureInPictureCarriedBackground = true }
+    }
+
     @objc private func appDidEnterBackground() {
         let pos = lastKnownPositionMs
         let dur = lastKnownDurationMs
         onPlaybackSuspended?(pos, dur)
+        pictureInPictureCarriedBackground = engine.pictureInPictureActive
 
         guard AetherPlaybackLifecyclePolicy.shouldReloadAfterBackground(state: engine.state) else { return }
 
@@ -2148,8 +2159,9 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
         // PiP keeps Aether's video pipeline alive across backgrounding. If PiP
         // is still active at foreground return, there is no torn down session
         // to reopen (it may have become active after the background event).
-        guard !engine.pictureInPictureActive else {
+        guard !engine.pictureInPictureActive, !pictureInPictureCarriedBackground else {
             needsForegroundReload = false
+            pictureInPictureCarriedBackground = false
             return
         }
 

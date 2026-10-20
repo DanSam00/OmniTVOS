@@ -59,6 +59,8 @@ struct ActivePlaybackContext: Equatable {
 private func pipLog(_ line: String) {
     #if os(macOS)
     MacDiagnostics.log("pip.avkit " + line)
+    #elseif os(iOS)
+    AetherPlaybackController.PhoneLogFile.log("pip.avkit " + line)
     #else
     print("[PictureInPicture] " + line)
     #endif
@@ -276,6 +278,7 @@ final class PictureInPictureManager: NSObject, ObservableObject {
         if controllerChanged {
             configuredSoftwareDisplayLayer = nil
         }
+        pipLog("setup supported=\(isPictureInPictureSupported)")
         guard isPictureInPictureSupported else { return }
 
         cancellables.removeAll()
@@ -313,6 +316,11 @@ final class PictureInPictureManager: NSObject, ObservableObject {
             possibleObservation?.invalidate()
             let pip = AVPictureInPictureController(playerLayer: nativeLayer)
             pip?.delegate = self
+            #if os(iOS)
+            // Leaving the app mid-film carries it on in PiP, as the system
+            // players do.
+            pip?.canStartPictureInPictureAutomaticallyFromInline = true
+            #endif
             self.pipController = pip
             bindPossibleObservation(pip)
         } else if #available(tvOS 15.0, macOS 12.0, *), let swSource = engine.softwarePiPSource {
@@ -334,6 +342,9 @@ final class PictureInPictureManager: NSObject, ObservableObject {
             )
             let pip = AVPictureInPictureController(contentSource: contentSource)
             pip.delegate = self
+            #if os(iOS)
+            pip.canStartPictureInPictureAutomaticallyFromInline = true
+            #endif
             self.pipController = pip
             configuredSoftwareDisplayLayer = swSource.layer
             bindPossibleObservation(pip)
@@ -347,9 +358,13 @@ final class PictureInPictureManager: NSObject, ObservableObject {
             return
         }
         isPictureInPicturePossible = pip.isPictureInPicturePossible
+        pipLog("controller ready possible=\(pip.isPictureInPicturePossible)")
         possibleObservation = pip.observe(\.isPictureInPicturePossible, options: [.initial, .new]) { [weak self] controller, _ in
             Task { @MainActor [weak self] in
                 guard let self, self.pipController === controller else { return }
+                if self.isPictureInPicturePossible != controller.isPictureInPicturePossible {
+                    pipLog("possible=\(controller.isPictureInPicturePossible)")
+                }
                 self.isPictureInPicturePossible = controller.isPictureInPicturePossible
             }
         }
@@ -525,6 +540,7 @@ extension PictureInPictureManager: @preconcurrency AVPictureInPictureControllerD
         pipLog("didStartPictureInPicture")
         isPictureInPictureActive = true
         activeAetherController?.engine.pictureInPictureActive = true
+        activeAetherController?.pictureInPictureDidStart()
         onDidStartPiP?()
     }
 
