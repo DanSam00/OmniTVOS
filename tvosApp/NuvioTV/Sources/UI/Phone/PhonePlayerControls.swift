@@ -28,11 +28,20 @@ struct PhonePlayerControls: View {
     @State private var isPortrait = false
     /// The season the portrait episode list shows; nil follows the playing one.
     @State private var portraitSeason: Int?
+    /// Off from the moment the player starts shrinking to the mini bar until
+    /// it has grown back. While the frame changes size the controls would lay
+    /// themselves out for each in-between shape (wider than tall reads as
+    /// landscape), which showed as a second set drifting across the screen.
+    @State private var showsControlsForSize = true
+    @State private var controlsReturnTask: Task<Void, Never>?
 
     private var isPlaying: Bool { viewModel.status == .playing }
 
     var body: some View {
-        Group {
+        // A ZStack, not a Group: a Group hands its modifiers to each child,
+        // which would tie the lifecycle hooks below to the controls coming
+        // and going.
+        ZStack {
             if isCasting {
                 PhoneCastingView(
                     cast: cast,
@@ -44,11 +53,57 @@ struct PhonePlayerControls: View {
                     onClose: onClose
                 )
                 .transition(.opacity)
-            } else {
+            } else if showsControlsForSize {
                 localControls
+                    .transition(.opacity.animation(.easeIn(duration: 0.18)))
             }
         }
         .animation(.easeInOut(duration: 0.25), value: isCasting)
+        .onChange(of: mini.isMini) { _, isMini in
+            controlsReturnTask?.cancel()
+            if isMini {
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { showsControlsForSize = false }
+            } else {
+                // Back once the picture has landed (the spring settles in
+                // about this long).
+                controlsReturnTask = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    guard !Task.isCancelled else { return }
+                    showsControlsForSize = true
+                }
+            }
+        }
+        // The player's own lifetime, not the controls': they come and go
+        // while the player shrinks to the bar and grows back.
+        .onAppear {
+            scheduleHide()
+            PhoneOrientation.matchHeldOrientation()
+            PhonePlayerPresence.shared.isVisible = true
+            #if OMNI_DEBUG_TOOLS
+            // `-OmniDebugPlayerPortrait YES`: turn upright once the player is
+            // up, since the simulator cannot be rotated from the command line.
+            if UserDefaults.standard.bool(forKey: "OmniDebugPlayerPortrait") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { PhoneOrientation.request(.portrait) }
+            }
+            #endif
+        }
+        .onDisappear {
+            PhoneOrientation.request(.portrait)
+            PhonePlayerPresence.shared.isVisible = false
+            PhonePlayerLayout.shared.isPortrait = false
+            if #unavailable(iOS 26.0), isPortrait { PhoneDeckSheen.shared.stop() }
+        }
+        .onChange(of: viewModel.status) { _, status in
+            if status == .playing { scheduleHide() } else { hideTask?.cancel() }
+        }
+        .onChange(of: viewModel.isSwitchingSource) { _, switching in
+            if switching { panel = nil }
+        }
+        // Upright, the status bar stays, as it does over Netflix's.
+        .statusBarHidden(mini.isMini ? false : (isPortrait ? panel != nil : (!isVisible || panel != nil)))
+        .persistentSystemOverlays(mini.isMini ? .automatic : .hidden)
         // Shrunk to the mini bar: only the picture shows; the bar has the controls.
         .opacity(mini.isMini ? 0 : 1)
         .allowsHitTesting(!mini.isMini)
@@ -111,36 +166,14 @@ struct PhonePlayerControls: View {
         .animation(.easeOut(duration: 0.16), value: viewModel.pendingSeekDelta != 0)
         .animation(.easeInOut(duration: 0.2), value: viewModel.showSkipSegmentCard)
         .animation(.easeInOut(duration: 0.2), value: viewModel.showNextEpisodeCard)
-        .onAppear {
-            scheduleHide()
-            PhoneOrientation.matchHeldOrientation()
-            PhonePlayerPresence.shared.isVisible = true
-            #if OMNI_DEBUG_TOOLS
-            // `-OmniDebugPlayerPortrait YES`: turn upright once the player is
-            // up, since the simulator cannot be rotated from the command line.
-            if UserDefaults.standard.bool(forKey: "OmniDebugPlayerPortrait") {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { PhoneOrientation.request(.portrait) }
-            }
-            #endif
-        }
-        .onDisappear {
-            PhoneOrientation.request(.portrait)
-            PhonePlayerPresence.shared.isVisible = false
-            PhonePlayerLayout.shared.isPortrait = false
-            if #unavailable(iOS 26.0), isPortrait { PhoneDeckSheen.shared.stop() }
-        }
-        .onChange(of: viewModel.status) { _, status in
-            if status == .playing { scheduleHide() } else { hideTask?.cancel() }
-        }
-        .onChange(of: viewModel.isSwitchingSource) { _, switching in
-            if switching { panel = nil }
-        }
-        // Upright, the status bar stays, as it does over Netflix's.
-        .statusBarHidden(mini.isMini ? false : (isPortrait ? panel != nil : (!isVisible || panel != nil)))
-        .persistentSystemOverlays(mini.isMini ? .automatic : .hidden)
     }
 
     private func updateLayout(portrait: Bool, topInset: CGFloat) {
+        // Shrinking to the mini bar, the controls measure the bar's frame
+        // (wider than tall) once on their way out. That is not the phone
+        // turning: keep the layout, or the picture grows back full-frame
+        // and only then jumps into its box.
+        guard !mini.isMini else { return }
         // Before iOS 26 the tiles light themselves from the tilt; Liquid
         // Glass does that on its own.
         if #unavailable(iOS 26.0), portrait != isPortrait {
@@ -267,8 +300,8 @@ struct PhonePlayerControls: View {
     }
 
     private var portraitDeckTiles: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 8) {
+        VStack(spacing: PhoneDeckMetrics.gap) {
+            HStack(spacing: PhoneDeckMetrics.gap) {
                 PhoneDuoTile(action: onClose) {
                     Image(systemName: "xmark").font(.headline)
                 }
@@ -324,7 +357,7 @@ struct PhonePlayerControls: View {
             .frame(height: 52)
 
             if isReady {
-                HStack(spacing: 8) {
+                HStack(spacing: PhoneDeckMetrics.gap) {
                     PhoneDuoTile(action: { viewModel.skipBackward() }) {
                         Image(systemName: "gobackward.\(viewModel.seekStepSeconds)").font(.title2)
                     }
@@ -357,7 +390,7 @@ struct PhonePlayerControls: View {
                     timeline.padding(.horizontal, 14).padding(.vertical, 8)
                 }
 
-                HStack(spacing: 8) {
+                HStack(spacing: PhoneDeckMetrics.gap) {
                     PhoneDuoTile(action: { open(.speed) }) {
                         portraitOption(
                             viewModel.playbackSpeed == .normal ? "Speed" : viewModel.playbackSpeed.label,
@@ -1862,6 +1895,9 @@ final class PhoneMiniPlayerState: ObservableObject {
 
     /// Bar size; the video sits at its leading end.
     static let videoSize = CGSize(width: 112, height: 63)
+    /// One motion for shrinking and growing, so the video and the screen
+    /// behind it move as one piece: a soft spring, no overshoot to speak of.
+    static let motion = Animation.spring(response: 0.42, dampingFraction: 0.9)
     static let barHeight: CGFloat = 75
 }
 
@@ -1956,11 +1992,22 @@ extension View {
     func phonePortraitVideoBox(_ portrait: Bool, topInset: CGFloat) -> some View {
         PhonePortraitBoxLayout(portrait: portrait, topInset: topInset) { self }
     }
+
+    /// The video box grown up to the top of the screen, for what stands in
+    /// for the picture (the loader's artwork) so it fills the space above too.
+    /// Applied to a view laid out inside the safe area, as the player's
+    /// overlays are: it reaches out past it itself, rather than adding the
+    /// inset a second time.
+    func phonePortraitTopArea(_ portrait: Bool, topInset: CGFloat) -> some View {
+        PhonePortraitBoxLayout(portrait: portrait, topInset: topInset, extendsToTop: true) { self }
+            .ignoresSafeArea()
+    }
 }
 
 private struct PhonePortraitBoxLayout: Layout {
     var portrait: Bool
     var topInset: CGFloat
+    var extendsToTop = false
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         proposal.replacingUnspecifiedDimensions()
@@ -1972,7 +2019,13 @@ private struct PhonePortraitBoxLayout: Layout {
             child.place(at: CGPoint(x: bounds.midX, y: bounds.midY), anchor: .center, proposal: ProposedViewSize(bounds.size))
             return
         }
-        let size = CGSize(width: bounds.width, height: bounds.width * 9 / 16)
+        let boxHeight = bounds.width * 9 / 16
+        if extendsToTop {
+            let size = CGSize(width: bounds.width, height: topInset + boxHeight)
+            child.place(at: CGPoint(x: bounds.minX, y: bounds.minY), anchor: .topLeading, proposal: ProposedViewSize(size))
+            return
+        }
+        let size = CGSize(width: bounds.width, height: boxHeight)
         child.place(at: CGPoint(x: bounds.minX, y: bounds.minY + topInset), anchor: .topLeading, proposal: ProposedViewSize(size))
     }
 }
@@ -2001,7 +2054,7 @@ private struct PhoneDuoTileBackground<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: PhoneDeckMetrics.cornerRadius, style: .continuous)
         if #available(iOS 26.0, *) {
             // The system's Liquid Glass: it follows the Clear / Tinted choice
             // in Settings and Reduce Transparency by itself, and its
@@ -2035,6 +2088,12 @@ private struct PhoneDuoTileBackground<Content: View>: View {
     }
 }
 
+/// The portrait deck's tile geometry: tight gaps and nearly square corners.
+private enum PhoneDeckMetrics {
+    static let gap: CGFloat = 4
+    static let cornerRadius: CGFloat = 4
+}
+
 /// One glass container for the deck on iOS 26, so neighbouring tiles share
 /// the same light rather than each sampling the picture on its own.
 private struct PhoneGlassGroup<Content: View>: View {
@@ -2042,7 +2101,7 @@ private struct PhoneGlassGroup<Content: View>: View {
 
     var body: some View {
         if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: 8) { content() }
+            GlassEffectContainer(spacing: PhoneDeckMetrics.gap) { content() }
         } else {
             content()
         }

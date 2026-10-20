@@ -99,6 +99,9 @@ struct PlayerView: View {
     @AppStorage(PhoneScreenMode.storageKey) private var phoneScreenModeRaw = PhoneScreenMode.fit.rawValue
     /// Portrait puts the video in a box at the top, over the controls deck.
     @ObservedObject private var phoneLayout = PhonePlayerLayout.shared
+    /// Shrunk to the mini bar, the picture fills the bar's slot rather than
+    /// sitting in the upright layout's top box.
+    @ObservedObject private var phoneMini = PhoneMiniPlayerState.shared
     #endif
     #if os(macOS)
     /// The keyboard reference, opened with ? and closed with ? or Escape.
@@ -244,6 +247,14 @@ struct PlayerView: View {
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
+                #if os(iOS)
+                // Shrinking to the mini bar, the black must not travel with
+                // the picture: it goes at once here, and ContentView fades its
+                // own full-screen black in place. Growing back, it returns
+                // once the picture has landed.
+                .opacity(phoneMini.isMini ? 0 : 1)
+                .animation(phoneMini.isMini ? .easeOut(duration: 0.06) : .easeIn(duration: 0.1).delay(0.35), value: phoneMini.isMini)
+                #endif
 
             videoLayer
 
@@ -288,7 +299,7 @@ struct PlayerView: View {
                 #if os(iOS)
                 // Upright, the loader sits where the video will be, not in the
                 // middle of the screen under the controls and episode list.
-                .phonePortraitVideoBox(phoneLayout.isPortrait && !viewModel.postPlayState.isVisible, topInset: phoneLayout.topInset)
+                .phonePortraitTopArea(phoneLayout.isPortrait && !viewModel.postPlayState.isVisible, topInset: phoneLayout.topInset)
                 #endif
 
             if let toast = viewModel.playerToast {
@@ -1072,7 +1083,9 @@ struct PlayerView: View {
         (!viewModel.postPlayState.isVisible || viewModel.postPlayState.canReturnToPlayer) {
         videoSurfaceStack
         #if os(iOS)
-        .phonePortraitVideoBox(!isMini && phoneLayout.isPortrait, topInset: phoneLayout.topInset)
+        // In the mini bar the box is the whole slot, so the picture flies
+        // from the top of the screen into the bar's video space.
+        .phonePortraitVideoBox(!isMini && phoneLayout.isPortrait, topInset: phoneMini.isMini ? 0 : phoneLayout.topInset)
         #endif
         .frame(
             width: isMini ? 580 : nil,
@@ -1230,6 +1243,15 @@ struct PlayerView: View {
         #endif
     }
 
+    /// The status bar's height, which the upright loader's area also covers.
+    private var loadingOverlayTopInset: CGFloat {
+        #if os(iOS)
+        return phoneLayout.topInset
+        #else
+        return 0
+        #endif
+    }
+
     @ViewBuilder
     private var playerStatusOverlay: some View {
         switch viewModel.status {
@@ -1240,7 +1262,8 @@ struct PlayerView: View {
                     logoUrl: meta.logoUrl,
                     title: meta.name,
                     message: L10n.string("player_status_starting_stream", fallback: "Starting stream"),
-                    compact: loadingOverlayIsCompact
+                    compact: loadingOverlayIsCompact,
+                    contentTopInset: loadingOverlayTopInset
                 )
                 .transition(.opacity)
             } else if !didReportPlaybackStarted {
@@ -1249,7 +1272,8 @@ struct PlayerView: View {
                     logoUrl: meta.logoUrl,
                     title: meta.name,
                     message: L10n.string("player_status_starting_stream", fallback: "Starting stream"),
-                    compact: loadingOverlayIsCompact
+                    compact: loadingOverlayIsCompact,
+                    contentTopInset: loadingOverlayTopInset
                 )
                 .transition(.opacity)
             } else {
@@ -1281,7 +1305,8 @@ struct PlayerView: View {
                     logoUrl: meta.logoUrl,
                     title: meta.name,
                     message: L10n.string("player_status_starting_stream", fallback: "Starting stream"),
-                    compact: loadingOverlayIsCompact
+                    compact: loadingOverlayIsCompact,
+                    contentTopInset: loadingOverlayTopInset
                 )
                 .transition(.opacity)
             }
@@ -1309,6 +1334,7 @@ struct PlayerView: View {
                 .glassRoundedRect(cornerRadius: 18)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 10)
+                .padding(.top, loadingOverlayTopInset)
             } else {
                 playbackFailedCard(message)
             }

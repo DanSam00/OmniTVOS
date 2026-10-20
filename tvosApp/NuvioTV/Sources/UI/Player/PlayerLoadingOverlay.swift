@@ -141,6 +141,9 @@ struct PlayerLoadingOverlay: View {
     /// box rather than the screen: a smaller logo, tighter spacing, and no
     /// bleed into the safe area above the box.
     var compact: Bool = false
+    /// With `compact`, the height of the status-bar strip the artwork also
+    /// covers: the logo and status centre in the video area below it.
+    var contentTopInset: CGFloat = 0
 
     @State private var isPulsing = false
     @State private var logoLoadFailed = false
@@ -228,12 +231,10 @@ struct PlayerLoadingOverlay: View {
                             fallbackTitleView
                         }
                     }
-                    .scaleEffect(isPulsing ? 1.04 : 1.0)
-                    .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true), value: isPulsing)
+                    .modifier(PulseEffect(isPulsing: isPulsing))
                 } else {
                     fallbackTitleView
-                        .scaleEffect(isPulsing ? 1.04 : 1.0)
-                        .animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true), value: isPulsing)
+                        .modifier(PulseEffect(isPulsing: isPulsing))
                 }
 
                 if !message.isEmpty {
@@ -276,12 +277,27 @@ struct PlayerLoadingOverlay: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .padding(.horizontal, compact ? 20 : 80)
+            .padding(.top, compact ? contentTopInset : 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(edges: compact ? [] : .all)
         .clipped()
         .onAppear {
             isPulsing = true
+        }
+    }
+
+    /// The logo's slow grow and settle. The repeating animation is scoped to
+    /// the scale alone: attached to the view as a whole, it also took up any
+    /// move of the logo (the iPhone's loader settling into the video box) and
+    /// sent it bobbing up and down forever.
+    private struct PulseEffect: ViewModifier {
+        let isPulsing: Bool
+
+        func body(content: Content) -> some View {
+            content.animation(.easeInOut(duration: 2.0).repeatForever(autoreverses: true)) {
+                $0.scaleEffect(isPulsing ? 1.04 : 1.0)
+            }
         }
     }
 

@@ -173,8 +173,7 @@ struct PhoneDetailsView: View {
                 }
                 .padding(.horizontal, PhoneLayout.gutter)
 
-                // Live channels ("tv") count as series but have no episodes.
-                if meta.isSeries, meta.type.lowercased() != "tv" {
+                if meta.isSeries, !Self.isLiveChannel(meta) {
                     episodes(meta)
                 }
 
@@ -369,7 +368,7 @@ struct PhoneDetailsView: View {
                 }
             }
 
-            if !meta.isSeries {
+            if !meta.isSeries, !Self.isLiveChannel(meta) {
                 downloadControl(meta: meta, episode: nil)
                     .frame(width: 48, height: 46)
                     .background(Color.white.opacity(0.15), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -397,6 +396,13 @@ struct PhoneDetailsView: View {
             }
             .accessibilityLabel(viewModel.uiState.isWatched ? "Mark Unwatched" : "Mark Watched")
         }
+    }
+
+    /// A live channel: an IPTV one, or an add-on's "tv"/"channel" item. It has
+    /// no episodes, and a broadcast cannot be downloaded.
+    static func isLiveChannel(_ meta: NuvioMeta) -> Bool {
+        let type = meta.type.lowercased()
+        return type == "tv" || type == "channel" || meta.id.hasPrefix("iptv:") || meta.id.hasPrefix("iptvch:")
     }
 
     // MARK: Downloads

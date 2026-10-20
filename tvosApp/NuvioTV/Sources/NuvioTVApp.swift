@@ -220,6 +220,9 @@ struct ContentView: View {
     /// The player while shrunk to the mini bar: its screen, kept so the player
     /// stays mounted (see `PhoneMiniPlayerState`) while `activeScreen` moves on.
     @State private var phoneMiniPlayback: TVScreen?
+    /// The bar and its video sliding away together after the bar's X, before
+    /// the slot empties.
+    @State private var phoneMiniClosing = false
     #endif
     @State private var resolvedInitialScreen = false
     /// `nil` until tvOS has actually backgrounded the app, so the initial
@@ -778,22 +781,36 @@ struct ContentView: View {
     }
 
     private func expandPhoneMiniPlayer() {
-        guard let playback = phoneMiniPlayback else { return }
-        withAnimation(.easeInOut(duration: 0.28)) {
+        guard let playback = phoneMiniPlayback, !phoneMiniClosing else { return }
+        withAnimation(PhoneMiniPlayerState.motion) {
             activeScreen = playback
             phoneMiniPlayback = nil
             PhoneMiniPlayerState.shared.isMini = false
         }
     }
 
-    /// Closing from the bar ends playback: the slot empties and the player
-    /// tears down as it does from its own X.
+    /// Closing from the bar ends playback: the bar and its video slide off
+    /// together as one piece, then the slot empties and the player tears
+    /// down as it does from its own X. Emptying it straight away let the bar
+    /// slide while the video only faded where it stood.
     private func closePhoneMiniPlayer() {
-        withAnimation(.easeInOut(duration: 0.24)) {
-            phoneMiniPlayback = nil
-            PhoneMiniPlayerState.shared.isMini = false
+        guard phoneMiniPlayback != nil, !phoneMiniClosing else { return }
+        withAnimation(.easeIn(duration: 0.22)) {
+            phoneMiniClosing = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                phoneMiniPlayback = nil
+                PhoneMiniPlayerState.shared.isMini = false
+                phoneMiniClosing = false
+            }
         }
     }
+
+    /// How far the bar and its video drop while closing.
+    private var phoneMiniCloseOffset: CGFloat { phoneMiniClosing ? 160 : 0 }
     #endif
 
     private var fullScreenOverlayPresented: Bool {
@@ -1745,8 +1762,28 @@ struct ContentView: View {
                     .padding(.horizontal, 12)
                     .padding(.bottom, phoneMiniBarBottomInset)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .offset(y: phoneMiniCloseOffset)
+                    .opacity(phoneMiniClosing ? 0 : 1)
+                    // The bar fades in under the video as it lands, rather
+                    // than rising from the bottom on a path of its own.
+                    .transition(.asymmetric(
+                        insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.18)),
+                        removal: .opacity.animation(.easeIn(duration: 0.12))
+                    ))
                     .zIndex(1.9)
+            }
+            #endif
+
+            #if os(iOS)
+            // The player's black, fading in place as the picture shrinks to
+            // the mini bar or grows back, rather than shrinking with it.
+            if playerSlotScreen != nil {
+                Color.black
+                    .ignoresSafeArea()
+                    .opacity(phoneMiniPlayback == nil ? 1 : 0)
+                    .animation(PhoneMiniPlayerState.motion, value: phoneMiniPlayback == nil)
+                    .allowsHitTesting(false)
+                    .zIndex(1.95)
             }
             #endif
 
@@ -1766,6 +1803,8 @@ struct ContentView: View {
                     bottomInset: phoneMiniBarBottomInset,
                     onExpand: expandPhoneMiniPlayer
                 ))
+                .offset(y: phoneMiniPlayback != nil ? phoneMiniCloseOffset : 0)
+                .opacity(phoneMiniPlayback != nil && phoneMiniClosing ? 0 : 1)
                 #endif
                 .transition(.opacity)
                 .zIndex(2)
@@ -10792,7 +10831,7 @@ private struct PhoneMiniPlayerFrame: ViewModifier {
                 maxHeight: .infinity,
                 alignment: isMini ? .bottomLeading : .center
             )
-            .animation(.easeInOut(duration: 0.28), value: isMini)
+            .animation(PhoneMiniPlayerState.motion, value: isMini)
     }
 }
 
