@@ -105,9 +105,16 @@ struct PhoneMainTabView: View {
                     )
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) {
+                            // The current profile's own picture, which is
+                            // also the way to switch to another.
                             Button(action: onSwitchProfile) {
-                                Image(systemName: "person.2.circle")
+                                ProfileAvatarView(
+                                    avatarId: activeProfile?.avatarId ?? ProfileAvatarCatalog.defaultId,
+                                    size: 32,
+                                    profileId: activeProfile?.id
+                                )
                             }
+                            .buttonStyle(.plain)
                             .accessibilityLabel("Switch Profile")
                         }
                     }
