@@ -193,6 +193,9 @@ protocol PlaybackEngineControlling: AnyObject {
     var bufferedMs: Int64 { get }
     var currentSpeed: Float { get }
     var currentErrorMessage: String { get }
+    /// The error is an IPTV provider's final refusal: show it, and do not
+    /// fail over (the other sources would be refused the same way).
+    var isProviderRefusal: Bool { get }
     var videoFrameSize: CGSize { get }
     /// Whether the loaded source is a live broadcast, as the engine sees it.
     ///
@@ -395,4 +398,5 @@ extension PlaybackEngineControlling {
     /// Engines that do not expose a download rate report zero, which the
     /// buffering overlay reads as "no figure to show".
     var networkSpeedMbps: Double { 0 }
+    var isProviderRefusal: Bool { false }
 }

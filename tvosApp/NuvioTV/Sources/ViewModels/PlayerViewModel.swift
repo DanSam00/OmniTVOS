@@ -1811,6 +1811,16 @@ class PlayerViewModel: ObservableObject {
         // Don't clobber an explicit error state (failover already exhausted).
         if case .error = status { return }
 
+        // An IPTV provider refused the stream: its message is final. Failing
+        // over would only open more connections on a one-stream plan.
+        if c.isProviderRefusal, !c.currentErrorMessage.isEmpty {
+            loadWatchdogTask?.cancel()
+            loadWatchdogTask = nil
+            isAwaitingStreamStart = false
+            status = .error(c.currentErrorMessage)
+            return
+        }
+
         // mpv hard-failed this source — try the next one before surfacing UI.
         if !c.currentErrorMessage.isEmpty, !isFailingOver, !isReloadingStream {
             if let url = activeStreamURL { failedStreamURLs.insert(url) }

@@ -113,7 +113,7 @@ struct PhonePlayerControls: View {
         .animation(.easeInOut(duration: 0.2), value: viewModel.showNextEpisodeCard)
         .onAppear {
             scheduleHide()
-            PhoneOrientation.request(.landscape)
+            PhoneOrientation.matchHeldOrientation()
             PhonePlayerPresence.shared.isVisible = true
             #if OMNI_DEBUG_TOOLS
             // `-OmniDebugPlayerPortrait YES`: turn upright once the player is
@@ -1779,9 +1779,21 @@ final class PhonePlayerPresence: ObservableObject {
     @Published var isVisible = false
 }
 
-/// Turns the phone to landscape for video and back afterwards, as video apps
-/// do. The user can still rotate freely; this only sets the starting point.
+/// Sets the player's starting orientation and turns back to portrait
+/// afterwards. The user can still rotate freely; this only sets the start.
 enum PhoneOrientation {
+    /// Video opens the way the phone is held: on its side, in landscape;
+    /// upright, flat or unknown, it stays in portrait with the portrait player.
+    static func matchHeldOrientation() {
+        let device = UIDevice.current
+        if !device.isGeneratingDeviceOrientationNotifications {
+            device.beginGeneratingDeviceOrientationNotifications()
+        }
+        if device.orientation.isLandscape {
+            request(.landscape)
+        }
+    }
+
     static func request(_ mask: UIInterfaceOrientationMask) {
         guard let scene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
@@ -2087,11 +2099,13 @@ private struct PhonePlayerReflection: View {
                 PhoneArtwork(url: fallbackURL, kind: .backdrop)
                     .scaleEffect(x: 1, y: -1)
             }
-            Rectangle().fill(.ultraThinMaterial)
+            // Frosted, but less than the full material: the picture should
+            // read through it.
+            Rectangle().fill(.ultraThinMaterial).opacity(0.7)
             LinearGradient(
                 stops: [
-                    .init(color: .black.opacity(0.35), location: 0),
-                    .init(color: .black.opacity(0.75), location: 0.55),
+                    .init(color: .black.opacity(0.15), location: 0),
+                    .init(color: .black.opacity(0.55), location: 0.55),
                     .init(color: .black, location: 1)
                 ],
                 startPoint: .top,
