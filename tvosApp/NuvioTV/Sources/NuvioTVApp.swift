@@ -623,7 +623,7 @@ struct ContentView: View {
         }
         .onReceive(syncManager.$isPullingAccountProfiles) { pulling in
             if !pulling, awaitingPostLoginSync {
-                let shouldEnterMain = enterMainAfterPostLoginSync
+                let shouldEnterMain: Bool = enterMainAfterPostLoginSync
                     && authManager.isAuthenticated
                     && syncManager.profileSyncError == nil
                     && profileViewModel.activeProfile?.id != "guest"
