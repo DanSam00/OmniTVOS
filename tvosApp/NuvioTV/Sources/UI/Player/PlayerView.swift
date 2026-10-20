@@ -1286,6 +1286,41 @@ struct PlayerView: View {
                 .transition(.opacity)
             }
         case .error(let message):
+            #if os(iOS)
+            if loadingOverlayIsCompact {
+                // Upright, the card has the 16:9 video box to itself: sized to
+                // fit there rather than spilling under the controls.
+                VStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.title3)
+                        .foregroundColor(.yellow)
+                    Text(L10n.string("player_status_playback_failed", fallback: "Playback failed"))
+                        .font(.headline)
+                        .foregroundColor(.white)
+                    Text(message)
+                        .font(.footnote)
+                        .foregroundColor(.white.opacity(0.75))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(4)
+                        .minimumScaleFactor(0.85)
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 14)
+                .glassRoundedRect(cornerRadius: 18)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+            } else {
+                playbackFailedCard(message)
+            }
+            #else
+            playbackFailedCard(message)
+            #endif
+        default:
+            EmptyView()
+        }
+    }
+
+    private func playbackFailedCard(_ message: String) -> some View {
             VStack(spacing: 16) {
                 Image(systemName: "exclamationmark.triangle")
                     .font(.system(size: 48))
@@ -1308,9 +1343,6 @@ struct PlayerView: View {
             .padding(48)
             .glassRoundedRect(cornerRadius: 32)
             #endif
-        default:
-            EmptyView()
-        }
     }
 
     @ViewBuilder
