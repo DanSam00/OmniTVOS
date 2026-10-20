@@ -1895,6 +1895,85 @@ actor YouTubeTrailerResolver {
     }
 }
 
+/// The audio languages a source's label names, so the automatic pick prefers
+/// the profile's audio language. Release names say it with flags (🇵🇱),
+/// words ("Polish", "Lektor", "Dublado") or tags (".PL.", "ITA"); a label
+/// naming none is usually an original-language (mostly English) release and
+/// is left alone.
+enum StreamAudioLanguage {
+    /// Words, whole-token tags and flags per language, all lowercased. Tags
+    /// that are also ordinary words or release jargon ("it", "de", "es",
+    /// "pt" for part) are left out.
+    private static let markers: [String: (words: [String], tags: [String], flags: [String])] = [
+        "English": (["english"], ["eng"], ["🇬🇧", "🇺🇸"]),
+        "Polish": (["polish", "polski", "lektor", "dubbing pl"], ["pl", "pol", "plsub"], ["🇵🇱"]),
+        "Italian": (["italian", "italiano"], ["ita"], ["🇮🇹"]),
+        "French": (["french", "français", "francais", "truefrench", "vff", "vfq"], ["fre", "fra", "fr", "vf"], ["🇫🇷"]),
+        "German": (["german", "deutsch"], ["ger", "deu"], ["🇩🇪"]),
+        "Spanish": (["spanish", "español", "espanol", "castellano", "latino"], ["spa", "esp"], ["🇪🇸", "🇲🇽"]),
+        "Portuguese": (["portuguese", "português", "portugues", "dublado"], ["por", "ptbr"], ["🇵🇹", "🇧🇷"]),
+        "Russian": (["russian", "русский"], ["rus", "ru"], ["🇷🇺"]),
+        "Ukrainian": (["ukrainian"], ["ukr", "ua"], ["🇺🇦"]),
+        "Hindi": (["hindi"], ["hin"], ["🇮🇳"]),
+        "Japanese": (["japanese"], ["jpn", "jap"], ["🇯🇵"]),
+        "Korean": (["korean"], ["kor"], ["🇰🇷"]),
+        "Chinese": (["chinese", "mandarin", "cantonese"], ["chi", "chn"], ["🇨🇳", "🇹🇼", "🇭🇰"]),
+        "Turkish": (["turkish", "türkçe"], ["tur"], ["🇹🇷"]),
+        "Arabic": (["arabic"], ["ara"], ["🇸🇦", "🇦🇪"]),
+        "Dutch": (["dutch", "nederlands"], ["dut", "nld", "nl"], ["🇳🇱"]),
+        "Czech": (["czech", "česky"], ["cze", "cz"], ["🇨🇿"]),
+        "Hungarian": (["hungarian", "magyar"], ["hun"], ["🇭🇺"]),
+        "Romanian": (["romanian"], ["rum", "ron"], ["🇷🇴"]),
+        "Greek": (["greek"], ["gre", "ell"], ["🇬🇷"]),
+        "Swedish": (["swedish", "svenska"], ["swe"], ["🇸🇪"]),
+        "Danish": (["danish", "dansk"], ["dan"], ["🇩🇰"]),
+        "Norwegian": (["norwegian", "norsk"], ["nor"], ["🇳🇴"]),
+        "Finnish": (["finnish", "suomi"], ["fin"], ["🇫🇮"]),
+        "Thai": (["thai"], ["tha"], ["🇹🇭"]),
+        "Vietnamese": (["vietnamese"], ["vie"], ["🇻🇳"]),
+        "Hebrew": (["hebrew"], ["heb"], ["🇮🇱"]),
+        "Indonesian": (["indonesian"], ["ind"], ["🇮🇩"]),
+        "Bulgarian": (["bulgarian"], ["bul"], ["🇧🇬"]),
+        "Croatian": (["croatian"], ["hrv"], ["🇭🇷"]),
+    ]
+    private static let multiWords = ["multi", "dual audio", "dual-audio", "multi-audio", "multi audio", "dual"]
+
+    /// The languages a stream's label names.
+    static func languages(in stream: NuvioStream) -> Set<String> {
+        let text = [stream.name, stream.description, stream.filename]
+            .compactMap { $0 }.joined(separator: " ").lowercased()
+        let tokens = Set(text.split { !$0.isLetter }.map(String.init))
+        var found = Set<String>()
+        for (language, marker) in markers {
+            if marker.flags.contains(where: text.contains)
+                || marker.words.contains(where: text.contains)
+                || marker.tags.contains(where: tokens.contains) {
+                found.insert(language)
+            }
+        }
+        return found
+    }
+
+    static func isMultiAudio(_ stream: NuvioStream) -> Bool {
+        let text = [stream.name, stream.description, stream.filename]
+            .compactMap { $0 }.joined(separator: " ").lowercased()
+        return multiWords.contains(where: text.contains)
+    }
+
+    /// Up for a source naming the preferred language, a little for a
+    /// multi-audio one, well down for one naming only other languages. Large
+    /// enough to beat a resolution step, below the low-quality penalty.
+    static func score(_ stream: NuvioStream, preferred: String?) -> Int {
+        guard let preferred, markers[preferred] != nil else { return 0 }
+        let named = languages(in: stream)
+        if named.contains(preferred) { return 40_000 }
+        if isMultiAudio(stream) { return 20_000 }
+        // English releases rarely say so; other languages nearly always do.
+        if !named.isEmpty { return -60_000 }
+        return 0
+    }
+}
+
 enum SmartPlaybackSelector {
     static func bestStream(
         from streams: [NuvioStream],
@@ -2013,6 +2092,7 @@ enum SmartPlaybackSelector {
         }
 
         let preferHardware = ProfileSettings.current.object(forKey: SettingsKey.preferHardwareDecodedStreams) as? Bool ?? true
+        let preferredAudioLanguage = SubtitleLanguagePreferences.preferredAudioLanguage()
 
         let ranked = candidatePool.map { index, stream -> (index: Int, stream: NuvioStream, score: Int) in
             let tags = StreamQualityTags.parse(stream: stream)
@@ -2045,7 +2125,8 @@ enum SmartPlaybackSelector {
             }
             // On cellular, the smaller of two otherwise equal files.
             let sizePenalty = autoPreferSmaller ? -Int((autoBitrates[index] ?? 0) * 500) : 0
-            return (index, stream, subtitleScore + qualityScore + featureScore + resumeScore + cachedBoost + lowQualityPenalty + hardwareBoost + sizePenalty)
+            let audioScore = StreamAudioLanguage.score(stream, preferred: preferredAudioLanguage)
+            return (index, stream, subtitleScore + qualityScore + featureScore + resumeScore + cachedBoost + lowQualityPenalty + hardwareBoost + sizePenalty + audioScore)
         }
 
         return ranked.sorted { lhs, rhs in
