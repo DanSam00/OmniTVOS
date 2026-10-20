@@ -122,7 +122,7 @@ struct PhonePlayerControls: View {
             PhoneOrientation.request(.portrait)
             PhonePlayerPresence.shared.isVisible = false
             PhonePlayerLayout.shared.isPortrait = false
-            if isPortrait { PhoneDeckSheen.shared.stop() }
+            if #unavailable(iOS 26.0), isPortrait { PhoneDeckSheen.shared.stop() }
         }
         .onChange(of: viewModel.status) { _, status in
             if status == .playing { scheduleHide() } else { hideTask?.cancel() }
@@ -136,7 +136,9 @@ struct PhonePlayerControls: View {
     }
 
     private func updateLayout(portrait: Bool, topInset: CGFloat) {
-        if portrait != isPortrait {
+        // Before iOS 26 the tiles light themselves from the tilt; Liquid
+        // Glass does that on its own.
+        if #unavailable(iOS 26.0), portrait != isPortrait {
             if portrait { PhoneDeckSheen.shared.start() } else { PhoneDeckSheen.shared.stop() }
         }
         isPortrait = portrait
@@ -251,6 +253,10 @@ struct PhonePlayerControls: View {
     }
 
     private var portraitDeck: some View {
+        PhoneGlassGroup { portraitDeckTiles }
+    }
+
+    private var portraitDeckTiles: some View {
         VStack(spacing: 8) {
             HStack(spacing: 8) {
                 PhoneDuoTile(action: onClose) {
@@ -1880,6 +1886,22 @@ private struct PhoneDuoTileBackground<Content: View>: View {
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
+        if #available(iOS 26.0, *) {
+            // The system's Liquid Glass: it follows the Clear / Tinted choice
+            // in Settings and Reduce Transparency by itself, and its
+            // highlights already move as the phone tilts.
+            content()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .glassEffect(
+                    prominent ? .regular.tint(.white.opacity(0.10)).interactive() : .regular.interactive(),
+                    in: shape
+                )
+        } else {
+            handmadeGlass(shape)
+        }
+    }
+
+    private func handmadeGlass(_ shape: RoundedRectangle) -> some View {
         content()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.white.opacity(prominent ? 0.14 : 0.08), in: shape)
@@ -1894,6 +1916,20 @@ private struct PhoneDuoTileBackground<Content: View>: View {
                     lineWidth: 1
                 )
             )
+    }
+}
+
+/// One glass container for the deck on iOS 26, so neighbouring tiles share
+/// the same light rather than each sampling the picture on its own.
+private struct PhoneGlassGroup<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: 8) { content() }
+        } else {
+            content()
+        }
     }
 }
 
