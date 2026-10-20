@@ -35,9 +35,11 @@ final class SampleBufferRenderer: @unchecked Sendable {
     /// for every decoded frame.
     private let renderingTarget: any AVQueuedSampleBufferRendering
 
-    /// macOS: a second display layer fed the same frames, for Picture in Picture. AVKit on the Mac
-    /// drew the on-screen layer magnified and off-centre in the PiP window (a layer sized and placed
-    /// for the player view); this one belongs to PiP alone and is laid out for it. Nil elsewhere.
+    /// A second display layer fed the same frames: nothing is decoded or downloaded twice.
+    /// macOS: for Picture in Picture. AVKit on the Mac drew the on-screen layer magnified and
+    /// off-centre in the PiP window (a layer sized and placed for the player view); this one belongs
+    /// to PiP alone and is laid out for it. iOS: the portrait player's mirrored reflection (iOS PiP
+    /// keeps the on-screen layer). Nil on tvOS.
     @MainActor let pipLayer: AVSampleBufferDisplayLayer?
     /// The mirror's queue, captured on the main actor like `renderingTarget`.
     let pipTarget: (any AVQueuedSampleBufferRendering)?
@@ -178,10 +180,10 @@ final class SampleBufferRenderer: @unchecked Sendable {
         } else {
             renderingTarget = layer
         }
-        #if os(macOS)
+        #if os(macOS) || os(iOS)
         let mirror = Self.makeDisplayLayer(isHDR: false)
         pipLayer = mirror
-        if #available(macOS 15.0, *) {
+        if #available(macOS 15.0, iOS 18.0, *) {
             pipTarget = mirror.sampleBufferRenderer
         } else {
             pipTarget = mirror

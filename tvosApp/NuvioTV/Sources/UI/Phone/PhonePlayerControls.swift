@@ -1,5 +1,6 @@
 #if os(iOS)
 import AVKit
+import CoreMotion
 import SwiftUI
 
 /// Touch controls over the shared player: tap to show/hide, double-tap either
@@ -21,6 +22,11 @@ struct PhonePlayerControls: View {
     /// This player's stream is on the Cast device and the phone is its remote.
     @State private var isCasting = false
     @AppStorage(PhoneScreenMode.storageKey) private var screenModeRaw = PhoneScreenMode.fit.rawValue
+    /// The phone is upright: video in a box at the top, the controls deck and
+    /// the title's details beneath it, Netflix style.
+    @State private var isPortrait = false
+    /// The season the portrait episode list shows; nil follows the playing one.
+    @State private var portraitSeason: Int?
 
     private var isPlaying: Bool { viewModel.status == .playing }
 
@@ -75,6 +81,71 @@ struct PhonePlayerControls: View {
     }
 
     private var localControls: some View {
+        GeometryReader { proxy in
+            let portrait = proxy.size.height > proxy.size.width
+            ZStack {
+                if portrait {
+                    portraitLayout(size: proxy.size, bottomInset: proxy.safeAreaInsets.bottom)
+                } else {
+                    landscapeLayout
+                }
+
+                if let panel {
+                    PhonePlayerPanelContainer(onDismiss: closePanel) {
+                        panelContent(panel)
+                    }
+                    .transition(.opacity)
+                }
+            }
+            .onAppear { updateLayout(portrait: portrait, topInset: proxy.safeAreaInsets.top) }
+            .onChange(of: portrait) { _, now in updateLayout(portrait: now, topInset: proxy.safeAreaInsets.top) }
+            .onChange(of: proxy.safeAreaInsets.top) { _, top in updateLayout(portrait: portrait, topInset: top) }
+        }
+        .animation(.easeInOut(duration: 0.2), value: isVisible)
+        .animation(.easeInOut(duration: 0.2), value: panel)
+        .animation(.easeOut(duration: 0.16), value: viewModel.pendingSeekDelta != 0)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.showSkipSegmentCard)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.showNextEpisodeCard)
+        .onAppear {
+            scheduleHide()
+            PhoneOrientation.request(.landscape)
+            PhonePlayerPresence.shared.isVisible = true
+            #if OMNI_DEBUG_TOOLS
+            // `-OmniDebugPlayerPortrait YES`: turn upright once the player is
+            // up, since the simulator cannot be rotated from the command line.
+            if UserDefaults.standard.bool(forKey: "OmniDebugPlayerPortrait") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { PhoneOrientation.request(.portrait) }
+            }
+            #endif
+        }
+        .onDisappear {
+            PhoneOrientation.request(.portrait)
+            PhonePlayerPresence.shared.isVisible = false
+            PhonePlayerLayout.shared.isPortrait = false
+            if isPortrait { PhoneDeckSheen.shared.stop() }
+        }
+        .onChange(of: viewModel.status) { _, status in
+            if status == .playing { scheduleHide() } else { hideTask?.cancel() }
+        }
+        .onChange(of: viewModel.isSwitchingSource) { _, switching in
+            if switching { panel = nil }
+        }
+        // Upright, the status bar stays, as it does over Netflix's.
+        .statusBarHidden(isPortrait ? panel != nil : (!isVisible || panel != nil))
+        .persistentSystemOverlays(.hidden)
+    }
+
+    private func updateLayout(portrait: Bool, topInset: CGFloat) {
+        if portrait != isPortrait {
+            if portrait { PhoneDeckSheen.shared.start() } else { PhoneDeckSheen.shared.stop() }
+        }
+        isPortrait = portrait
+        PhonePlayerLayout.shared.isPortrait = portrait
+        PhonePlayerLayout.shared.topInset = topInset
+        if portrait { hideTask?.cancel() } else { reveal() }
+    }
+
+    private var landscapeLayout: some View {
         ZStack {
             // Full-screen tap target; also the double-tap-to-skip zones.
             HStack(spacing: 0) {
@@ -94,39 +165,11 @@ struct PhonePlayerControls: View {
             }
 
             if panel == nil, isReady {
-                promptCards
-            }
-
-            if let panel {
-                PhonePlayerPanelContainer(onDismiss: closePanel) {
-                    panelContent(panel)
-                }
-                .transition(.opacity)
+                promptCards(bottomPadding: isVisible ? 110 : 24)
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: isVisible)
-        .animation(.easeInOut(duration: 0.2), value: panel)
-        .animation(.easeOut(duration: 0.16), value: viewModel.pendingSeekDelta != 0)
-        .animation(.easeInOut(duration: 0.2), value: viewModel.showSkipSegmentCard)
-        .animation(.easeInOut(duration: 0.2), value: viewModel.showNextEpisodeCard)
-        .onAppear {
-            scheduleHide()
-            PhoneOrientation.request(.landscape)
-            PhonePlayerPresence.shared.isVisible = true
-        }
-        .onDisappear {
-            PhoneOrientation.request(.portrait)
-            PhonePlayerPresence.shared.isVisible = false
-        }
-        .onChange(of: viewModel.status) { _, status in
-            if status == .playing { scheduleHide() } else { hideTask?.cancel() }
-        }
-        .onChange(of: viewModel.isSwitchingSource) { _, switching in
-            if switching { panel = nil }
-        }
-        .statusBarHidden(!isVisible || panel != nil)
-        .persistentSystemOverlays(.hidden)
     }
+
 
     private func tapZone(onDoubleTap: @escaping () -> Void) -> some View {
         Color.clear
@@ -139,6 +182,341 @@ struct PhonePlayerControls: View {
                 isVisible.toggle()
                 if isVisible { scheduleHide() }
             }
+    }
+
+    // MARK: Portrait
+
+    /// Upright: the picture in a 16:9 box under the status bar (placed there
+    /// by `PlayerView`, at the top of this safe area), the controls deck below
+    /// it on a frosted reflection of the picture, then the title's details.
+    private func portraitLayout(size: CGSize, bottomInset: CGFloat) -> some View {
+        let videoHeight = size.width * 9 / 16
+        return ZStack(alignment: .top) {
+            // The picture mirrored at its own size directly beneath it.
+            PhonePlayerReflection(
+                player: viewModel.aetherController.engine.currentAVPlayer,
+                mirrorLayer: viewModel.aetherController.engine.softwareMirrorLayer,
+                fallbackURL: viewModel.castableMedia?.backdropURL?.absoluteString
+                    ?? viewModel.playingMeta?.backgroundUrl
+            )
+            .frame(width: size.width, height: videoHeight)
+            .clipped()
+            .padding(.top, videoHeight)
+            .frame(width: size.width, height: size.height, alignment: .top)
+            .allowsHitTesting(false)
+
+            VStack(spacing: 0) {
+                ZStack {
+                    HStack(spacing: 0) {
+                        tapZone { viewModel.skipBackward() }
+                        tapZone { viewModel.skipForward() }
+                    }
+                    if viewModel.pendingSeekDelta != 0 {
+                        PhoneSeekIndicator(clock: viewModel.clock, delta: viewModel.pendingSeekDelta)
+                            .scaleEffect(0.8)
+                            .allowsHitTesting(false)
+                            .transition(.opacity)
+                    }
+                    if panel == nil, isReady {
+                        promptCards(bottomPadding: 10)
+                    }
+                }
+                .frame(height: videoHeight)
+                // Pull the picture down to close the player, as well as the X.
+                .gesture(
+                    DragGesture(minimumDistance: 24)
+                        .onEnded { value in
+                            if value.translation.height > 90,
+                               abs(value.translation.width) < value.translation.height {
+                                onClose()
+                            }
+                        }
+                )
+
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 22) {
+                        portraitDeck
+                        portraitDetails
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.top, 14)
+                    .padding(.bottom, 24)
+                    .frame(width: size.width)
+                }
+            }
+            .frame(width: size.width)
+        }
+        .frame(width: size.width, height: size.height)
+        .foregroundStyle(.white)
+    }
+
+    private var portraitDeck: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                PhoneDuoTile(action: onClose) {
+                    Image(systemName: "xmark").font(.headline)
+                }
+                .frame(width: 52)
+                .accessibilityLabel("Close player")
+
+                PhoneDuoTile(action: {
+                    if viewModel.canShowEpisodesPanel { open(.episodes) }
+                }) {
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(viewModel.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                            if !viewModel.subtitle.isEmpty {
+                                Text(viewModel.subtitle)
+                                    .font(.caption)
+                                    .foregroundStyle(.white.opacity(0.65))
+                                    .lineLimit(1)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                        if viewModel.canShowEpisodesPanel {
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(.white.opacity(0.6))
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                }
+                .accessibilityLabel(viewModel.canShowEpisodesPanel ? "Episodes" : viewModel.title)
+
+                if isReady {
+                    PhoneDuoTileBackground {
+                        PhoneRoutePicker(
+                            prioritizesVideo: viewModel.activeEngineKind == .aether,
+                            player: { viewModel.aetherController.engine.currentAVPlayer },
+                            onSoundOnly: {
+                                viewModel.showCastMessage(
+                                    "This stream plays in Omni's own player, so AirPlay can send its sound but not the picture"
+                                )
+                            }
+                        )
+                    }
+                    .frame(width: 52)
+                    .accessibilityLabel("AirPlay")
+
+                    PhoneDuoTileBackground {
+                        PhoneCastButton().frame(width: 26, height: 26)
+                    }
+                    .frame(width: 52)
+                    .accessibilityLabel("Cast")
+                }
+            }
+            .frame(height: 52)
+
+            if isReady {
+                HStack(spacing: 8) {
+                    PhoneDuoTile(action: { viewModel.skipBackward() }) {
+                        Image(systemName: "gobackward.\(viewModel.seekStepSeconds)").font(.title2)
+                    }
+                    .disabled(viewModel.isLiveStream)
+                    .accessibilityLabel("Back \(viewModel.seekStepSeconds) seconds")
+
+                    PhoneDuoTile(prominent: true, action: { viewModel.togglePlayPause() }) {
+                        Group {
+                            if viewModel.status == .buffering {
+                                ProgressView().tint(.white)
+                            } else {
+                                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                                    .font(.system(size: 34))
+                            }
+                        }
+                    }
+                    .layoutPriority(1)
+                    .frame(minWidth: 140)
+                    .accessibilityLabel(isPlaying ? "Pause" : "Play")
+
+                    PhoneDuoTile(action: { viewModel.skipForward() }) {
+                        Image(systemName: "goforward.\(viewModel.seekStepSeconds)").font(.title2)
+                    }
+                    .disabled(viewModel.isLiveStream)
+                    .accessibilityLabel("Forward \(viewModel.seekStepSeconds) seconds")
+                }
+                .frame(height: 88)
+
+                PhoneDuoTileBackground {
+                    timeline.padding(.horizontal, 14).padding(.vertical, 8)
+                }
+
+                HStack(spacing: 8) {
+                    PhoneDuoTile(action: { open(.speed) }) {
+                        portraitOption(
+                            viewModel.playbackSpeed == .normal ? "Speed" : viewModel.playbackSpeed.label,
+                            icon: "gauge.with.dots.needle.67percent"
+                        )
+                    }
+                    PhoneDuoTile(action: { open(.subtitles) }) {
+                        portraitOption("Subtitles", icon: subtitlesOn ? "captions.bubble.fill" : "captions.bubble")
+                    }
+                    PhoneDuoTile(action: { open(.audio) }) {
+                        portraitOption("Audio", icon: "speaker.wave.2")
+                    }
+                    if viewModel.canShowSourcesPanel {
+                        PhoneDuoTile(action: { open(.sources) }) {
+                            portraitOption("Sources", icon: "arrow.triangle.branch")
+                        }
+                    }
+                    if viewModel.isPictureInPictureSupported, viewModel.isPictureInPicturePossible {
+                        PhoneDuoTile(action: { viewModel.togglePictureInPicture() }) {
+                            portraitOption("PiP", icon: viewModel.isPictureInPictureActive ? "pip.exit" : "pip.enter")
+                        }
+                    }
+                    PhoneDuoTile(action: { PhoneOrientation.request(.landscape) }) {
+                        portraitOption("Full Screen", icon: "arrow.up.left.and.arrow.down.right")
+                    }
+                }
+                .frame(height: 54)
+            }
+        }
+    }
+
+    private func portraitOption(_ title: String, icon: String) -> some View {
+        VStack(spacing: 4) {
+            Image(systemName: icon).font(.system(size: 17, weight: .medium))
+            Text(title).font(.system(size: 10, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.8)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+    }
+
+    /// What is playing, beneath the deck: the title's official logo, then for
+    /// a show its episodes by season (tap one to play it), for a film its
+    /// synopsis, cast and director.
+    @ViewBuilder
+    private var portraitDetails: some View {
+        let meta = viewModel.playingMeta
+        VStack(alignment: .leading, spacing: 14) {
+            if let meta, meta.logoUrl != nil {
+                PhoneTitleLogo(meta: meta, maxWidth: 220, maxHeight: 70)
+            } else if !viewModel.title.isEmpty {
+                // No logo to show: the name stands in.
+                Text(viewModel.title).font(.title2.weight(.bold))
+            }
+
+            let facts = [meta?.year.map(String.init), meta?.genres?.prefix(2).joined(separator: ", "), meta?.runtime]
+                .compactMap { $0 }
+                .filter { !$0.isEmpty }
+            if !facts.isEmpty {
+                Text(facts.joined(separator: "  ·  "))
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+
+            if viewModel.canShowEpisodesPanel {
+                portraitEpisodes
+            } else if let meta {
+                portraitMovieInfo(meta)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var portraitSeasons: [Int] {
+        Array(Set(viewModel.panelEpisodes.map(\.season))).sorted { a, b in
+            // Specials (season 0) after the numbered seasons.
+            (a == 0 ? Int.max : a) < (b == 0 ? Int.max : b)
+        }
+    }
+
+    private var shownSeason: Int? {
+        portraitSeason ?? viewModel.playingEpisode?.season ?? portraitSeasons.first
+    }
+
+    @ViewBuilder
+    private var portraitEpisodes: some View {
+        let seasons = portraitSeasons
+        if seasons.count > 1 {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(seasons, id: \.self) { season in
+                        let selected = season == shownSeason
+                        Button { portraitSeason = season } label: {
+                            Text(season == 0 ? "Specials" : "Season \(season)")
+                                .font(.subheadline.weight(selected ? .semibold : .regular))
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 7)
+                                .background(selected ? Color.white : Color.white.opacity(0.12), in: Capsule())
+                                .foregroundStyle(selected ? Color.black : Color.white)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        LazyVStack(spacing: 8) {
+            ForEach(viewModel.panelEpisodes.filter { $0.season == shownSeason }) { episode in
+                portraitEpisodeRow(episode)
+            }
+        }
+    }
+
+    private func portraitEpisodeRow(_ episode: NuvioVideo) -> some View {
+        let isCurrent = episode.id == viewModel.panelCurrentEpisodeId
+        return Button { viewModel.selectEpisode(episode) } label: {
+            HStack(alignment: .top, spacing: 12) {
+                PhoneArtwork(
+                    url: episode.thumbnail ?? viewModel.playingMeta?.backgroundUrl,
+                    kind: .backdrop,
+                    fallbacks: [viewModel.playingMeta?.backgroundUrl, viewModel.playingMeta?.posterUrl]
+                )
+                .frame(width: 128, height: 72)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(alignment: .bottomLeading) {
+                    if isCurrent {
+                        Text("Playing")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.black)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(.white, in: Capsule())
+                            .padding(5)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("\(episode.episode). \(episode.title)")
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(2)
+                    if let overview = episode.overview, !overview.isEmpty {
+                        Text(overview)
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.6))
+                            .lineLimit(3)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(8)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(isCurrent ? Color.white.opacity(0.12) : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func portraitMovieInfo(_ meta: NuvioMeta) -> some View {
+        if let synopsis = meta.description, !synopsis.isEmpty {
+            Text(synopsis)
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.85))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if let cast = meta.cast, !cast.isEmpty {
+            portraitCredit("Cast", cast.prefix(8).joined(separator: ", "))
+        }
+        if let director = meta.director, !director.isEmpty {
+            portraitCredit(director.count == 1 ? "Director" : "Directors", director.joined(separator: ", "))
+        }
+    }
+
+    private func portraitCredit(_ label: String, _ names: String) -> some View {
+        (Text(label + "  ").foregroundStyle(.white.opacity(0.5)) + Text(names).foregroundStyle(.white.opacity(0.85)))
+            .font(.footnote)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: Chrome
@@ -331,7 +709,7 @@ struct PhonePlayerControls: View {
 
     // MARK: Skip intro / next episode
 
-    private var promptCards: some View {
+    private func promptCards(bottomPadding: CGFloat) -> some View {
         VStack(alignment: .trailing, spacing: 10) {
             if viewModel.showSkipSegmentCard, let interval = viewModel.activeSkipInterval {
                 Button { viewModel.skipActiveInterval() } label: {
@@ -367,9 +745,9 @@ struct PhonePlayerControls: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-        .padding(.trailing, 20)
+        .padding(.trailing, isPortrait ? 12 : 20)
         // Clear the scrubber and option row while the chrome is up.
-        .padding(.bottom, isVisible ? 110 : 24)
+        .padding(.bottom, bottomPadding)
         .animation(.easeInOut(duration: 0.2), value: isVisible)
     }
 
@@ -436,7 +814,8 @@ struct PhonePlayerControls: View {
 
     private func scheduleHide() {
         hideTask?.cancel()
-        guard isPlaying, panel == nil else { return }
+        // Upright the deck stays: it sits below the picture, not over it.
+        guard isPlaying, panel == nil, !isPortrait else { return }
         hideTask = Task {
             try? await Task.sleep(nanoseconds: 4_000_000_000)
             guard !Task.isCancelled, scrubValue == nil, panel == nil else { return }
@@ -1393,6 +1772,266 @@ enum PhoneOrientation {
             .first(where: { $0.activationState == .foregroundActive }) else { return }
         scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { _ in }
         scene.keyWindow?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+    }
+}
+#endif
+
+#if os(iOS)
+/// How the phone is tilted, for the sheen on the portrait deck's tiles: light
+/// sliding across glass as it would if the tiles were real. Netflix's Duo
+/// player drives the same thing from the hinge angle and the light sensor;
+/// an ordinary iPhone has neither to offer an app, so the tilt alone does it.
+/// Runs only while the portrait deck is on screen.
+@MainActor
+@Observable
+final class PhoneDeckSheen {
+    static let shared = PhoneDeckSheen()
+    /// -1...1, left to right and top to bottom.
+    private(set) var x: Double = 0
+    private(set) var y: Double = 0
+
+    private let motion = CMMotionManager()
+    private var users = 0
+
+    func start() {
+        users += 1
+        guard users == 1, motion.isDeviceMotionAvailable else { return }
+        motion.deviceMotionUpdateInterval = 1.0 / 30
+        motion.startDeviceMotionUpdates(to: .main) { [weak self] data, _ in
+            guard let self, let gravity = data?.gravity else { return }
+            // Gravity rather than attitude: no drift, and flat on a table is still.
+            let nx = max(-1, min(1, gravity.x * 1.6))
+            let ny = max(-1, min(1, (gravity.y + 0.55) * 1.6))
+            // Ease toward the reading so the light glides rather than jitters.
+            self.x += (nx - self.x) * 0.25
+            self.y += (ny - self.y) * 0.25
+        }
+    }
+
+    func stop() {
+        users = max(0, users - 1)
+        guard users == 0 else { return }
+        motion.stopDeviceMotionUpdates()
+        x = 0
+        y = 0
+    }
+}
+
+/// Where the portrait player draws the video, shared with `PlayerView`, which
+/// places the video surface itself.
+@MainActor
+final class PhonePlayerLayout: ObservableObject {
+    static let shared = PhonePlayerLayout()
+    @Published var isPortrait = false
+    /// The status bar's height: the video box starts below it.
+    @Published var topInset: CGFloat = 0
+}
+
+extension View {
+    /// Upright, the video in a 16:9 box under the status bar; otherwise the
+    /// whole screen. One layout either way: swapping the view for another on
+    /// rotation rebuilt the video surface, which left the picture black.
+    func phonePortraitVideoBox(_ portrait: Bool, topInset: CGFloat) -> some View {
+        PhonePortraitBoxLayout(portrait: portrait, topInset: topInset) { self }
+    }
+}
+
+private struct PhonePortraitBoxLayout: Layout {
+    var portrait: Bool
+    var topInset: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        proposal.replacingUnspecifiedDimensions()
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let child = subviews.first else { return }
+        guard portrait else {
+            child.place(at: CGPoint(x: bounds.midX, y: bounds.midY), anchor: .center, proposal: ProposedViewSize(bounds.size))
+            return
+        }
+        let size = CGSize(width: bounds.width, height: bounds.width * 9 / 16)
+        child.place(at: CGPoint(x: bounds.minX, y: bounds.minY + topInset), anchor: .topLeading, proposal: ProposedViewSize(size))
+    }
+}
+
+/// A Netflix-Duo-style tile: a rounded slab of frosted glass with a faint
+/// lit edge, its content centred.
+private struct PhoneDuoTile<Content: View>: View {
+    var prominent = false
+    let action: () -> Void
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        Button(action: action) {
+            PhoneDuoTileBackground(prominent: prominent) {
+                content()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(PhoneDuoPressStyle())
+    }
+}
+
+private struct PhoneDuoTileBackground<Content: View>: View {
+    var prominent = false
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
+        content()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.white.opacity(prominent ? 0.14 : 0.08), in: shape)
+            .background(PhoneDeckSheenLayer(shape: shape))
+            .overlay(
+                shape.strokeBorder(
+                    LinearGradient(
+                        colors: [.white.opacity(0.22), .white.opacity(0.04)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
+            )
+    }
+}
+
+/// The tilt-driven highlight inside a tile (see `PhoneDeckSheen`).
+private struct PhoneDeckSheenLayer: View {
+    let shape: RoundedRectangle
+    private var sheen: PhoneDeckSheen { .shared }
+
+    var body: some View {
+        let center = UnitPoint(x: 0.5 - sheen.x * 0.6, y: 0.2 - sheen.y * 0.5)
+        shape
+            .fill(
+                RadialGradient(
+                    colors: [.white.opacity(0.16), .white.opacity(0)],
+                    center: center,
+                    startRadius: 0,
+                    endRadius: 120
+                )
+            )
+            .allowsHitTesting(false)
+    }
+}
+
+private struct PhoneDuoPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .opacity(configuration.isPressed ? 0.8 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+/// The "reflection" under the portrait video, as on Netflix's Duo player: the
+/// picture mirrored below itself and frosted, so the deck glows with what is
+/// playing. Always live, and never a second download or decode: through
+/// AVPlayer it is a second layer on the same player; on the software path it
+/// is the engine's mirror layer, which is handed the same decoded frames.
+/// The title's backdrop stands in only before either exists.
+private struct PhonePlayerReflection: View {
+    let player: AVPlayer?
+    let mirrorLayer: AVSampleBufferDisplayLayer?
+    let fallbackURL: String?
+
+    var body: some View {
+        ZStack {
+            if let player {
+                PhoneMirroredPlayerLayer(player: player)
+            } else if let mirrorLayer {
+                PhoneMirroredSampleLayer(layer: mirrorLayer)
+            } else if let fallbackURL {
+                PhoneArtwork(url: fallbackURL, kind: .backdrop)
+                    .scaleEffect(x: 1, y: -1)
+            }
+            Rectangle().fill(.ultraThinMaterial)
+            LinearGradient(
+                stops: [
+                    .init(color: .black.opacity(0.35), location: 0),
+                    .init(color: .black.opacity(0.75), location: 0.55),
+                    .init(color: .black, location: 1)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+        .clipped()
+    }
+}
+
+private struct PhoneMirroredPlayerLayer: UIViewRepresentable {
+    let player: AVPlayer
+
+    final class MirrorView: UIView {
+        override class var layerClass: AnyClass { AVPlayerLayer.self }
+        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+    }
+
+    func makeUIView(context: Context) -> MirrorView {
+        let view = MirrorView()
+        view.isUserInteractionEnabled = false
+        // Drawn as the picture is, so the reflection matches it 1:1.
+        view.playerLayer.videoGravity = .resizeAspect
+        view.playerLayer.player = player
+        // Upside down, so the bottom of the picture meets the top of its
+        // reflection.
+        view.transform = CGAffineTransform(scaleX: 1, y: -1)
+        return view
+    }
+
+    func updateUIView(_ view: MirrorView, context: Context) {
+        if view.playerLayer.player !== player { view.playerLayer.player = player }
+    }
+
+    static func dismantleUIView(_ view: MirrorView, coordinator: ()) {
+        view.playerLayer.player = nil
+    }
+}
+
+/// Hosts the engine's mirror display layer, upside down. The layer belongs to
+/// this view alone on iOS, so it can be moved in and kept sized here.
+private struct PhoneMirroredSampleLayer: UIViewRepresentable {
+    let layer: AVSampleBufferDisplayLayer
+
+    final class HostView: UIView {
+        var hosted: AVSampleBufferDisplayLayer? {
+            didSet {
+                guard hosted !== oldValue else { return }
+                if oldValue?.superlayer === layer { oldValue?.removeFromSuperlayer() }
+                if let hosted {
+                    hosted.videoGravity = .resizeAspect
+                    layer.addSublayer(hosted)
+                    setNeedsLayout()
+                }
+            }
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            hosted?.frame = bounds
+            CATransaction.commit()
+        }
+    }
+
+    func makeUIView(context: Context) -> HostView {
+        let view = HostView()
+        view.isUserInteractionEnabled = false
+        view.transform = CGAffineTransform(scaleX: 1, y: -1)
+        view.hosted = layer
+        return view
+    }
+
+    func updateUIView(_ view: HostView, context: Context) {
+        view.hosted = layer
+    }
+
+    static func dismantleUIView(_ view: HostView, coordinator: ()) {
+        view.hosted = nil
     }
 }
 #endif

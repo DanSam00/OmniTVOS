@@ -3191,6 +3191,10 @@ class PlayerViewModel: ObservableObject {
         showPauseOverlay = false
     }
 
+    /// The title and episode playing, for the iPhone's portrait details.
+    var playingMeta: NuvioMeta? { activeMeta }
+    var playingEpisode: NuvioVideo? { currentEpisodeVideo }
+
     // MARK: - Side panels (episodes / sources)
 
     var canShowEpisodesPanel: Bool {

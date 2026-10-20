@@ -1971,13 +1971,12 @@ struct ContentView: View {
         }
         downloadDebugLaunchURLIfRequested()
         #endif
-        #if os(macOS)
         // `-OmniDebugForceSoftware YES`: decode in software whatever the codec, so a plain H.264
-        // test file exercises the sample-buffer path (Picture in Picture, mainly).
+        // test file exercises the sample-buffer path (Picture in Picture on the Mac, the
+        // portrait reflection on the iPhone).
         if UserDefaults.standard.bool(forKey: "OmniDebugForceSoftware") {
             AetherEngine.setForceSoftwarePathForTesting(true)
         }
-        #endif
         guard let raw = UserDefaults.standard.string(forKey: "OmniDebugPlayURL"),
               let url = URL(string: raw) else { return }
         UserDefaults.standard.removeObject(forKey: "OmniDebugPlayURL")

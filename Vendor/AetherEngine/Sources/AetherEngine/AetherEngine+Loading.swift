@@ -1600,7 +1600,12 @@ extension AetherEngine {
         mirrorSoftwareDisplaySize(from: host.$videoDisplaySize, storeIn: &softwareCancellables)
         // SW-PiP: publish the bridge once the session owns its layer (the layer object is stable for
         // the session; the host attaches it to the view and, on PiP start, to the system window).
+        #if os(macOS)
         softwarePiPSource = SoftwarePiPSource(layer: host.pipDisplayLayer ?? host.displayLayer, isLive: isLive, engine: self)
+        #else
+        // iOS PiP takes the on-screen layer; the mirror there is the portrait reflection.
+        softwarePiPSource = SoftwarePiPSource(layer: host.displayLayer, isLive: isLive, engine: self)
+        #endif
         // SW-PiP Phase C: mirror the published cues (primary + secondary) into the renderer's frame
         // compositor; the PiP flag gates actual drawing (fullscreen stays host-overlay-only).
         Publishers.CombineLatest($subtitleCues, $secondarySubtitleCues)

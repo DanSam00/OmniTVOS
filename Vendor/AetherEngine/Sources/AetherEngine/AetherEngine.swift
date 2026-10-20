@@ -740,6 +740,12 @@ public final class AetherEngine: ObservableObject {
     /// display layer, nil on teardown. Hosts build their sample-buffer PiP ContentSource from it.
     @Published public internal(set) var softwarePiPSource: SoftwarePiPSource?
 
+    /// A second display layer showing the software path's frames, for a host to draw elsewhere
+    /// (iOS: the portrait player's reflection). Nil on the native path and on tvOS.
+    @MainActor public var softwareMirrorLayer: AVSampleBufferDisplayLayer? {
+        softwareHost?.pipDisplayLayer
+    }
+
     /// #353: the size the software path's picture presents at, in pixels: the coded frame under the
     /// pixel aspect ratio the decoder attached. nil on every other path, before the first frame is
     /// built, and on sources with no video.

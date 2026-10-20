@@ -97,6 +97,8 @@ struct PlayerView: View {
     @FocusState private var postPlayFocus: PostPlayFocusItem?
     #if os(iOS)
     @AppStorage(PhoneScreenMode.storageKey) private var phoneScreenModeRaw = PhoneScreenMode.fit.rawValue
+    /// Portrait puts the video in a box at the top, over the controls deck.
+    @ObservedObject private var phoneLayout = PhonePlayerLayout.shared
     #endif
     #if os(macOS)
     /// The keyboard reference, opened with ? and closed with ? or Escape.
@@ -1064,6 +1066,9 @@ struct PlayerView: View {
     if !viewModel.postPlayState.isTrailerPlaying &&
         (!viewModel.postPlayState.isVisible || viewModel.postPlayState.canReturnToPlayer) {
         videoSurfaceStack
+        #if os(iOS)
+        .phonePortraitVideoBox(!isMini && phoneLayout.isPortrait, topInset: phoneLayout.topInset)
+        #endif
         .frame(
             width: isMini ? 580 : nil,
             height: isMini ? 326 : nil
