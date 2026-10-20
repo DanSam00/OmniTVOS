@@ -113,13 +113,6 @@ struct CollectionFolderBrowseView: View {
         homeLayout == "Compact" ? "Compact" : "Modern"
     }
 
-    private var heading: String {
-        if collectionTitle.caseInsensitiveCompare(folder.title) == .orderedSame {
-            return collectionTitle
-        }
-        return "\(collectionTitle) • \(folder.title)"
-    }
-
     /// Tab labels for Tabs mode: optional "All" + one tab per source.
     private var tabLabels: [String] {
         guard !usesRows, folder.sources.count > 1 else { return [] }
@@ -250,13 +243,17 @@ struct CollectionFolderBrowseView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// Grid folders in the same frame as row folders: the focused title's
+    /// art and details over the page, the folder's logo in the corner, then
+    /// the tabs and the grid scrolling beneath.
     private var gridBrowser: some View {
-        ZStack {
-            Color.nuvioBackground(amoled: amoled, body: bodyColor)
-                .ignoresSafeArea()
+        ZStack(alignment: .topLeading) {
+            cinematicBackdrop
 
-            VStack(alignment: .leading, spacing: 20) {
-                header
+            folderBadgePlaced
+
+            VStack(alignment: .leading, spacing: 16) {
+                folderHero
 
                 if !tabLabels.isEmpty {
                     tabBar
@@ -264,6 +261,7 @@ struct CollectionFolderBrowseView: View {
 
                 if !isLoading, errorMessage == nil, let sourceNotice {
                     sourceNoticeText(sourceNotice)
+                        .padding(.horizontal, TVLayout.rowLeading)
                 }
 
                 if isLoading {
@@ -291,6 +289,39 @@ struct CollectionFolderBrowseView: View {
                 }
             }
         }
+        .ignoresSafeArea(edges: .top)
+        // Grid cards do not report focus themselves; fill in the focused
+        // title's logo and synopsis for the hero as it changes.
+        .onChange(of: focusedMeta?.id) { _, _ in
+            if let meta = focusedMeta { enrichCollectionItemIfNeeded(meta) }
+        }
+    }
+
+    /// The focused title's details, or the folder's own logo before a title
+    /// has focus. Shared by the row and grid layouts.
+    @ViewBuilder
+    private var folderHero: some View {
+        Group {
+            if let meta = focusedMeta {
+                TVHeroView(meta: meta) { onSelect(meta) }
+                    .equatable()
+            } else {
+                TVCollectionFolderHeroView(folder: folder)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var folderBadgePlaced: some View {
+        folderBadge
+            #if os(macOS)
+            .padding(.top, MacMenuMetrics.edgeTop + 6)
+            .padding(.trailing, 60)
+            #else
+            .padding(.top, 54)
+            .padding(.trailing, TVLayout.rowLeading)
+            #endif
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
     }
 
     /// Rows folders, laid out as Home is: the focused title's art behind, its
@@ -303,26 +334,10 @@ struct CollectionFolderBrowseView: View {
         ZStack(alignment: .topLeading) {
             cinematicBackdrop
 
-            folderBadge
-                #if os(macOS)
-                .padding(.top, MacMenuMetrics.edgeTop + 6)
-                .padding(.trailing, 60)
-                #else
-                .padding(.top, 54)
-                .padding(.trailing, TVLayout.rowLeading)
-                #endif
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            folderBadgePlaced
 
             VStack(alignment: .leading, spacing: 0) {
-                Group {
-                    if let meta = focusedMeta {
-                        TVHeroView(meta: meta) { onSelect(meta) }
-                            .equatable()
-                    } else {
-                        TVCollectionFolderHeroView(folder: folder)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                folderHero
 
                 if isLoading {
                     BrandLoadingView(wordmarkWidth: 360)
@@ -562,37 +577,6 @@ struct CollectionFolderBrowseView: View {
             if !value.isEmpty { return value }
         }
         return nil
-    }
-
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(heading)
-                    .font(.system(size: 42, weight: .bold))
-                    .foregroundColor(.white)
-                Text(subtitleLine)
-                    .font(.system(size: 20, weight: .medium))
-                    .foregroundColor(.white.opacity(0.55))
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 60)
-        // Start below the collapsed menu rather than behind it: the title was
-        // drawn straight over the hamburger in the window's top-left corner.
-        #if os(macOS)
-        .padding(.top, MacMenuMetrics.headerTopInset)
-        #else
-        .padding(.top, 48)
-        #endif
-    }
-
-    private var subtitleLine: String {
-        let count = folder.sources.count
-        let catalogs = count == 1 ? "1 catalog" : "\(count) catalogs"
-        if usesRows {
-            return "\(catalogs) · Rows"
-        }
-        return catalogs
     }
 
     private var tabBar: some View {
