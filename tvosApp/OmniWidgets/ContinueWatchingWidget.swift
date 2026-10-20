@@ -60,20 +60,15 @@ struct ContinueWatchingWidgetView: View {
     var body: some View {
         Group {
             if items.isEmpty {
-                VStack(spacing: 0) {
-                    if layout != .small && layout != .rectangular {
-                        header
-                    }
-                    WidgetEmptyState(symbol: "play.circle", message: "Start watching something in Omni")
-                }
-                .padding(14)
+                WidgetEmptyState(symbol: "play.circle", message: "Start watching something in Omni")
+                    .padding(14)
             } else {
                 switch layout {
-                case .small: small
+                case .small: hero(items[0], titleSize: 16).widgetURL(items[0].deepLinkURL)
                 case .medium: medium
-                case .large: stacked(rows: 3)
+                case .large: stacked(heroShare: 0.5, rows: 2)
+                case .extraLargePortrait: stacked(heroShare: 0.36, rows: 5)
                 case .extraLarge: wide
-                case .extraLargePortrait: stacked(rows: 6)
                 case .rectangular: rectangular
                 }
             }
@@ -82,109 +77,46 @@ struct ContinueWatchingWidgetView: View {
         .omniWidgetBackground(layout)
     }
 
-    private var header: some View {
-        WidgetHeader(
-            symbol: "play.fill",
-            title: "Continue Watching",
-            chip: items.count == 1 ? "1 title" : "\(items.count) titles"
-        )
-    }
+    // MARK: Layouts
 
-    // MARK: Small: the latest, full bleed
-
-    private var small: some View {
-        let item = items[0]
-        return ZStack(alignment: .bottomLeading) {
-            WidgetArtwork(source: item.backdropURL, fallback: item.imageURL)
-            LinearGradient(
-                colors: [.black.opacity(0.35), .clear, .black.opacity(0.9)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            VStack(alignment: .leading, spacing: 4) {
-                WidgetPill(text: "Continue", highlighted: true)
-                Spacer(minLength: 0)
-                Text(item.title)
-                    .font(.system(size: 16, weight: .heavy))
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.8)
-                if let meta = Self.meta(item) {
-                    Text(meta)
-                        .font(.system(size: 10, weight: .bold))
-                        .tracking(0.4)
-                        .foregroundStyle(OmniWidgetStyle.secondary)
-                        .lineLimit(1)
-                }
-                if let progress = item.progress {
-                    WidgetProgressBar(value: progress).padding(.top, 2)
-                }
-            }
-            .padding(12)
-        }
-        .widgetURL(item.deepLinkURL)
-    }
-
-    // MARK: Medium: a shelf of posters
-
+    /// Medium: the latest beside the next two.
     private var medium: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            header
-            HStack(alignment: .top, spacing: 8) {
-                ForEach(items.prefix(4), id: \.contentId) { item in
-                    Link(destination: item.deepLinkURL ?? URL(string: "nuvio-tv://")!) {
-                        VStack(spacing: 5) {
-                            WidgetArtwork(source: item.imageURL, fallback: item.backdropURL)
-                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .strokeBorder(.white.opacity(0.08), lineWidth: 1)
-                                )
-                            WidgetProgressBar(value: item.progress ?? 0)
-                                .opacity(item.progress == nil ? 0 : 1)
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                ForEach(0..<max(0, 4 - items.count), id: \.self) { _ in
-                    Color.clear.frame(maxWidth: .infinity)
-                }
-            }
-            .frame(maxHeight: .infinity)
+        HStack(spacing: 0) {
+            heroLink(items[0], titleSize: 15)
+                .frame(maxWidth: .infinity)
+            rows(Array(items.dropFirst().prefix(2)))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity)
+                .environment(\.widgetRowCompact, true)
         }
-        .padding(14)
     }
 
-    // MARK: Large and Extra Large Portrait: the latest up top, the rest below
-
-    private func stacked(rows: Int) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            header
-            hero(items[0])
-                .frame(maxHeight: .infinity)
-                .layoutPriority(1)
-            if items.count > 1 {
-                list(Array(items.dropFirst().prefix(rows)))
-                    .fixedSize(horizontal: false, vertical: true)
+    /// Large and Extra Large Portrait: the latest across the top, the rest
+    /// listed under it.
+    private func stacked(heroShare: CGFloat, rows count: Int) -> some View {
+        GeometryReader { proxy in
+            VStack(spacing: 0) {
+                heroLink(items[0], titleSize: 19)
+                    .frame(height: proxy.size.height * heroShare)
+                rows(Array(items.dropFirst().prefix(count)), slots: count)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
             }
         }
-        .padding(14)
     }
 
-    // MARK: Extra Large (Mac): the latest beside the rest
-
+    /// Extra Large (Mac): the latest filling the left half, top to bottom; the
+    /// next four evenly down the right.
     private var wide: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            header
-            HStack(spacing: 12) {
-                hero(items[0])
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if items.count > 1 {
-                    list(Array(items.dropFirst().prefix(5)))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                }
-            }
+        HStack(spacing: 0) {
+            heroLink(items[0], titleSize: 24)
+                .frame(maxWidth: .infinity)
+            rows(Array(items.dropFirst().prefix(4)), slots: 4)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity)
         }
-        .padding(16)
     }
 
     // MARK: Lock Screen
@@ -208,88 +140,56 @@ struct ContinueWatchingWidgetView: View {
 
     // MARK: Parts
 
-    /// The latest title as a lit panel: artwork, title, where you are, and
-    /// a resume pill.
-    private func hero(_ item: TopShelfEntry) -> some View {
+    private func hero(_ item: TopShelfEntry, titleSize: CGFloat) -> some View {
+        WidgetHero(
+            title: item.title,
+            meta: Self.meta(item),
+            progress: item.progress,
+            art: item.backdropURL,
+            fallback: item.imageURL,
+            titleSize: titleSize
+        )
+    }
+
+    private func heroLink(_ item: TopShelfEntry, titleSize: CGFloat) -> some View {
         Link(destination: item.deepLinkURL ?? URL(string: "nuvio-tv://")!) {
-            ZStack(alignment: .bottomLeading) {
-                WidgetArtwork(source: item.backdropURL, fallback: item.imageURL)
-                LinearGradient(
-                    colors: [.clear, .black.opacity(0.25), .black.opacity(0.88)],
-                    startPoint: .top,
-                    endPoint: .bottom
+            hero(item, titleSize: titleSize)
+        }
+    }
+
+    /// The list. With `slots`, rows keep the height of a full list even when
+    /// there are fewer titles, so a short list sits at the top rather than
+    /// stretching.
+    private func rows(_ list: [TopShelfEntry], slots: Int? = nil) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(list.enumerated()), id: \.element.contentId) { index, item in
+                WidgetRow(
+                    title: item.title,
+                    meta: Self.meta(item),
+                    progress: item.progress,
+                    art: item.backdropURL,
+                    fallback: item.imageURL,
+                    isLast: index == list.count - 1,
+                    url: item.deepLinkURL
                 )
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        WidgetPill(text: item.progress == nil ? "Up next" : "Resume", highlighted: true)
-                        Spacer()
-                    }
-                    Spacer(minLength: 0)
-                    Text(item.title)
-                        .font(.system(size: 20, weight: .heavy))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                    if let meta = Self.meta(item) {
-                        Text(meta)
-                            .font(.system(size: 11, weight: .bold))
-                            .tracking(0.4)
-                            .foregroundStyle(OmniWidgetStyle.secondary)
-                            .lineLimit(1)
-                    }
-                    if let progress = item.progress {
-                        WidgetProgressBar(value: progress, height: 4).padding(.top, 3)
-                    }
-                }
-                .padding(12)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(.white.opacity(0.08), lineWidth: 1)
-            )
-        }
-    }
-
-    /// The rest, as rows inside a panel.
-    private func list(_ rows: [TopShelfEntry]) -> some View {
-        WidgetPanel(padding: 8) {
-            VStack(spacing: 6) {
-                ForEach(rows, id: \.contentId) { item in
-                    Link(destination: item.deepLinkURL ?? URL(string: "nuvio-tv://")!) {
-                        HStack(spacing: 10) {
-                            WidgetArtwork(source: item.backdropURL, fallback: item.imageURL)
-                                .frame(width: 64, height: 36)
-                                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(item.title)
-                                    .font(.system(size: 13, weight: .bold))
-                                    .lineLimit(1)
-                                HStack(spacing: 8) {
-                                    if let meta = Self.meta(item) {
-                                        Text(meta)
-                                            .font(.system(size: 10, weight: .semibold))
-                                            .foregroundStyle(OmniWidgetStyle.tertiary)
-                                            .lineLimit(1)
-                                    }
-                                    if let progress = item.progress {
-                                        WidgetProgressBar(value: progress, height: 2.5)
-                                            .frame(maxWidth: 70)
-                                    }
-                                }
-                            }
-                            Spacer(minLength: 0)
-                        }
-                        .frame(height: 38)
-                    }
+            if let slots, list.count < slots {
+                ForEach(list.count..<slots, id: \.self) { _ in
+                    Color.clear.frame(maxHeight: .infinity)
                 }
             }
         }
     }
 
-    /// "S2 · E3 · 22M LEFT", in the card's caps.
+    /// The capitals line, as the Apple TV app writes it: "NEXT · S2, E1" for
+    /// an episode not yet started, else where you are and what is left.
     private static func meta(_ item: TopShelfEntry) -> String? {
-        item.subtitle?
-            .replacingOccurrences(of: "  ·  ", with: " · ")
-            .uppercased()
+        guard let subtitle = item.subtitle else { return item.progress == nil ? "Next" : nil }
+        let parts = subtitle.components(separatedBy: "  ·  ")
+        let episode = parts.first.map { $0.replacingOccurrences(of: " · ", with: ", ") }
+        if item.progress == nil {
+            return ["Next", episode].compactMap { $0 }.joined(separator: " · ")
+        }
+        return ([episode] + parts.dropFirst().map { Optional($0) }).compactMap { $0 }.joined(separator: " · ")
     }
 }

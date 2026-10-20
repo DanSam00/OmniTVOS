@@ -53,103 +53,160 @@ enum OmniWidgetLayout {
 
 // MARK: - Look
 
-/// Omni's widget look: a deep navy card lit by the theme colour, a clear
-/// header, inset panels and large type for what matters.
+/// Omni's widget look, after the Apple TV app's: the artwork full bleed at the
+/// top with the wordmark in its corner, the title and a small capitals line
+/// over its foot, and a plain list beneath on a near-black card.
 enum OmniWidgetStyle {
-    /// The theme colour chosen in the app's Settings, else white.
+    /// The theme colour chosen in the app's Settings, else white. Used
+    /// sparingly: progress, and what is on today.
     static var accent: Color {
         let rgb = WidgetTheme.accentComponents
         return Color(red: rgb.red, green: rgb.green, blue: rgb.blue)
     }
 
-    static let ink = Color(red: 0.07, green: 0.08, blue: 0.13)
-    static let navy = Color(red: 0.11, green: 0.13, blue: 0.21)
-    static let secondary = Color.white.opacity(0.62)
-    static let tertiary = Color.white.opacity(0.42)
+    static let card = Color(red: 0.11, green: 0.11, blue: 0.12)
+    static let secondary = Color.white.opacity(0.6)
+    static let separator = Color.white.opacity(0.12)
 
-    /// The card itself: navy, darker at the foot, with a soft glow of the
-    /// theme colour from the top corner.
-    static var background: some View {
-        ZStack {
-            LinearGradient(colors: [navy, ink], startPoint: .top, endPoint: .bottom)
-            RadialGradient(
-                colors: [accent.opacity(0.22), .clear],
-                center: .topLeading,
-                startRadius: 0,
-                endRadius: 260
-            )
+    static var background: some View { card }
+
+    /// The white Omni wordmark, shipped inside the extension.
+    static let wordmark: Image? = {
+        guard let url = Bundle.main.url(forResource: "OmniWordmark", withExtension: "png"),
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        return Image(decorative: image, scale: 2)
+    }()
+}
+
+/// The wordmark for a hero's corner.
+struct WidgetWordmark: View {
+    var height: CGFloat = 14
+
+    var body: some View {
+        if let wordmark = OmniWidgetStyle.wordmark {
+            wordmark
+                .resizable()
+                .scaledToFit()
+                .frame(height: height)
+                .shadow(color: .black.opacity(0.5), radius: 4)
         }
     }
 }
 
-/// The header every Omni widget opens with: an icon tile, the title in
-/// tracked capitals, and a chip on the right.
-struct WidgetHeader: View {
-    let symbol: String
+/// The lead title: artwork edge to edge, the wordmark in the top corner, the
+/// title and its capitals line over a dark foot.
+struct WidgetHero: View {
     let title: String
-    var chip: String? = nil
+    let meta: String?
+    var metaHighlighted = false
+    var progress: Double? = nil
+    let art: String?
+    var fallback: String? = nil
+    var titleSize: CGFloat = 18
+    var showsWordmark = true
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: symbol)
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(OmniWidgetStyle.accent)
-                .frame(width: 22, height: 22)
-                .background(OmniWidgetStyle.accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            Text(title.uppercased())
-                .font(.system(size: 11, weight: .heavy))
-                .tracking(1.2)
-                .foregroundStyle(.white.opacity(0.9))
-                .lineLimit(1)
-            Spacer(minLength: 4)
-            if let chip {
-                Text(chip)
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(OmniWidgetStyle.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(.white.opacity(0.08), in: Capsule())
+        ZStack(alignment: .bottomLeading) {
+            WidgetArtwork(source: art, fallback: fallback)
+            LinearGradient(
+                colors: [.black.opacity(0.25), .clear, .black.opacity(0.78)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            VStack(alignment: .leading, spacing: 3) {
+                Spacer(minLength: 0)
+                Text(title)
+                    .font(.system(size: titleSize, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                if let meta {
+                    WidgetMeta(text: meta, highlighted: metaHighlighted)
+                }
+                if let progress {
+                    WidgetProgressBar(value: progress, height: 3)
+                        .frame(maxWidth: 160)
+                        .padding(.top, 3)
+                }
+            }
+            .padding(14)
+        }
+        .overlay(alignment: .topTrailing) {
+            if showsWordmark {
+                WidgetWordmark().padding(12)
             }
         }
-        .frame(height: 22)
+        .foregroundStyle(.white)
     }
 }
 
-/// An inset panel: a slightly lighter, finely edged block inside the card.
-struct WidgetPanel<Content: View>: View {
-    var padding: CGFloat = 10
-    @ViewBuilder let content: () -> Content
-
-    var body: some View {
-        content()
-            .padding(padding)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(
-                LinearGradient(colors: [.white.opacity(0.07), .white.opacity(0.03)], startPoint: .top, endPoint: .bottom),
-                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(.white.opacity(0.07), lineWidth: 1)
-            )
-    }
-}
-
-/// A small capsule label: TODAY, TOMORROW, RESUME.
-struct WidgetPill: View {
+/// The small capitals line: NEXT · S2, E1.
+struct WidgetMeta: View {
     let text: String
     var highlighted = false
+    var size: CGFloat = 11
 
     var body: some View {
         Text(text.uppercased())
-            .font(.system(size: 9, weight: .heavy))
-            .tracking(0.8)
-            .foregroundStyle(highlighted ? OmniWidgetStyle.ink : .white.opacity(0.8))
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(highlighted ? AnyShapeStyle(OmniWidgetStyle.accent) : AnyShapeStyle(.white.opacity(0.1)), in: Capsule())
+            .font(.system(size: size, weight: .semibold))
+            .tracking(0.6)
+            .foregroundStyle(highlighted ? OmniWidgetStyle.accent : OmniWidgetStyle.secondary)
             .lineLimit(1)
-            .fixedSize()
+    }
+}
+
+extension EnvironmentValues {
+    /// Medium widgets: rows half a widget wide, so a smaller thumbnail.
+    @Entry var widgetRowCompact = false
+}
+
+/// One row of the list: a 16:9 thumbnail, the title and its capitals line,
+/// and a hairline under the text unless it is the last.
+struct WidgetRow: View {
+    let title: String
+    let meta: String?
+    var metaHighlighted = false
+    var progress: Double? = nil
+    let art: String?
+    var fallback: String? = nil
+    var isLast = false
+    var url: URL?
+    @Environment(\.widgetRowCompact) private var compact
+
+    var body: some View {
+        Link(destination: url ?? URL(string: "nuvio-tv://")!) {
+            HStack(spacing: compact ? 10 : 14) {
+                // Capped so the title keeps most of a narrow list's width.
+                WidgetArtwork(source: art, fallback: fallback)
+                    .aspectRatio(16 / 9, contentMode: .fit)
+                    .frame(maxWidth: compact ? 56 : 108)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .padding(.vertical, 6)
+                VStack(alignment: .leading, spacing: 3) {
+                    Spacer(minLength: 0)
+                    Text(title)
+                        .font(.system(size: compact ? 13 : 15, weight: .semibold))
+                        .lineLimit(1)
+                    if let meta {
+                        WidgetMeta(text: meta, highlighted: metaHighlighted, size: 10)
+                    }
+                    if let progress {
+                        WidgetProgressBar(value: progress, height: 2.5)
+                            .frame(maxWidth: 90)
+                            .padding(.top, 2)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .overlay(alignment: .bottom) {
+                    if !isLast {
+                        Rectangle().fill(OmniWidgetStyle.separator).frame(height: 0.5)
+                    }
+                }
+            }
+            .frame(maxHeight: .infinity)
+        }
+        .foregroundStyle(.white)
     }
 }
 
@@ -173,7 +230,7 @@ struct WidgetArtwork: View {
                 .scaledToFill()
         } else {
             LinearGradient(
-                colors: [OmniWidgetStyle.accent.opacity(0.25), OmniWidgetStyle.navy],
+                colors: [Color.white.opacity(0.10), Color.white.opacity(0.04)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
