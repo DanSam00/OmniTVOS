@@ -565,6 +565,9 @@ struct ContentView: View {
             TVHomeDebugTrace.observeFocusEngine()
             #endif
             setupPictureInPicture()
+            CommunityCollections.tokenProvider = { [authManager] in
+                await authManager.validSessionForSync()?.accessToken
+            }
             #if os(iOS)
             PhoneMiniPlayerState.shared.minimize = { minimizePhonePlayer() }
             PhoneMiniPlayerState.shared.expand = { expandPhoneMiniPlayer() }

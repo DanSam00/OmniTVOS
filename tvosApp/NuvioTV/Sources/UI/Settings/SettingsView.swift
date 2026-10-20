@@ -10965,6 +10965,15 @@ private struct CollectionsSettingsSection: View {
         #endif
     }
 
+    /// The community browser is the iPhone's for now.
+    private static var hasCommunityBrowser: Bool {
+        #if os(iOS)
+        true
+        #else
+        false
+        #endif
+    }
+
     private static var noCollectionsText: String {
         #if os(iOS) || os(macOS)
         L10n.string("settings_no_collections_builder", fallback: "No collections yet. Build them with Collection Builder on nuvio.tv, or Import a JSON backup.")
@@ -10981,6 +10990,7 @@ private struct CollectionsSettingsSection: View {
                 onExport: exportCollections,
                 onImport: { activeSheet = .importCollections },
                 onTemplates: { activeSheet = .templates },
+                onCommunity: Self.hasCommunityBrowser ? { activeSheet = .community } : nil,
                 onOpenBuilder: Self.collectionBuilderURL.map { url in { openURL(url) } }
             )
 
@@ -11029,6 +11039,15 @@ private struct CollectionsSettingsSection: View {
                         let title = (payload["title"] as? String) ?? "Collection"
                         showToast("Added \(title) to Home")
                     }
+                case .community:
+                    #if os(iOS)
+                    PhoneCommunityCollectionsSheet(accentColor: accentColor) { rows, title in
+                        importCollections(rows)
+                        showToast("Added \(title)")
+                    }
+                    #else
+                    EmptyView()
+                    #endif
                 case .editor(let index):
                     CollectionEditorSheet(
                         accentColor: accentColor,
@@ -11141,12 +11160,14 @@ private struct CollectionsSettingsSection: View {
 private enum CollectionsSheet: Identifiable {
     case importCollections
     case templates
+    case community
     case editor(Int?)
 
     var id: String {
         switch self {
         case .importCollections: return "import"
         case .templates: return "templates"
+        case .community: return "community"
         case .editor(let index): return "editor-\(index.map(String.init) ?? "new")"
         }
     }
@@ -11170,10 +11191,26 @@ private struct CollectionsActionBar: View {
     let onExport: () -> Void
     let onImport: () -> Void
     let onTemplates: () -> Void
+    /// nil where there is no community browser.
+    let onCommunity: (() -> Void)?
     /// nil where there is no browser to open (Apple TV).
     let onOpenBuilder: (() -> Void)?
 
     var body: some View {
+        #if os(iOS)
+        // Two columns of phone-sized buttons: the TV's row of wide capsules
+        // ran off the screen and pushed the rest of the section with it.
+        VStack(spacing: 10) {
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                phoneButton("Community", systemImage: "person.3", prominent: true, action: onCommunity)
+                phoneButton("Templates", systemImage: "rectangle.stack.badge.plus", action: onTemplates)
+                phoneButton(L10n.string("action_import", fallback: "Import"), systemImage: "square.and.arrow.down", action: onImport)
+                phoneButton(L10n.string("tvos_settings_export", fallback: "Export"), systemImage: "square.and.arrow.up", disabled: !canExport, action: onExport)
+            }
+            phoneButton(L10n.string("settings_collection_builder", fallback: "Collection Builder"), systemImage: "arrow.up.right.square", action: onOpenBuilder)
+        }
+        .padding(.vertical, 12)
+        #else
         HStack(spacing: 14) {
             CollectionsGlassButton(
                 title: L10n.string("tvos_settings_export", fallback: "Export"),
@@ -11208,7 +11245,35 @@ private struct CollectionsActionBar: View {
         }
         .padding(28)
         .frame(maxWidth: .infinity, alignment: .center)
+        #endif
     }
+
+    #if os(iOS)
+    @ViewBuilder
+    private func phoneButton(
+        _ title: String,
+        systemImage: String,
+        prominent: Bool = false,
+        disabled: Bool = false,
+        action: (() -> Void)?
+    ) -> some View {
+        if let action {
+            Button(action: action) {
+                Label(title, systemImage: systemImage)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .foregroundStyle(prominent ? Color.black : Color.white)
+                    .background(prominent ? Color.white : Color.white.opacity(0.12), in: Capsule())
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(disabled)
+            .opacity(disabled ? 0.4 : 1)
+        }
+    }
+    #endif
 }
 
 /// Settings-style capsule button — flat glass fill + focus outline (matches

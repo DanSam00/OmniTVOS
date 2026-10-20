@@ -66,6 +66,15 @@ struct PhoneMainTabView: View {
                     PhoneSearchView { onOpenDetails($0.id, $0.type) }
                 }
             }
+            #if os(iOS)
+            // A new kids profile's starter collections (see CommunityCollections).
+            Color.clear
+                .frame(width: 0, height: 0)
+                .task(id: activeProfile?.id) {
+                    guard PhoneKidsMode.isActive else { return }
+                    await CommunityCollections.seedKidsProfileIfNeeded()
+                }
+            #endif
             page(.guide) {
                 NavigationStack {
                     IPTVGuideView(isActive: true) { onOpenDetails($0, $1) }

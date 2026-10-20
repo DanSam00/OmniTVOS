@@ -795,6 +795,11 @@ public class ProfileViewModel: ObservableObject {
                 // Set explicitly, not inherited: the copied settings carry
                 // whatever the current profile had.
                 ProfileSettings.store(for: newProfile.id).set(isKids, forKey: SettingsKey.kidsProfile)
+                // A new kids profile starts with a couple of the community's
+                // collections for children, added the first time it is used.
+                if isKids {
+                    ProfileSettings.store(for: newProfile.id).set(true, forKey: CommunityCollections.kidsSeedPendingKey)
+                }
                 if let customAvatarPhoto {
                     OmniCustomAvatar.set(customAvatarPhoto, forProfile: newProfile.id)
                 }
