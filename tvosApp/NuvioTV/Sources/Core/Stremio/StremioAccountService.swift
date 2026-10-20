@@ -315,11 +315,7 @@ enum StremioAccountService {
             let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 throw ServiceError.transport(
-                    L10n.format(
-                        "stremio_error_status",
-                        fallback: "Stremio returned HTTP %@.",
-                        String(http.statusCode)
-                    )
+                    ServiceErrorText.describe(status: http.statusCode, service: "Stremio")
                 )
             }
             return data

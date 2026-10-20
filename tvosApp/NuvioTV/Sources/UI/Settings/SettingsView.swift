@@ -5069,7 +5069,7 @@ private struct PremiumizeApiKeySheet: View {
             }
             guard (200...299).contains(http.statusCode) else {
                 validationFailed = true
-                statusMessage = "Premiumize returned HTTP \(http.statusCode)."
+                statusMessage = ServiceErrorText.describe(status: http.statusCode, service: "Premiumize")
                 return
             }
             // Soft-check status field when present.
@@ -13189,7 +13189,7 @@ private struct ImportCollectionsSheet: View {
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                errorMessage = "HTTP \(http.statusCode)"
+                errorMessage = ServiceErrorText.describe(status: http.statusCode, service: url.host ?? "The server")
                 return
             }
             guard let rows = parseCollections(data: data) else {

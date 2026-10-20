@@ -1235,7 +1235,7 @@ enum GeminiSubtitleTranslator {
             let serviceError = try? JSONDecoder().decode(ErrorBody.self, from: data)
             throw AISubtitleTranslationError.service(
                 statusCode: http.statusCode,
-                message: serviceError?.error?.message ?? "Gemini request failed (HTTP \(http.statusCode)).",
+                message: serviceError?.error?.message ?? ServiceErrorText.describe(status: http.statusCode, service: "Gemini"),
                 retryAfter: retryAfter(from: http)
             )
         }
@@ -1458,7 +1458,7 @@ enum OpenRouterSubtitleTranslator {
             let serviceError = try? JSONDecoder().decode(ErrorBody.self, from: data)
             throw AISubtitleTranslationError.service(
                 statusCode: http.statusCode,
-                message: serviceError?.error?.message ?? "OpenRouter request failed (HTTP \(http.statusCode)).",
+                message: serviceError?.error?.message ?? ServiceErrorText.describe(status: http.statusCode, service: "OpenRouter"),
                 retryAfter: retryAfter(from: http)
             )
         }

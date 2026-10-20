@@ -244,7 +244,7 @@ struct JellyfinClient {
             if http.statusCode == 401 {
                 throw ClientError(message: L10n.string("jellyfin_error_unauthorized", fallback: "Invalid API key or credentials"))
             }
-            throw ClientError(message: L10n.format("jellyfin_error_status", fallback: "Server returned status %d", http.statusCode))
+            throw ClientError(message: ServiceErrorText.describe(status: http.statusCode, service: "The Jellyfin server"))
         }
     }
 }

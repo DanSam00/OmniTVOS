@@ -1138,6 +1138,18 @@ extension DownloadManager: URLSessionDownloadDelegate {
         }
     }
 
+    /// Why the source sent an error page instead of the file, in plain words.
+    nonisolated static func downloadRefusal(status: Int) -> String {
+        switch status {
+        case 401, 403:
+            return "The source refused the download. Try another source."
+        case 404, 410:
+            return "The file is no longer at the source. Try another source."
+        default:
+            return ServiceErrorText.describe(status: status, service: "The source")
+        }
+    }
+
     /// The file has to be moved before this returns: the system deletes it
     /// straight after.
     nonisolated func urlSession(
@@ -1149,7 +1161,7 @@ extension DownloadManager: URLSessionDownloadDelegate {
         if let http = downloadTask.response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             // An error page, not the film.
             Task { @MainActor in
-                self.finished(key, fileName: nil, bytes: 0, error: "The source refused the download (HTTP \(http.statusCode)).")
+                self.finished(key, fileName: nil, bytes: 0, error: Self.downloadRefusal(status: http.statusCode))
             }
             return
         }

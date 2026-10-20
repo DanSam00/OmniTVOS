@@ -881,7 +881,7 @@ enum StreamBadgeSettingsStore {
         }
         let (data, response) = try await URLSession.shared.data(from: url)
         if let response = response as? HTTPURLResponse, !(200..<300).contains(response.statusCode) {
-            throw NSError(domain: "NuvioStreamBadges", code: response.statusCode, userInfo: [NSLocalizedDescriptionKey: "Badge server returned HTTP \(response.statusCode)."])
+            throw NSError(domain: "NuvioStreamBadges", code: response.statusCode, userInfo: [NSLocalizedDescriptionKey: ServiceErrorText.describe(status: response.statusCode, service: "The badge server")])
         }
         let imported = try StreamBadgeRulesParser.parse(sourceUrl: normalizedUrl, data: data)
         let current = snapshot.rules

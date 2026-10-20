@@ -28,7 +28,7 @@ enum CollectionSourceError: LocalizedError {
         case .unsupportedProvider(let provider):
             return "The collection source provider “\(provider)” is not supported."
         case .requestFailed(let provider, let status):
-            return "\(provider) returned HTTP \(status)."
+            return ServiceErrorText.describe(status: status, service: provider)
         case .invalidResponse(let provider):
             return "\(provider) returned data the app could not read."
         }
