@@ -651,7 +651,7 @@ struct ContentView: View {
             switch phase {
             case .background:
                 backgroundedAt = Date()
-                #if os(iOS)
+                #if os(iOS) || os(macOS)
                 WidgetTheme.publishFromSettings()
                 #endif
             case .active:
@@ -663,6 +663,8 @@ struct ContentView: View {
                 #endif
                 #if os(iOS)
                 DownloadLiveActivity.shared.start()
+                #endif
+                #if os(iOS) || os(macOS)
                 WidgetTheme.publishFromSettings()
                 #endif
             default:
@@ -8441,8 +8443,10 @@ struct TVHomeView: View {
         }
 
         continueWatching = items
-        #if os(tvOS)
+        // The Apple TV's Top Shelf, and the Mac's Continue Watching widget.
         ContinueWatchingStore.publishHomeRowToTopShelf(items)
+        #if os(macOS)
+        WidgetTheme.publishFromSettings()
         #endif
         // The full series episode guide remains on the source item for resume,
         // episode lookup, and playback. The row cards only need presentation

@@ -1,3 +1,4 @@
+#if os(iOS)
 import ActivityKit
 import SwiftUI
 import WidgetKit
@@ -10,7 +11,7 @@ struct DownloadsLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: DownloadActivityAttributes.self) { context in
             DownloadsLockScreenView(state: context.state)
-                .activityBackgroundTint(OmniWidgetStyle.background.opacity(0.92))
+                .activityBackgroundTint(OmniWidgetStyle.ink.opacity(0.94))
                 .activitySystemActionForegroundColor(.white)
         } dynamicIsland: { context in
             let state = context.state
@@ -128,3 +129,4 @@ private enum DownloadText {
         return parts.joined(separator: " · ")
     }
 }
+#endif

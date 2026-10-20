@@ -460,6 +460,13 @@
 		OWGT00000000000000000B05 /* NuvioTV/Sources/Core/TopShelf/TopShelfFeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D300390000000000000039 /* NuvioTV/Sources/Core/TopShelf/TopShelfFeed.swift */; };
 		OWGT00000000000000000B06 /* NuvioTV/Sources/Core/Widgets/OmniWidgetShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = WGSH00000000000000000001 /* NuvioTV/Sources/Core/Widgets/OmniWidgetShared.swift */; };
 		OWGT00000000000000000B07 /* OmniWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = OWGT00000000000000000A00 /* OmniWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		MWGT00000000000000000B01 /* OmniWidgets/OmniWidgetsBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = OWGT00000000000000000A01 /* OmniWidgets/OmniWidgetsBundle.swift */; };
+		MWGT00000000000000000B02 /* OmniWidgets/ContinueWatchingWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = OWGT00000000000000000A02 /* OmniWidgets/ContinueWatchingWidget.swift */; };
+		MWGT00000000000000000B03 /* OmniWidgets/UpcomingEpisodesWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = OWGT00000000000000000A03 /* OmniWidgets/UpcomingEpisodesWidget.swift */; };
+		MWGT00000000000000000B04 /* OmniWidgets/DownloadsLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = OWGT00000000000000000A04 /* OmniWidgets/DownloadsLiveActivity.swift */; };
+		MWGT00000000000000000B05 /* NuvioTV/Sources/Core/TopShelf/TopShelfFeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D300390000000000000039 /* NuvioTV/Sources/Core/TopShelf/TopShelfFeed.swift */; };
+		MWGT00000000000000000B06 /* NuvioTV/Sources/Core/Widgets/OmniWidgetShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = WGSH00000000000000000001 /* NuvioTV/Sources/Core/Widgets/OmniWidgetShared.swift */; };
+		MWGT00000000000000000B07 /* OmniWidgetsMac.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = MWGT00000000000000000A00 /* OmniWidgetsMac.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -483,6 +490,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = OWGT00000000000000000T00;
 			remoteInfo = OmniWidgets;
+		};
+		MWGT00000000000000000D01 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 83CBB9F71A601CBA00E9B192 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = MWGT00000000000000000T00;
+			remoteInfo = OmniWidgetsMac;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -515,6 +529,17 @@
 			dstSubfolderSpec = 13;
 			files = (
 				OWGT00000000000000000B07 /* OmniWidgets.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		MWGT00000000000000000C03 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				MWGT00000000000000000B07 /* OmniWidgetsMac.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -712,6 +737,9 @@
 		OWGT00000000000000000A04 /* OmniWidgets/DownloadsLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OmniWidgets/DownloadsLiveActivity.swift; sourceTree = "<group>"; };
 		OWGT00000000000000000A05 /* OmniWidgets/Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = OmniWidgets/Info.plist; sourceTree = "<group>"; };
 		OWGT00000000000000000A06 /* OmniWidgets/OmniWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OmniWidgets/OmniWidgets.entitlements; sourceTree = "<group>"; };
+		MWGT00000000000000000A00 /* OmniWidgetsMac.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = OmniWidgetsMac.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		MWGT00000000000000000A05 /* OmniWidgets/Info-macOS.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "OmniWidgets/Info-macOS.plist"; sourceTree = "<group>"; };
+		MWGT00000000000000000A06 /* OmniWidgets/OmniWidgetsMac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OmniWidgets/OmniWidgetsMac.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -762,6 +790,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		OWGT00000000000000000C01 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		MWGT00000000000000000C01 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -846,6 +881,7 @@
 				00E356EE1AD99517003FC87E /* NuvioTVTests.xctest */,
 				7E51000000000000000000A1 /* TopShelf.appex */,
 				OWGT00000000000000000A00 /* OmniWidgets.appex */,
+				MWGT00000000000000000A00 /* OmniWidgetsMac.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -1056,6 +1092,8 @@
 				OWGT00000000000000000A04 /* OmniWidgets/DownloadsLiveActivity.swift */,
 				OWGT00000000000000000A05 /* OmniWidgets/Info.plist */,
 				OWGT00000000000000000A06 /* OmniWidgets/OmniWidgets.entitlements */,
+				MWGT00000000000000000A05 /* OmniWidgets/Info-macOS.plist */,
+				MWGT00000000000000000A06 /* OmniWidgets/OmniWidgetsMac.entitlements */,
 			);
 			name = OmniWidgets;
 			sourceTree = "<group>";
@@ -1131,10 +1169,12 @@
 				MACID0000000000000000001 /* Sources */,
 				MACID0000000000000000002 /* Frameworks */,
 				MACID0000000000000000003 /* Resources */,
+				MWGT00000000000000000C03 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				MWGT00000000000000000D00 /* PBXTargetDependency */,
 			);
 			name = Omni;
 			packageProductDependencies = (
@@ -1189,6 +1229,23 @@
 			productReference = OWGT00000000000000000A00 /* OmniWidgets.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		MWGT00000000000000000T00 /* OmniWidgetsMac */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = MWGT00000000000000000E02 /* Build configuration list for PBXNativeTarget "OmniWidgetsMac" */;
+			buildPhases = (
+				MWGT00000000000000000C00 /* Sources */,
+				MWGT00000000000000000C01 /* Frameworks */,
+				MWGT00000000000000000C02 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = OmniWidgetsMac;
+			productName = OmniWidgetsMac;
+			productReference = MWGT00000000000000000A00 /* OmniWidgetsMac.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -1203,6 +1260,9 @@
 					};
 					13B07F861A680F5B00A75B9A = {
 						LastSwiftMigration = 1250;
+					};
+					MWGT00000000000000000T00 = {
+						CreatedOnToolsVersion = 27.0;
 					};
 					OWGT00000000000000000T00 = {
 						CreatedOnToolsVersion = 27.0;
@@ -1236,6 +1296,7 @@
 				00E356ED1AD99517003FC87E /* NuvioTVTests */,
 				7E51000000000000000000A0 /* TopShelf */,
 				OWGT00000000000000000T00 /* OmniWidgets */,
+				MWGT00000000000000000T00 /* OmniWidgetsMac */,
 			);
 		};
 /* End PBXProject section */
@@ -1288,6 +1349,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		OWGT00000000000000000C02 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		MWGT00000000000000000C02 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -1811,6 +1879,19 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		MWGT00000000000000000C00 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				MWGT00000000000000000B01 /* OmniWidgets/OmniWidgetsBundle.swift in Sources */,
+				MWGT00000000000000000B02 /* OmniWidgets/ContinueWatchingWidget.swift in Sources */,
+				MWGT00000000000000000B03 /* OmniWidgets/UpcomingEpisodesWidget.swift in Sources */,
+				MWGT00000000000000000B04 /* OmniWidgets/DownloadsLiveActivity.swift in Sources */,
+				MWGT00000000000000000B05 /* NuvioTV/Sources/Core/TopShelf/TopShelfFeed.swift in Sources */,
+				MWGT00000000000000000B06 /* NuvioTV/Sources/Core/Widgets/OmniWidgetShared.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -1829,6 +1910,11 @@
 			target = OWGT00000000000000000T00 /* OmniWidgets */;
 			targetProxy = OWGT00000000000000000D01 /* PBXContainerItemProxy */;
 		};
+		MWGT00000000000000000D00 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = MWGT00000000000000000T00 /* OmniWidgetsMac */;
+			targetProxy = MWGT00000000000000000D01 /* PBXContainerItemProxy */;
+		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
@@ -1839,7 +1925,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGNING_REQUIRED = NO;
-				CURRENT_PROJECT_VERSION = 86;
+				CURRENT_PROJECT_VERSION = 87;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1847,7 +1933,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 4.0.19;
+				MARKETING_VERSION = 4.0.20;
 				PRODUCT_BUNDLE_IDENTIFIER = com.saminaden.omni.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = appletvos;
@@ -1867,7 +1953,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGNING_REQUIRED = NO;
-				CURRENT_PROJECT_VERSION = 86;
+				CURRENT_PROJECT_VERSION = 87;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1875,7 +1961,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 4.0.19;
+				MARKETING_VERSION = 4.0.20;
 				PRODUCT_BUNDLE_IDENTIFIER = com.saminaden.omni.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = appletvos;
@@ -1893,7 +1979,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = NuvioTV/NuvioTV.entitlements;
-				CURRENT_PROJECT_VERSION = 86;
+				CURRENT_PROJECT_VERSION = 87;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				ENABLE_BITCODE = NO;
 				ENABLE_TESTABILITY = YES;
@@ -1903,7 +1989,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 4.0.19;
+				MARKETING_VERSION = 4.0.20;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -1927,7 +2013,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = NuvioTV/NuvioTV.entitlements;
-				CURRENT_PROJECT_VERSION = 86;
+				CURRENT_PROJECT_VERSION = 87;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				INFOPLIST_FILE = NuvioTV/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
@@ -1935,7 +2021,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 4.0.19;
+				MARKETING_VERSION = 4.0.20;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -1957,7 +2043,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = TopShelf/TopShelf.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 86;
+				CURRENT_PROJECT_VERSION = 87;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TopShelf/Info.plist;
@@ -1966,7 +2052,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 4.0.19;
+				MARKETING_VERSION = 4.0.20;
 				PRODUCT_BUNDLE_IDENTIFIER = com.saminaden.omni.TopShelf;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = appletvos;
@@ -1983,7 +2069,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = TopShelf/TopShelf.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 86;
+				CURRENT_PROJECT_VERSION = 87;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TopShelf/Info.plist;
@@ -1992,7 +2078,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 4.0.19;
+				MARKETING_VERSION = 4.0.20;
 				PRODUCT_BUNDLE_IDENTIFIER = com.saminaden.omni.TopShelf;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = appletvos;
@@ -2120,7 +2206,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIconMac;
 				CODE_SIGN_ENTITLEMENTS = NuvioTV/Omni-macOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 86;
+				CURRENT_PROJECT_VERSION = 87;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				ENABLE_HARDENED_RUNTIME = NO;
 				INFOPLIST_FILE = "NuvioTV/Info-macOS.plist";
@@ -2130,7 +2216,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 4.0.19;
+				MARKETING_VERSION = 4.0.20;
 				PRODUCT_BUNDLE_IDENTIFIER = com.saminaden.omni.mac;
 				PRODUCT_NAME = Omni;
 				SDKROOT = macosx;
@@ -2146,7 +2232,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIconMac;
 				CODE_SIGN_ENTITLEMENTS = NuvioTV/Omni-macOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 86;
+				CURRENT_PROJECT_VERSION = 87;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				ENABLE_HARDENED_RUNTIME = NO;
 				INFOPLIST_FILE = "NuvioTV/Info-macOS.plist";
@@ -2156,7 +2242,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 4.0.19;
+				MARKETING_VERSION = 4.0.20;
 				PRODUCT_BUNDLE_IDENTIFIER = com.saminaden.omni.mac;
 				PRODUCT_NAME = Omni;
 				SDKROOT = macosx;
@@ -2172,7 +2258,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIconiOS;
 				CODE_SIGN_ENTITLEMENTS = "NuvioTV/Omni-iOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 86;
+				CURRENT_PROJECT_VERSION = 87;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				INFOPLIST_FILE = "NuvioTV/Info-iOS.plist";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
@@ -2180,7 +2266,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 4.0.19;
+				MARKETING_VERSION = 4.0.20;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2205,7 +2291,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIconiOS;
 				CODE_SIGN_ENTITLEMENTS = "NuvioTV/Omni-iOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 86;
+				CURRENT_PROJECT_VERSION = 87;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				INFOPLIST_FILE = "NuvioTV/Info-iOS.plist";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
@@ -2213,7 +2299,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 4.0.19;
+				MARKETING_VERSION = 4.0.20;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2236,7 +2322,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = OmniWidgets/OmniWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 86;
+				CURRENT_PROJECT_VERSION = 87;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OmniWidgets/Info.plist;
@@ -2246,7 +2332,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 4.0.19;
+				MARKETING_VERSION = 4.0.20;
 				PRODUCT_BUNDLE_IDENTIFIER = com.saminaden.omni.ios.Widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -2265,7 +2351,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = OmniWidgets/OmniWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 86;
+				CURRENT_PROJECT_VERSION = 87;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OmniWidgets/Info.plist;
@@ -2275,7 +2361,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 4.0.19;
+				MARKETING_VERSION = 4.0.20;
 				PRODUCT_BUNDLE_IDENTIFIER = com.saminaden.omni.ios.Widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -2284,6 +2370,61 @@
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		MWGT00000000000000000E00 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = OmniWidgets/OmniWidgetsMac.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 87;
+				DEVELOPMENT_TEAM = 2528NP47CP;
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "OmniWidgets/Info-macOS.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 4.0.20;
+				PRODUCT_BUNDLE_IDENTIFIER = com.saminaden.omni.mac.Widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		MWGT00000000000000000E01 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = OmniWidgets/OmniWidgetsMac.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 87;
+				DEVELOPMENT_TEAM = 2528NP47CP;
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "OmniWidgets/Info-macOS.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 4.0.20;
+				PRODUCT_BUNDLE_IDENTIFIER = com.saminaden.omni.mac.Widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
 		};
@@ -2349,6 +2490,15 @@
 			buildConfigurations = (
 				OWGT00000000000000000E00 /* Debug */,
 				OWGT00000000000000000E01 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		MWGT00000000000000000E02 /* Build configuration list for PBXNativeTarget "OmniWidgetsMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				MWGT00000000000000000E00 /* Debug */,
+				MWGT00000000000000000E01 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

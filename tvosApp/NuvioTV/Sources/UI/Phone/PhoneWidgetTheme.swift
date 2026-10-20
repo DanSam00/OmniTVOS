@@ -1,7 +1,11 @@
-#if os(iOS)
+#if os(iOS) || os(macOS)
 import SwiftUI
-import UIKit
 import WidgetKit
+#if os(iOS)
+import UIKit
+#else
+import AppKit
+#endif
 
 extension WidgetTheme {
     /// Copies the active profile's theme colour for the widgets and redraws
@@ -11,7 +15,12 @@ extension WidgetTheme {
     static func publishFromSettings() {
         let theme = ProfileSettings.current.string(forKey: SettingsKey.theme) ?? SettingsAccent.white.rawValue
         var red: CGFloat = 1, green: CGFloat = 1, blue: CGFloat = 1, alpha: CGFloat = 1
+        #if os(iOS)
         UIColor(SettingsAccent.color(for: theme)).getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        #else
+        (NSColor(SettingsAccent.color(for: theme)).usingColorSpace(.sRGB) ?? .white)
+            .getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        #endif
         if store(red: Double(red), green: Double(green), blue: Double(blue)) {
             WidgetCenter.shared.reloadAllTimelines()
         }

@@ -5,7 +5,7 @@ import UIKit
 #if canImport(TVServices)
 import TVServices
 #endif
-#if os(iOS) && canImport(WidgetKit)
+#if (os(iOS) || os(macOS)) && canImport(WidgetKit)
 import WidgetKit
 #endif
 
@@ -26,6 +26,13 @@ import WidgetKit
 /// different bundle ID keep their feed. The iPhone app's group is therefore
 /// `group.com.saminaden.omni.ios`, apart from the Apple TV's.
 public let topShelfAppGroupID: String = {
+    #if os(macOS)
+    // A Mac group is team-prefixed (it needs no provisioning profile there);
+    // both the app and its widget extension carry it in their Info.plist.
+    if let group = Bundle.main.object(forInfoDictionaryKey: "OmniAppGroup") as? String, !group.isEmpty {
+        return group
+    }
+    #endif
     var bundleID = Bundle.main.bundleIdentifier ?? "com.nuvio.app.tv"
     for suffix in [".TopShelf", ".Widgets"] where bundleID.hasSuffix(suffix) {
         bundleID = String(bundleID.dropLast(suffix.count))
@@ -112,7 +119,7 @@ public enum TopShelfFeedStore {
 
     /// Called by the app whenever Continue Watching changes.
     public static func write(_ entries: [TopShelfEntry]) {
-        #if os(iOS)
+        #if os(iOS) || os(macOS)
         // iPhone: the widgets draw their own labels, so store plain scaled
         // art rather than the Top Shelf's captioned posters.
         guard read()?.entries != entries else { return }
@@ -139,7 +146,7 @@ public enum TopShelfFeedStore {
         #endif
     }
 
-    #if os(iOS)
+    #if os(iOS) || os(macOS)
     private static func reloadWidgets() {
         #if canImport(WidgetKit)
         WidgetCenter.shared.reloadTimelines(ofKind: OmniWidgetKind.continueWatching)

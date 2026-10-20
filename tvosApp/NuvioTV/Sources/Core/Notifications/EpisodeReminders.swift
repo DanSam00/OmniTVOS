@@ -3,10 +3,10 @@ import Foundation
 import UserNotifications
 #if os(iOS)
 import UIKit
-import WidgetKit
 #else
 import AppKit
 #endif
+import WidgetKit
 
 /// A notification on the morning a followed show's new episode comes out,
 /// built from the same release data as the Calendar tab. Opt-in, per device
@@ -50,16 +50,10 @@ enum EpisodeReminders {
     /// Also keeps the iPhone's Upcoming widget filled when one is on the
     /// Home Screen, alerts or not.
     static func refresh(force: Bool = false) async {
-        #if os(iOS)
         let feedsWidget = await upcomingWidgetIsInstalled()
-        #else
-        let feedsWidget = false
-        #endif
         guard isEnabled || feedsWidget else { return }
-        #if os(iOS)
         // A widget just added has nothing to show yet: fill it now.
         let force = force || (feedsWidget && UpcomingEpisodeFeedStore.read() == nil)
-        #endif
         let defaults = UserDefaults.standard
         if !force, let last = defaults.object(forKey: lastRefreshKey) as? Date,
            Date().timeIntervalSince(last) < refreshInterval {
@@ -69,24 +63,19 @@ enum EpisodeReminders {
         let calendar = CalendarViewModel()
         await calendar.load()
         let entries = calendar.upcomingEpisodes(days: lookAheadDays)
-        #if os(iOS)
         publishToWidget(entries)
-        #endif
         if isEnabled { await schedule(entries) }
     }
 
     /// The Calendar tab has just loaded the same data: use it.
     static func calendarDidLoad(_ calendar: CalendarViewModel) {
         let entries = calendar.upcomingEpisodes(days: lookAheadDays)
-        #if os(iOS)
         publishToWidget(entries)
-        #endif
         guard isEnabled else { return }
         UserDefaults.standard.set(Date(), forKey: lastRefreshKey)
         Task { await schedule(entries) }
     }
 
-    #if os(iOS)
     private static func upcomingWidgetIsInstalled() async -> Bool {
         let configurations = (try? await WidgetCenter.shared.currentConfigurations()) ?? []
         return configurations.contains { $0.kind == OmniWidgetKind.upcoming }
@@ -119,7 +108,6 @@ enum EpisodeReminders {
             WidgetArtworkCache.pruneToFeeds()
         }
     }
-    #endif
 
     private static func schedule(_ entries: [CalendarEntry]) async {
         let center = UNUserNotificationCenter.current()

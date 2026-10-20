@@ -1,15 +1,15 @@
-#if os(iOS)
+#if os(iOS) || os(macOS)
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
-#if canImport(ActivityKit)
+#if os(iOS) && canImport(ActivityKit)
 import ActivityKit
 #endif
 
 // MARK: - Widgets: what the app and the widget extension share
 //
-// Compiled into both the Omni iOS app and the OmniWidgets extension, so it uses
-// no app model types. The app writes small feeds and pre-sized artwork into the
+// Compiled into the Omni iOS and Mac apps and their widget extensions, so it
+// uses no app model types. The app writes small feeds and pre-sized artwork into the
 // App Group; the widgets only read them, and never touch the network.
 //
 // Continue Watching reuses the Top Shelf feed (`TopShelfFeedStore`), which the
@@ -187,7 +187,7 @@ enum WidgetArtworkCache {
 
 // MARK: Downloads Live Activity
 
-#if canImport(ActivityKit)
+#if os(iOS) && canImport(ActivityKit)
 /// The Lock Screen and Dynamic Island card while downloads run.
 struct DownloadActivityAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {
