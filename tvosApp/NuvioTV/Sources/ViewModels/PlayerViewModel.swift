@@ -4255,14 +4255,93 @@ class PlayerViewModel: ObservableObject {
     /// `self` by the time focus returned and the film stayed in the mini
     /// player. The log showed it exactly — `auto=start` on every resign, and
     /// nothing at all on the way back.
+    ///
+    /// With more than one screen, losing focus is not enough: clicking an app
+    /// on another screen leaves the film in full view. There it starts only
+    /// once Omni's own screen moves to something else — the app now in front
+    /// has a window on that screen, or Omni's window is covered entirely.
+    /// Both are checked again as apps change and windows move while Omni is
+    /// in the background, so a later switch on Omni's screen still starts it.
     func observeWindowFocusForPictureInPicture() {
         NotificationCenter.default.addObserver(
             forName: NSApplication.didResignActiveNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.enterAutomaticPictureInPicture() }
+            MainActor.assumeIsolated { self?.considerAutomaticPictureInPicture(reason: "resign") }
         }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard !NSApp.isActive else { return }
+                self?.considerAutomaticPictureInPicture(reason: "app")
+            }
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            MainActor.assumeIsolated {
+                guard !NSApp.isActive,
+                      let window = note.object as? NSWindow,
+                      window === Self.playerWindow
+                else { return }
+                self?.considerAutomaticPictureInPicture(reason: "occlusion")
+            }
+        }
+    }
+
+    private func considerAutomaticPictureInPicture(reason: String) {
+        guard NSScreen.screens.count > 1 else {
+            enterAutomaticPictureInPicture()
+            return
+        }
+        // The window server reorders windows just after the switch; reading
+        // it at once can still see the old front app.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self, !NSApp.isActive else { return }
+            let switched = Self.omniScreenSwitchedAway()
+            MacDiagnostics.log("player.pip auto=check reason=\(reason) screens=\(NSScreen.screens.count) switched=\(switched)")
+            if switched { self.enterAutomaticPictureInPicture() }
+        }
+    }
+
+    /// Omni's main window: the largest ordinary one on screen.
+    private static var playerWindow: NSWindow? {
+        NSApp.windows
+            .filter { $0.isVisible && !($0 is NSPanel) && $0.level == .normal }
+            .max { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }
+    }
+
+    /// Whether the screen Omni is on now shows something else: its window is
+    /// fully covered, or the frontmost app has a window there.
+    private static func omniScreenSwitchedAway() -> Bool {
+        guard let window = playerWindow, let screen = window.screen else { return true }
+        if !window.occlusionState.contains(.visible) { return true }
+        guard let front = NSWorkspace.shared.frontmostApplication,
+              front.processIdentifier != ProcessInfo.processInfo.processIdentifier
+        else { return false }
+        // Window bounds are top-left based from the primary screen's top;
+        // NSScreen frames are bottom-left based.
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
+        let frame = screen.frame
+        let screenRect = CGRect(x: frame.minX, y: primaryHeight - frame.maxY, width: frame.width, height: frame.height)
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] ?? []
+        for info in windows {
+            guard (info[kCGWindowOwnerPID as String] as? pid_t) == front.processIdentifier,
+                  (info[kCGWindowLayer as String] as? Int) == 0,
+                  let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary),
+                  bounds.width > 100, bounds.height > 100
+            else { continue }
+            if screenRect.contains(CGPoint(x: bounds.midX, y: bounds.midY)) { return true }
+        }
+        return false
     }
 
     private func enterAutomaticPictureInPicture() {
