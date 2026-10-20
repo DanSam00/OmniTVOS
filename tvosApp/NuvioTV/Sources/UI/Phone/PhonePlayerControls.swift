@@ -22,6 +22,7 @@ struct PhonePlayerControls: View {
     /// This player's stream is on the Cast device and the phone is its remote.
     @State private var isCasting = false
     @AppStorage(PhoneScreenMode.storageKey) private var screenModeRaw = PhoneScreenMode.fit.rawValue
+    @ObservedObject private var mini = PhoneMiniPlayerState.shared
     /// The phone is upright: video in a box at the top, the controls deck and
     /// the title's details beneath it, Netflix style.
     @State private var isPortrait = false
@@ -48,7 +49,11 @@ struct PhonePlayerControls: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: isCasting)
+        // Shrunk to the mini bar: only the picture shows; the bar has the controls.
+        .opacity(mini.isMini ? 0 : 1)
+        .allowsHitTesting(!mini.isMini)
         .onAppear {
+            mini.viewModel = viewModel
             applyScreenMode()
             cast.startDiscovery()
             if cast.isConnected { startCastingWhenReady() }
@@ -131,8 +136,8 @@ struct PhonePlayerControls: View {
             if switching { panel = nil }
         }
         // Upright, the status bar stays, as it does over Netflix's.
-        .statusBarHidden(isPortrait ? panel != nil : (!isVisible || panel != nil))
-        .persistentSystemOverlays(.hidden)
+        .statusBarHidden(mini.isMini ? false : (isPortrait ? panel != nil : (!isVisible || panel != nil)))
+        .persistentSystemOverlays(mini.isMini ? .automatic : .hidden)
     }
 
     private func updateLayout(portrait: Bool, topInset: CGFloat) {
@@ -224,13 +229,18 @@ struct PhonePlayerControls: View {
                     }
                 }
                 .frame(height: videoHeight)
-                // Pull the picture down to close the player, as well as the X.
+                // Pull the picture down to shrink the player into the mini bar
+                // and keep browsing; the X closes it.
                 .gesture(
                     DragGesture(minimumDistance: 24)
                         .onEnded { value in
                             if value.translation.height > 90,
                                abs(value.translation.width) < value.translation.height {
-                                onClose()
+                                if let minimize = PhoneMiniPlayerState.shared.minimize {
+                                    minimize()
+                                } else {
+                                    onClose()
+                                }
                             }
                         }
                 )
@@ -1820,6 +1830,100 @@ final class PhoneDeckSheen {
         motion.stopDeviceMotionUpdates()
         x = 0
         y = 0
+    }
+}
+
+/// The player shrunk into a bar while the viewer browses (swipe the portrait
+/// picture down). The player itself stays mounted in its slot in
+/// `ContentView`, only smaller, so playback, progress saving and the video
+/// surface carry on untouched; this holds what the bar needs to show and do.
+@MainActor
+final class PhoneMiniPlayerState: ObservableObject {
+    static let shared = PhoneMiniPlayerState()
+    @Published var isMini = false
+    /// The player's view model, for the bar's title and play/pause.
+    weak var viewModel: PlayerViewModel?
+    /// Set by `ContentView`, which owns the player's slot.
+    var minimize: (() -> Void)?
+    var expand: (() -> Void)?
+    var close: (() -> Void)?
+
+    /// Bar size; the video sits at its leading end.
+    static let videoSize = CGSize(width: 112, height: 63)
+    static let barHeight: CGFloat = 75
+}
+
+/// The mini player's bar: the title and episode, play/pause and close. The
+/// video itself is the real player, laid over the bar's leading end by
+/// `ContentView`.
+struct PhoneMiniPlayerBar: View {
+    @ObservedObject var state = PhoneMiniPlayerState.shared
+
+    var body: some View {
+        let viewModel = state.viewModel
+        HStack(spacing: 12) {
+            Color.clear.frame(width: PhoneMiniPlayerState.videoSize.width)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(viewModel?.title ?? "")
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                if let subtitle = viewModel?.subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture { state.expand?() }
+
+            if let viewModel {
+                PhoneMiniPlayButton(viewModel: viewModel)
+            }
+            Button { state.close?() } label: {
+                Image(systemName: "xmark")
+                    .font(.headline)
+                    .frame(width: 40, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close player")
+        }
+        .padding(6)
+        .padding(.trailing, 6)
+        .frame(height: PhoneMiniPlayerState.barHeight)
+        .foregroundStyle(.white)
+        .background {
+            let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+            if #available(iOS 26.0, *) {
+                Color.clear.glassEffect(.regular, in: shape)
+            } else {
+                shape.fill(.ultraThinMaterial)
+            }
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .gesture(
+            DragGesture(minimumDistance: 20).onEnded { value in
+                if value.translation.height < -40 { state.expand?() }
+            }
+        )
+    }
+}
+
+/// Play/pause for the mini bar, watching the player's own status.
+private struct PhoneMiniPlayButton: View {
+    @ObservedObject var viewModel: PlayerViewModel
+
+    var body: some View {
+        Button { viewModel.togglePlayPause() } label: {
+            Image(systemName: viewModel.status == .playing ? "pause.fill" : "play.fill")
+                .font(.title3)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(viewModel.status == .playing ? "Pause" : "Play")
     }
 }
 

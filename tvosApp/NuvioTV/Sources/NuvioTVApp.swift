@@ -221,6 +221,11 @@ enum TVTab: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var activeScreen: TVScreen = .login
+    #if os(iOS)
+    /// The player while shrunk to the mini bar: its screen, kept so the player
+    /// stays mounted (see `PhoneMiniPlayerState`) while `activeScreen` moves on.
+    @State private var phoneMiniPlayback: TVScreen?
+    #endif
     @State private var resolvedInitialScreen = false
     /// `nil` until tvOS has actually backgrounded the app, so the initial
     /// `.active` callback is never treated as a resume.
@@ -554,6 +559,11 @@ struct ContentView: View {
             TVHomeDebugTrace.observeFocusEngine()
             #endif
             setupPictureInPicture()
+            #if os(iOS)
+            PhoneMiniPlayerState.shared.minimize = { minimizePhonePlayer() }
+            PhoneMiniPlayerState.shared.expand = { expandPhoneMiniPlayer() }
+            PhoneMiniPlayerState.shared.close = { closePhoneMiniPlayer() }
+            #endif
             guard !resolvedInitialScreen else { return }
             resolvedInitialScreen = true
             // Skip the login gate if a session was restored or the user has
@@ -728,6 +738,52 @@ struct ContentView: View {
         if case .player = activeScreen { return true }
         return false
     }
+
+    /// The player's slot: the full-screen player, or on iPhone the one shrunk
+    /// to the mini bar. One slot for both, so shrinking and expanding keep the
+    /// same player rather than starting it again.
+    private var playerSlotScreen: TVScreen? {
+        if case .player = activeScreen { return activeScreen }
+        #if os(iOS)
+        return phoneMiniPlayback
+        #else
+        return nil
+        #endif
+    }
+
+    #if os(iOS)
+    /// Above the tab bar on the tabs; near the bottom edge over other screens.
+    private var phoneMiniBarBottomInset: CGFloat {
+        if case .main = activeScreen { return 82 }
+        return 8
+    }
+
+    private func minimizePhonePlayer() {
+        guard case let .player(_, meta, subtitle, _, _, _) = activeScreen else { return }
+        PhoneOrientation.request(.portrait)
+        phoneMiniPlayback = activeScreen
+        PhoneMiniPlayerState.shared.isMini = true
+        dismissPlayer(meta: meta, subtitle: subtitle)
+    }
+
+    private func expandPhoneMiniPlayer() {
+        guard let playback = phoneMiniPlayback else { return }
+        withAnimation(.easeInOut(duration: 0.28)) {
+            activeScreen = playback
+            phoneMiniPlayback = nil
+            PhoneMiniPlayerState.shared.isMini = false
+        }
+    }
+
+    /// Closing from the bar ends playback: the slot empties and the player
+    /// tears down as it does from its own X.
+    private func closePhoneMiniPlayer() {
+        withAnimation(.easeInOut(duration: 0.24)) {
+            phoneMiniPlayback = nil
+            PhoneMiniPlayerState.shared.isMini = false
+        }
+    }
+    #endif
 
     private var fullScreenOverlayPresented: Bool {
         if isResolvingContinueWatchingStream { return true }
@@ -1536,6 +1592,11 @@ struct ContentView: View {
         }
         playbackOrigin = origin
         playbackDidStart = false
+        #if os(iOS)
+        // Something new to play replaces whatever the mini bar held.
+        phoneMiniPlayback = nil
+        PhoneMiniPlayerState.shared.isMini = false
+        #endif
         withAnimation(.easeInOut(duration: 0.28)) {
             activeScreen = .player(
                 url: url,
@@ -1667,7 +1728,18 @@ struct ContentView: View {
                 .zIndex(1.6)
             #endif
 
-            if case .player(let url, let meta, let subtitle, let httpHeaders, let externalSubtitles, let resumeFrom) = activeScreen {
+            #if os(iOS)
+            if phoneMiniPlayback != nil {
+                PhoneMiniPlayerBar()
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, phoneMiniBarBottomInset)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .zIndex(1.9)
+            }
+            #endif
+
+            if case .player(let url, let meta, let subtitle, let httpHeaders, let externalSubtitles, let resumeFrom) = playerSlotScreen {
                 playerScreen(
                     url: url,
                     meta: meta,
@@ -1676,6 +1748,14 @@ struct ContentView: View {
                     externalSubtitles: externalSubtitles,
                     resumeFrom: resumeFrom
                 )
+                .id(url)
+                #if os(iOS)
+                .modifier(PhoneMiniPlayerFrame(
+                    isMini: phoneMiniPlayback != nil,
+                    bottomInset: phoneMiniBarBottomInset,
+                    onExpand: expandPhoneMiniPlayer
+                ))
+                #endif
                 .transition(.opacity)
                 .zIndex(2)
             }
@@ -10673,3 +10753,48 @@ extension String {
         return lines.joined(separator: "\n")
     }
 }
+
+#if os(iOS)
+/// The player's slot while shrunk: the real player at the mini bar's leading
+/// end, tapping it expands. Frame changes only, so the player view and its
+/// video surface stay the same throughout.
+private struct PhoneMiniPlayerFrame: ViewModifier {
+    let isMini: Bool
+    let bottomInset: CGFloat
+    let onExpand: () -> Void
+
+    func body(content: Content) -> some View {
+        let size = PhoneMiniPlayerState.videoSize
+        content
+            .frame(width: isMini ? size.width : nil, height: isMini ? size.height : nil)
+            // Rounded only while mini. Full screen it must not clip at all:
+            // the player draws past its frame into the safe areas.
+            .clipShape(PhoneMiniPlayerClip(isMini: isMini))
+            .overlay {
+                if isMini {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture(perform: onExpand)
+                }
+            }
+            .padding(.leading, isMini ? 18 : 0)
+            .padding(.bottom, isMini ? bottomInset + (PhoneMiniPlayerState.barHeight - size.height) / 2 : 0)
+            .frame(
+                maxWidth: .infinity,
+                maxHeight: .infinity,
+                alignment: isMini ? .bottomLeading : .center
+            )
+            .animation(.easeInOut(duration: 0.28), value: isMini)
+    }
+}
+
+private struct PhoneMiniPlayerClip: Shape {
+    var isMini: Bool
+
+    func path(in rect: CGRect) -> Path {
+        isMini
+            ? Path(roundedRect: rect, cornerRadius: 12, style: .continuous)
+            : Path(rect.insetBy(dx: -4000, dy: -4000))
+    }
+}
+#endif
