@@ -370,6 +370,20 @@ final class CalendarViewModel: ObservableObject {
         rebuildEntries()
         isLoading = false
         hasLoaded = true
+        #if os(iOS) || os(macOS)
+        EpisodeReminders.calendarDidLoad(self)
+        #endif
+    }
+
+    /// Followed shows' episodes from today through the next `days`, soonest
+    /// first, for the new-episode alerts.
+    func upcomingEpisodes(days: Int) -> [CalendarEntry] {
+        let today = CalendarDayKey.dayKey(offsetFromToday: 0)
+        let last = CalendarDayKey.dayKey(offsetFromToday: days)
+        return libraryDays
+            .filter { $0.key >= today && $0.key <= last }
+            .sorted { $0.key < $1.key }
+            .flatMap { $0.value.filter { $0.kind == .series } }
     }
 
 

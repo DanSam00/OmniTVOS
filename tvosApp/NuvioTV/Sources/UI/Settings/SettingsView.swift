@@ -228,6 +228,8 @@ enum SettingsKey {
     static let downloadDeleteAfterWatching = "omni.settings.downloads.deleteAfterWatching"
     /// How many downloads run at once.
     static let downloadMaxConcurrent = "omni.settings.downloads.maxConcurrent"
+    /// A notification when a followed show's new episode comes out.
+    static let episodeReminders = "omni.settings.calendar.episodeReminders"
     /// Whether the hero carousels move on by themselves. Off unless asked for.
     static let heroAutoScroll = "nuvio.tv.settings.layout.heroAutoScroll"
     /// JSON `[String]` of Home section ids selected as Grid View hero sources.
@@ -395,6 +397,8 @@ enum SettingsKey {
         // Downloads belong to the device they are on.
         downloadMaxMovieBytes, downloadMaxEpisodeBytes, downloadAllowCellular,
         downloadDeleteAfterWatching, downloadMaxConcurrent,
+        // Alerts need this device's own permission.
+        episodeReminders,
     ]
 
     static let all = [
@@ -3220,6 +3224,7 @@ private struct LayoutDiscoverySettingsView: View {
     @AppStorage(SettingsKey.heroCatalogs) private var heroCatalogsData = Data()
     @AppStorage(SettingsKey.fullscreenHeroBackdrop) private var fullscreenHeroBackdrop = true
     @AppStorage(SettingsKey.calendarViewMode) private var calendarViewMode = CalendarViewMode.list.rawValue
+    @AppStorage(SettingsKey.episodeReminders) private var episodeReminders = false
     @AppStorage(SettingsKey.posterLabels) private var posterLabels = false
     @AppStorage(SettingsKey.catalogAddonNames) private var catalogAddonNames = true
     @AppStorage(SettingsKey.discoverLocation) private var discoverLocation = "Search"
@@ -3387,6 +3392,28 @@ private struct LayoutDiscoverySettingsView: View {
                     options: calendarModes,
                     accentColor: accentColor
                 )
+
+                #if os(iOS) || os(macOS)
+                SettingsToggleRow(
+                    title: L10n.string("settings_calendar_episode_alerts", fallback: "New Episode Alerts"),
+                    subtitle: L10n.string(
+                        "settings_calendar_episode_alerts_subtitle",
+                        fallback: "A notification on the morning a show you follow has a new episode out"
+                    ),
+                    isOn: $episodeReminders,
+                    accentColor: accentColor
+                )
+                .onChange(of: episodeReminders) { _, on in
+                    if on {
+                        Task {
+                            // Refused by the system: nothing can be shown, so say so by switching back off.
+                            if await !EpisodeReminders.enable() { episodeReminders = false }
+                        }
+                    } else {
+                        EpisodeReminders.disable()
+                    }
+                }
+                #endif
 
                 SettingsToggleRow(
                     title: L10n.string("tvos_layout_poster_labels", fallback: "Poster Labels"),

@@ -637,6 +637,10 @@ struct ContentView: View {
             case .active:
                 syncManager.refreshAccountIfIdle()
                 presentProfileSelectionAfterBackgroundIfNeeded()
+                #if os(iOS) || os(macOS)
+                EpisodeReminders.installDelegate()
+                Task { await EpisodeReminders.refresh() }
+                #endif
             default:
                 break
             }
