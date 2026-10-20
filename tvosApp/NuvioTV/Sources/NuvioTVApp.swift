@@ -653,6 +653,9 @@ struct ContentView: View {
             switch phase {
             case .background:
                 backgroundedAt = Date()
+                #if os(iOS)
+                WidgetTheme.publishFromSettings()
+                #endif
             case .active:
                 syncManager.refreshAccountIfIdle()
                 presentProfileSelectionAfterBackgroundIfNeeded()
@@ -662,6 +665,7 @@ struct ContentView: View {
                 #endif
                 #if os(iOS)
                 DownloadLiveActivity.shared.start()
+                WidgetTheme.publishFromSettings()
                 #endif
             default:
                 break

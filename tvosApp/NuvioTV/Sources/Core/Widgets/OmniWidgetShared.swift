@@ -20,6 +20,31 @@ enum OmniWidgetKind {
     static let upcoming = "OmniUpcoming"
 }
 
+// MARK: Theme
+
+/// The profile's accent colour (Settings → Appearance → Theme), copied here by
+/// the app so the widgets and the Live Activity match it. White until the app
+/// has written one, which is also the app's own default.
+enum WidgetTheme {
+    private static let accentKey = "omni.widgets.accent"
+
+    static var accentComponents: (red: Double, green: Double, blue: Double) {
+        guard let values = UserDefaults(suiteName: topShelfAppGroupID)?.array(forKey: accentKey) as? [Double],
+              values.count == 3 else { return (1, 1, 1) }
+        return (values[0], values[1], values[2])
+    }
+
+    /// True when the colour changed, so the widgets need redrawing.
+    @discardableResult
+    static func store(red: Double, green: Double, blue: Double) -> Bool {
+        guard let defaults = UserDefaults(suiteName: topShelfAppGroupID) else { return false }
+        let values = [red, green, blue].map { ($0 * 1000).rounded() / 1000 }
+        guard defaults.array(forKey: accentKey) as? [Double] != values else { return false }
+        defaults.set(values, forKey: accentKey)
+        return true
+    }
+}
+
 // MARK: Upcoming episodes
 
 /// One upcoming episode of a show the user follows, from the Calendar's data.

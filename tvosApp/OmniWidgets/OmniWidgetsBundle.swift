@@ -13,8 +13,11 @@ struct OmniWidgetsBundle: WidgetBundle {
 // MARK: - Shared look
 
 enum OmniWidgetStyle {
-    /// Omni's purple, as on the app icon.
-    static let accent = Color(red: 0.62, green: 0.40, blue: 1.0)
+    /// The theme colour chosen in the app's Settings, else white.
+    static var accent: Color {
+        let rgb = WidgetTheme.accentComponents
+        return Color(red: rgb.red, green: rgb.green, blue: rgb.blue)
+    }
     static let background = Color(red: 0.06, green: 0.06, blue: 0.08)
 }
 
