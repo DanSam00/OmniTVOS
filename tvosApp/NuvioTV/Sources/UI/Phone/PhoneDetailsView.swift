@@ -173,7 +173,8 @@ struct PhoneDetailsView: View {
                 }
                 .padding(.horizontal, PhoneLayout.gutter)
 
-                if meta.isSeries {
+                // Live channels ("tv") count as series but have no episodes.
+                if meta.isSeries, meta.type.lowercased() != "tv" {
                     episodes(meta)
                 }
 

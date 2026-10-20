@@ -285,6 +285,11 @@ struct PlayerView: View {
             #endif
 
             playerStatusOverlay
+                #if os(iOS)
+                // Upright, the loader sits where the video will be, not in the
+                // middle of the screen under the controls and episode list.
+                .phonePortraitVideoBox(phoneLayout.isPortrait && !viewModel.postPlayState.isVisible, topInset: phoneLayout.topInset)
+                #endif
 
             if let toast = viewModel.playerToast {
                 VStack {
@@ -1216,6 +1221,15 @@ struct PlayerView: View {
         .accessibilityLabel("Return to video")
     }
 
+    /// The upright iPhone player shows the loader in its 16:9 video box.
+    private var loadingOverlayIsCompact: Bool {
+        #if os(iOS)
+        return phoneLayout.isPortrait
+        #else
+        return false
+        #endif
+    }
+
     @ViewBuilder
     private var playerStatusOverlay: some View {
         switch viewModel.status {
@@ -1225,7 +1239,8 @@ struct PlayerView: View {
                     backdropUrl: meta.backgroundUrl ?? meta.posterUrl,
                     logoUrl: meta.logoUrl,
                     title: meta.name,
-                    message: L10n.string("player_status_starting_stream", fallback: "Starting stream")
+                    message: L10n.string("player_status_starting_stream", fallback: "Starting stream"),
+                    compact: loadingOverlayIsCompact
                 )
                 .transition(.opacity)
             } else if !didReportPlaybackStarted {
@@ -1233,7 +1248,8 @@ struct PlayerView: View {
                     backdropUrl: meta.backgroundUrl ?? meta.posterUrl,
                     logoUrl: meta.logoUrl,
                     title: meta.name,
-                    message: L10n.string("player_status_starting_stream", fallback: "Starting stream")
+                    message: L10n.string("player_status_starting_stream", fallback: "Starting stream"),
+                    compact: loadingOverlayIsCompact
                 )
                 .transition(.opacity)
             } else {
@@ -1264,7 +1280,8 @@ struct PlayerView: View {
                     backdropUrl: meta.backgroundUrl ?? meta.posterUrl,
                     logoUrl: meta.logoUrl,
                     title: meta.name,
-                    message: L10n.string("player_status_starting_stream", fallback: "Starting stream")
+                    message: L10n.string("player_status_starting_stream", fallback: "Starting stream"),
+                    compact: loadingOverlayIsCompact
                 )
                 .transition(.opacity)
             }

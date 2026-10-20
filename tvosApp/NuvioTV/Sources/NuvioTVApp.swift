@@ -10770,6 +10770,10 @@ private struct PhoneMiniPlayerFrame: ViewModifier {
     func body(content: Content) -> some View {
         let size = PhoneMiniPlayerState.videoSize
         content
+            // While mini, the player takes no touches: its views still span the
+            // whole slot, so they swallowed every tap meant for the app and
+            // for the bar's close button. The expand overlay below stays live.
+            .allowsHitTesting(!isMini)
             .frame(width: isMini ? size.width : nil, height: isMini ? size.height : nil)
             // Rounded only while mini. Full screen it must not clip at all:
             // the player draws past its frame into the safe areas.

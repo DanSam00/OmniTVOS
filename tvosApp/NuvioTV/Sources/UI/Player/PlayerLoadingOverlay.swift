@@ -137,6 +137,10 @@ struct PlayerLoadingOverlay: View {
     var message: String = L10n.string("player_status_starting_stream", fallback: "Starting stream")
     var startTime: Date? = nil
     var showTimer: Bool = true
+    /// Sized for the iPhone's upright player, where it fills the 16:9 video
+    /// box rather than the screen: a smaller logo, tighter spacing, and no
+    /// bleed into the safe area above the box.
+    var compact: Bool = false
 
     @State private var isPulsing = false
     @State private var logoLoadFailed = false
@@ -208,7 +212,7 @@ struct PlayerLoadingOverlay: View {
             .ignoresSafeArea()
 
             // 4. Center Logo / Title + Status Text
-            VStack(spacing: 24) {
+            VStack(spacing: compact ? 10 : 24) {
                 if let logo = logoUrl, !logo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !logoLoadFailed, let url = URL(string: logo) {
                     AsyncImage(url: url) { phase in
                         switch phase {
@@ -216,7 +220,7 @@ struct PlayerLoadingOverlay: View {
                             image
                                 .resizable()
                                 .scaledToFit()
-                                .frame(maxWidth: 440, maxHeight: 180)
+                                .frame(maxWidth: compact ? 200 : 440, maxHeight: compact ? 64 : 180)
                         case .failure:
                             fallbackTitleView
                                 .onAppear { logoLoadFailed = true }
@@ -271,10 +275,11 @@ struct PlayerLoadingOverlay: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-            .padding(.horizontal, 80)
+            .padding(.horizontal, compact ? 20 : 80)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea()
+        .ignoresSafeArea(edges: compact ? [] : .all)
+        .clipped()
         .onAppear {
             isPulsing = true
         }
