@@ -15033,6 +15033,7 @@ extension SettingsView {
             }
         }
         .scrollContentBackground(.hidden)
+        .phoneTabBarFoldsOnScroll()
         .background(Color.nuvioBackground(amoled: amoled, body: bodyColor).ignoresSafeArea())
         .navigationTitle(L10n.string("nav_settings", fallback: "Settings"))
         .navigationDestination(for: SettingsCategory.self) { category in
@@ -15065,6 +15066,7 @@ extension SettingsView {
                             .padding(.top, 28)
                             .padding(.bottom, 32)
                         }
+                        .phoneTabBarFoldsOnScroll()
                     }
                 }
             }

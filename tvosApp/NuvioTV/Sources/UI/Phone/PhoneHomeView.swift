@@ -402,6 +402,7 @@ struct PhoneHomeView: View {
             }
             .padding(.bottom, 24)
         }
+        .phoneTabBarFoldsOnScroll()
         // Edge to edge in every orientation: the hero art reaches the sides
         // in landscape too, and the side insets are added back where text is.
         .ignoresSafeArea(edges: [.top, .horizontal])

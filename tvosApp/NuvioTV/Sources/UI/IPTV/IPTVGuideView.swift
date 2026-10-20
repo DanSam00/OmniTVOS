@@ -409,6 +409,9 @@ struct IPTVGuideView: View {
                 }
                 .padding(.bottom, 60)
             }
+            #if os(iOS)
+            .phoneTabBarFoldsOnScroll()
+            #endif
             #if os(macOS)
             .onAppear { scrollProxy = proxy }
             #endif

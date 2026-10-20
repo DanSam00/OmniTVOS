@@ -42,6 +42,7 @@ struct PhoneCalendarView: View {
                     }
                     .padding(.vertical, 12)
                 }
+                .phoneTabBarFoldsOnScroll()
                 .refreshable { await viewModel.load() }
             }
         }

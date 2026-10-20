@@ -23,6 +23,7 @@ struct PhoneMainTabView: View {
     let onPlayDownload: (DownloadRecord) -> Void
 
     @StateObject private var homeLoader = PhoneHomeLoader()
+    @ObservedObject private var tabBar = PhoneTabBarState.shared
     @ObservedObject private var iptv = IPTVAvailability.shared
     @State private var selection: TVTab = .home
     /// Tabs opened so far. A page is built the first time it is chosen and
@@ -133,10 +134,15 @@ struct PhoneMainTabView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if !isKeyboardShown {
-                PhoneTabBar(tabs: barTabs, selection: $selection)
+                PhoneTabBar(tabs: barTabs, selection: $selection, isCollapsed: tabBar.isCollapsed) {
+                    tabBar.expand()
+                }
             }
         }
-        .onChange(of: selection) { _, tab in visited.insert(tab) }
+        .onChange(of: selection) { _, tab in
+            visited.insert(tab)
+            tabBar.expand()
+        }
         // No connection at launch and something downloaded: Home cannot
         // load, so open on the downloads instead. Only at launch — a
         // connection dropping later leaves the user where they are.
@@ -194,36 +200,111 @@ struct PhoneMainTabView: View {
 
 // MARK: - Tab bar
 
+/// Whether the tab bar is folded down to its current section, as Apple
+/// Music's does: scrolling down a page folds it, reaching the top again or
+/// tapping it opens it out.
+@MainActor
+final class PhoneTabBarState: ObservableObject {
+    static let shared = PhoneTabBarState()
+    @Published private(set) var isCollapsed = false
+
+    /// The liquid fold and unfold: slower and softer than a tap's spring,
+    /// with a little give at the end, as the system tab bar folds.
+    static let motion = Animation.spring(duration: 0.55, bounce: 0.2)
+
+    func expand() {
+        guard isCollapsed else { return }
+        withAnimation(Self.motion) { isCollapsed = false }
+    }
+
+    /// A page's scroll offset moved from `old` to `new` (0 at the top).
+    func scrolled(from old: CGFloat, to new: CGFloat) {
+        if new <= 12 {
+            expand()
+        } else if new - old > 3, new > 40, !isCollapsed {
+            withAnimation(Self.motion) { isCollapsed = true }
+        }
+    }
+}
+
+extension View {
+    /// Folds the tab bar as this scroll view is scrolled down, and opens it
+    /// out back at the top. For each tab page's main vertical scroller. Also
+    /// leaves room at the end of the content, so the last row can be
+    /// scrolled clear of the bar rather than finishing under it.
+    func phoneTabBarFoldsOnScroll() -> some View {
+        contentMargins(.bottom, 72, for: .scrollContent)
+        .onScrollGeometryChange(for: CGFloat.self) { geometry in
+            geometry.contentOffset.y + geometry.contentInsets.top
+        } action: { old, new in
+            PhoneTabBarState.shared.scrolled(from: old, to: new)
+        }
+    }
+}
+
 /// A floating bar in the style of the iOS 26 tab bar, with Search apart in
-/// its own circle. Icons only, no labels, so the icons can be larger.
+/// its own circle. Icons only, no labels, so the icons can be larger. Folded,
+/// it is one circle at the leading end showing the current section.
 struct PhoneTabBar: View {
     let tabs: [TVTab]
     @Binding var selection: TVTab
+    var isCollapsed = false
+    var onExpand: () -> Void = {}
     @Namespace private var pill
+    @Namespace private var glass
+    /// The last section other than Search, which the folded circle shows
+    /// while Search (which has its own circle) is open.
+    @State private var lastTab: TVTab = .home
+
+    private var foldedTab: TVTab {
+        tabs.contains(selection) ? selection : (tabs.contains(lastTab) ? lastTab : (tabs.first ?? .home))
+    }
 
     var body: some View {
-        HStack(spacing: 10) {
-            items
-                .padding(4)
-                .phoneBarBackground(Capsule())
+        glassGroup {
+            HStack(spacing: 10) {
+                // One bar throughout: folding narrows the capsule into a
+                // circle while the other sections slide shut into the current
+                // one, so the glass flows rather than swapping one view for
+                // another.
+                items
+                    .padding(4)
+                    .frame(width: isCollapsed ? 56 : nil)
+                    .phoneBarGlass(Capsule(), id: "tabs", in: glass)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-            Button { selection = .search } label: {
-                Image(systemName: TVTab.search.symbol)
-                    .font(.system(size: 24, weight: .semibold))
-                    .frame(width: 56, height: 56)
-                    .foregroundStyle(.white)
-                    .background {
-                        if selection == .search { Circle().fill(Color.white.opacity(0.16)).padding(4) }
-                    }
+                Button { selection = .search } label: {
+                    Image(systemName: TVTab.search.symbol)
+                        .font(.system(size: 24, weight: .semibold))
+                        .frame(width: 56, height: 56)
+                        .foregroundStyle(.white)
+                        .background {
+                            if selection == .search { Circle().fill(Color.white.opacity(0.16)).padding(4) }
+                        }
+                }
+                .buttonStyle(.plain)
+                .phoneBarGlass(Circle(), id: "search", in: glass)
+                .accessibilityLabel(TVTab.search.title)
+                .accessibilityAddTraits(selection == .search ? .isSelected : [])
             }
-            .buttonStyle(.plain)
-            .phoneBarBackground(Circle())
-            .accessibilityLabel(TVTab.search.title)
-            .accessibilityAddTraits(selection == .search ? .isSelected : [])
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 2)
         .sensoryFeedback(.selection, trigger: selection)
+        .onChange(of: selection) { _, tab in
+            if tabs.contains(tab) { lastTab = tab }
+        }
+    }
+
+    /// One glass container on iOS 26, so the bar and Search's circle are
+    /// drawn as one material.
+    @ViewBuilder
+    private func glassGroup<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: 10) { content() }
+        } else {
+            content()
+        }
     }
 
     /// Without labels, a plain TV could be anything, so Live TV's says LIVE
@@ -246,27 +327,38 @@ struct PhoneTabBar: View {
     private var items: some View {
         HStack(spacing: 0) {
             ForEach(tabs) { tab in
+                let isFoldedAway = isCollapsed && tab != foldedTab
                 Button {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { selection = tab }
+                    if isCollapsed {
+                        onExpand()
+                    } else {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { selection = tab }
+                    }
                 } label: {
                     icon(for: tab)
                         .font(.system(size: 24, weight: .semibold))
                         .frame(height: 30)
-                        .foregroundStyle(selection == tab ? Color.white : Color.white.opacity(0.75))
-                        .padding(.horizontal, 10)
+                        .foregroundStyle(selection == tab || isCollapsed ? Color.white : Color.white.opacity(0.75))
+                        .padding(.horizontal, isFoldedAway ? 0 : 10)
                         .frame(height: 48)
-                        .frame(maxWidth: .infinity)
+                        .frame(maxWidth: isFoldedAway ? 0 : .infinity)
                         .background {
                             if selection == tab {
                                 Capsule()
-                                    .fill(Color.white.opacity(0.16))
+                                    .fill(Color.white.opacity(isCollapsed ? 0 : 0.16))
                                     .matchedGeometryEffect(id: "pill", in: pill)
                             }
                         }
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(tab.title)
+                // Folding away: shrink and fade into the section that stays.
+                .scaleEffect(isFoldedAway ? 0.4 : 1)
+                .opacity(isFoldedAway ? 0 : 1)
+                .blur(radius: isFoldedAway ? 3 : 0)
+                .allowsHitTesting(!isFoldedAway)
+                .accessibilityHidden(isFoldedAway)
+                .accessibilityLabel(isCollapsed ? "\(tab.title), show all sections" : tab.title)
                 .accessibilityAddTraits(selection == tab ? .isSelected : [])
             }
         }
@@ -274,13 +366,17 @@ struct PhoneTabBar: View {
 }
 
 private extension View {
+    /// The bar's glass, tagged so a shape folding into another one (the bar
+    /// into its circle) morphs rather than cross-fades.
     @ViewBuilder
-    func phoneBarBackground<S: Shape>(_ shape: S) -> some View {
+    func phoneBarGlass<S: Shape>(_ shape: S, id: String, in namespace: Namespace.ID) -> some View {
         if #available(iOS 26.0, *) {
-            glassEffect(.regular, in: shape)
+            glassEffect(.regular.interactive(), in: shape)
+                .glassEffectID(id, in: namespace)
         } else {
             background(.ultraThinMaterial, in: shape)
                 .overlay(shape.stroke(Color.white.opacity(0.12), lineWidth: 1))
+                .matchedGeometryEffect(id: id, in: namespace)
         }
     }
 }
@@ -350,6 +446,7 @@ struct PhoneDownloadsView: View {
                 .padding(.horizontal, PhoneLayout.gutter)
                 .padding(.vertical, 8)
             }
+            .phoneTabBarFoldsOnScroll()
         }
     }
 
@@ -478,6 +575,7 @@ struct PhoneSearchView: View {
             }
             .padding(.vertical, 8)
         }
+        .phoneTabBarFoldsOnScroll()
         .navigationTitle(TVTab.search.title)
         .navigationBarTitleDisplayMode(.inline)
         // Pinned under the title. Left automatic, iOS 26 puts the field at
@@ -577,6 +675,7 @@ struct PhoneLibraryView: View {
                 .padding(.vertical, 8)
             }
         }
+        .phoneTabBarFoldsOnScroll()
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
