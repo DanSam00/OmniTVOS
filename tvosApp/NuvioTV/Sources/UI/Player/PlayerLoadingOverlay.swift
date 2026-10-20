@@ -280,10 +280,26 @@ struct PlayerLoadingOverlay: View {
             .padding(.top, compact ? contentTopInset : 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea(edges: compact ? [] : .all)
-        .clipped()
+        .modifier(LoaderBounds(compact: compact))
         .onAppear {
             isPulsing = true
+        }
+    }
+
+    /// Full screen, the loader runs edge to edge. Compact, it keeps to the box
+    /// it is given and is clipped to it, since its layers would otherwise
+    /// spill past. The clip must not apply full screen: there it cut the
+    /// artwork back to the safe area, leaving the page behind showing above
+    /// and below it.
+    private struct LoaderBounds: ViewModifier {
+        let compact: Bool
+
+        func body(content: Content) -> some View {
+            if compact {
+                content.clipped()
+            } else {
+                content.ignoresSafeArea()
+            }
         }
     }
 

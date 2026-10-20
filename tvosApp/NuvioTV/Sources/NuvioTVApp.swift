@@ -1954,6 +1954,28 @@ struct ContentView: View {
             }
 
             if isResolvingContinueWatchingStream, let item = resolvingContinueWatchingItem {
+                #if os(iOS)
+                // Upright, the same shape as the player's own loader, which
+                // takes over once the stream is found, so nothing jumps.
+                let upright = !UIDevice.current.orientation.isLandscape
+                let topInset = UIApplication.shared.connectedScenes
+                    .compactMap { ($0 as? UIWindowScene)?.keyWindow?.safeAreaInsets.top }
+                    .first ?? 0
+                ZStack {
+                    Color.black.ignoresSafeArea()
+                    PlayerLoadingOverlay(
+                        backdropUrl: item.meta.backgroundUrl ?? item.meta.posterUrl,
+                        logoUrl: item.meta.logoUrl,
+                        title: item.meta.name,
+                        message: L10n.string("player_status_starting_stream", fallback: "Starting stream"),
+                        compact: upright,
+                        contentTopInset: topInset
+                    )
+                    .phonePortraitTopArea(upright, topInset: topInset)
+                }
+                .transition(.opacity)
+                .zIndex(3)
+                #else
                 PlayerLoadingOverlay(
                     backdropUrl: item.meta.backgroundUrl ?? item.meta.posterUrl,
                     logoUrl: item.meta.logoUrl,
@@ -1962,6 +1984,7 @@ struct ContentView: View {
                 )
                 .transition(.opacity)
                 .zIndex(3)
+                #endif
             }
 
             // The adaptive tab sidebar is briefly expanded while its first
