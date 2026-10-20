@@ -6,6 +6,8 @@ import SwiftUI
 enum LibraryFocusBand {
     static let source = "source"
     static let controls = "controls"
+    /// The Mac's downloads list: each row, then its delete button.
+    static let downloads = "downloads"
     static let controlItems = ["sort", "group", "content", "watched", "genre"]
 }
 
@@ -22,6 +24,11 @@ private enum LibraryGridMetrics {
 enum LibrarySourceMode: String, CaseIterable, Identifiable {
     case saved
     case cloud
+    #if os(macOS)
+    /// Offline downloads. Mac only: the iPhone has its own Library, and the
+    /// Apple TV keeps no storage to download into.
+    case downloads
+    #endif
 
     var id: String { rawValue }
 
@@ -31,6 +38,10 @@ enum LibrarySourceMode: String, CaseIterable, Identifiable {
             return L10n.string("library_source_saved", fallback: "Saved")
         case .cloud:
             return L10n.string("library_source_cloud", fallback: "Cloud")
+        #if os(macOS)
+        case .downloads:
+            return L10n.string("nav_downloads", fallback: "Downloads")
+        #endif
         }
     }
 }
@@ -105,6 +116,14 @@ public struct LibraryView: View {
         self.onPlayCloudFile = onPlayCloudFile
     }
 
+    private var showsDownloads: Bool {
+        #if os(macOS)
+        return sourceMode == .downloads
+        #else
+        return false
+        #endif
+    }
+
     /// Cloud Library is only reachable for the providers that expose one.
     private var cloudLibraryAvailable: Bool {
         cloudViewModel.isAvailable
@@ -143,7 +162,8 @@ public struct LibraryView: View {
                 }
                 .disabled(overlayRestoreItemID != nil || overlayRestoreCloudItemID != nil)
 
-                // Controls row (Dynamic based on Saved vs Cloud)
+                // Controls row (Dynamic based on Saved vs Cloud; none for Downloads)
+                if !showsDownloads {
                 HStack(spacing: 16) {
                     if sourceMode == .saved {
                         FilterMenu(
@@ -207,9 +227,18 @@ public struct LibraryView: View {
                 }
                 .disabled(overlayRestoreItemID != nil || overlayRestoreCloudItemID != nil)
                 .zIndex(1)
+                }
 
                 if sourceMode == .saved {
                     savedContent
+                } else if showsDownloads {
+                    #if os(macOS)
+                    MacDownloadsList(
+                        focusedRowID: macDownloadFocus?.rowID,
+                        focusOnDelete: macDownloadFocus?.onDelete ?? false,
+                        onOpen: onContentClick
+                    )
+                    #endif
                 } else {
                     cloudContent
                 }
@@ -289,6 +318,11 @@ public struct LibraryView: View {
         }
         // The Saved/Cloud switch swaps the whole list out from under the caret.
         .onChange(of: sourceMode) { _, _ in macFocus.update(macBands) }
+        // Downloads added, finished or deleted: the list's rows change. Only
+        // the set of rows matters here, not every progress tick.
+        .onReceive(DownloadManager.shared.$records.map { Set($0.keys) }.removeDuplicates()) { _ in
+            macFocus.update(macBands)
+        }
         .onChange(of: viewModel.groupOption) { _, _ in macFocus.update(macBands) }
         .onChange(of: viewModel.sortOption) { _, _ in macFocus.update(macBands) }
         .onReceive(keyRouter.presses.map(Optional.some)) { press in
@@ -704,6 +738,14 @@ public struct LibraryView: View {
             id: LibraryFocusBand.source,
             items: LibrarySourceMode.allCases.map(\.rawValue)
         )]
+        if sourceMode == .downloads {
+            bands.append(MacFocusBand(
+                id: LibraryFocusBand.downloads,
+                items: MacDownloadsList.rows.flatMap { [$0.id, $0.id + MacDownloadsList.deleteSuffix] },
+                columns: 2
+            ))
+            return bands
+        }
         guard sourceMode == .saved else { return bands }
         bands.append(MacFocusBand(
             id: LibraryFocusBand.controls,
@@ -731,8 +773,27 @@ public struct LibraryView: View {
         return max(Int((available + LibraryGridMetrics.posterGap) / step), 1)
     }
 
+    /// Where the caret is in the downloads list, if it is there.
+    private var macDownloadFocus: (rowID: String, onDelete: Bool)? {
+        guard macFocus.bandID == LibraryFocusBand.downloads, let item = macFocus.itemID else { return nil }
+        if item.hasSuffix(MacDownloadsList.deleteSuffix) {
+            return (String(item.dropLast(MacDownloadsList.deleteSuffix.count)), true)
+        }
+        return (item, false)
+    }
+
     private func macActivate(group: String, item: String) {
         switch group {
+        case LibraryFocusBand.downloads:
+            let onDelete = item.hasSuffix(MacDownloadsList.deleteSuffix)
+            let id = onDelete ? String(item.dropLast(MacDownloadsList.deleteSuffix.count)) : item
+            guard let record = MacDownloadsList.rows.first(where: { $0.id == id }) else { return }
+            if onDelete {
+                DownloadManager.shared.delete(record.contentId)
+            } else {
+                MacDownloadsList.activate(record, onOpen: onContentClick)
+            }
+            return
         case LibraryFocusBand.source:
             guard let mode = LibrarySourceMode(rawValue: item) else { return }
             withAnimation(.easeInOut(duration: 0.2)) { sourceMode = mode }

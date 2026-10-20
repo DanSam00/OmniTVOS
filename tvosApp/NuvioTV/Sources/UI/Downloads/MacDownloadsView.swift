@@ -22,29 +22,32 @@ struct MacPlayDownloadModifier: ViewModifier {
     }
 }
 
-/// The Mac's Downloads tab: movies, then each show's episodes in order, with
-/// their status. Up and Down move; Return plays a finished download and
-/// pauses, resumes or retries the rest; Right reaches the row's delete
-/// button; Left from a row opens the menu. The mouse does the same.
-struct MacDownloadsView: View {
-    let isActive: Bool
-    let onPlay: (DownloadRecord) -> Void
+/// The Mac's downloads, shown in Library beside Saved and Cloud: movies, then
+/// each show's episodes in order, with their status. Library's keyboard model
+/// drives it (one band, two columns: the row and its delete button), so this
+/// view only draws the caret it is given. The mouse works as before: a click
+/// plays a finished download and pauses, resumes or retries the rest.
+struct MacDownloadsList: View {
+    /// The row the caret is on, and whether it sits on that row's delete button.
+    let focusedRowID: String?
+    let focusOnDelete: Bool
     let onOpen: (String, String) -> Void
 
     @ObservedObject private var downloads = DownloadManager.shared
-    @State private var caret = 0
-    @State private var caretOnDelete = false
-    @State private var macKeyToken: UUID?
-    @State private var scrollProxy: ScrollViewProxy?
-    private let keyRouter = MacKeyRouter.shared
 
-    private var mine: [DownloadRecord] {
+    /// Suffix that marks a row's delete button in Library's focus band.
+    static let deleteSuffix = "#delete"
+
+    /// The active profile's downloads.
+    @MainActor
+    private static var mine: [DownloadRecord] {
         let profile = ProfileSettings.activeProfileScope
-        return downloads.records.values.filter { $0.profileId == profile }
+        return DownloadManager.shared.records.values.filter { $0.profileId == profile }
     }
 
     /// Sections in order, each with its rows.
-    private var sections: [(title: String, rows: [DownloadRecord])] {
+    @MainActor
+    static var sections: [(title: String, rows: [DownloadRecord])] {
         let movies = mine.filter { $0.season == nil }.sorted { $0.createdAt > $1.createdAt }
         let shows = Dictionary(grouping: mine.filter { $0.season != nil }, by: \.meta.id).values
             .map { records in
@@ -54,25 +57,37 @@ struct MacDownloadsView: View {
         return (movies.isEmpty ? [] : [("Movies", movies)]) + shows.map { ($0.0, $0.1) }
     }
 
-    private var flatRows: [DownloadRecord] { sections.flatMap(\.rows) }
+    /// Every row in display order: the focus band's order.
+    @MainActor
+    static var rows: [DownloadRecord] { sections.flatMap(\.rows) }
+
+    /// Return or a click on a row.
+    @MainActor
+    static func activate(_ record: DownloadRecord, onOpen: (String, String) -> Void) {
+        let downloads = DownloadManager.shared
+        switch record.state {
+        case .completed: MacPlayDownloadModifier.request(record)
+        case .downloading, .queued, .resolving: downloads.pause(record.contentId)
+        case .paused, .failed: downloads.resume(record.contentId)
+        case .needsSource: onOpen(record.meta.id, record.meta.type)
+        case .findingSource: break
+        }
+    }
 
     var body: some View {
+        let sections = Self.sections
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Downloads")
-                            .font(.system(size: 52, weight: .bold))
-                        Text(subtitle)
-                            .font(.system(size: 22))
-                            .foregroundStyle(.secondary)
-                    }
-                    if flatRows.isEmpty {
+                    Text(subtitle)
+                        .font(.system(size: 20))
+                        .foregroundStyle(.secondary)
+                    if sections.isEmpty {
                         Text("Movies and episodes you download appear here, ready to watch without a connection. Use the download button on a title's page, or press D on an episode.")
                             .font(.system(size: 24))
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: 900, alignment: .leading)
-                            .padding(.top, 40)
+                            .padding(.top, 20)
                     }
                     ForEach(sections, id: \.title) { section in
                         VStack(alignment: .leading, spacing: 14) {
@@ -84,21 +99,16 @@ struct MacDownloadsView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 80)
-                .padding(.top, 70)
+                .padding(.top, 8)
                 .padding(.bottom, 120)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .onAppear { scrollProxy = proxy }
+            .onChange(of: focusedRowID) { _, id in
+                guard let id else { return }
+                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .center) }
+            }
         }
         .foregroundStyle(.white)
-        .onAppear { claimKeysIfActive() }
-        .onChange(of: isActive) { _, _ in claimKeysIfActive() }
-        .onDisappear { keyRouter.release(macKeyToken); macKeyToken = nil }
-        .onReceive(keyRouter.presses.map(Optional.some)) { press in
-            guard let press, keyRouter.isFront(macKeyToken) else { return }
-            handleKey(press.key)
-        }
     }
 
     private var subtitle: String {
@@ -107,15 +117,12 @@ struct MacDownloadsView: View {
         return "\(DownloadSettings.label(for: max(downloads.storageUsed, 0))) used · Saved in \(folder)"
     }
 
-    private func isCaret(_ record: DownloadRecord) -> Bool {
-        isActive && flatRows.indices.contains(caret) && flatRows[caret].id == record.id
-    }
-
     private func row(_ record: DownloadRecord) -> some View {
-        let highlighted = isCaret(record)
+        let highlighted = focusedRowID == record.id
+        let caretOnDelete = focusOnDelete
         let waiting = downloads.isWaitingForWiFi(record)
         return HStack(spacing: 22) {
-            Button { primary(record) } label: {
+            Button { Self.activate(record, onOpen: onOpen) } label: {
                 HStack(spacing: 22) {
                     AsyncImage(url: URL(string: DownloadManager.listArtwork(for: record) ?? "")) { image in
                         image.resizable().aspectRatio(contentMode: .fill)
@@ -180,71 +187,6 @@ struct MacDownloadsView: View {
         case .failed: return "exclamationmark.arrow.triangle.2.circlepath"
         case .needsSource: return "questionmark.circle"
         case .findingSource: return "ellipsis.circle"
-        }
-    }
-
-    private func primary(_ record: DownloadRecord) {
-        switch record.state {
-        case .completed: onPlay(record)
-        case .downloading, .queued, .resolving: downloads.pause(record.contentId)
-        case .paused, .failed: downloads.resume(record.contentId)
-        case .needsSource: onOpen(record.meta.id, record.meta.type)
-        case .findingSource: break
-        }
-    }
-
-    // MARK: Keyboard
-
-    private func claimKeysIfActive() {
-        keyRouter.release(macKeyToken)
-        macKeyToken = isActive ? keyRouter.claim() : nil
-    }
-
-    private func handleKey(_ key: MacKey) {
-        guard isActive else { return }
-        let menu = MacMenuState.shared
-        if key == .activate {
-            if menu.handleReturn() { return }
-        } else if let move = direction(for: key), menu.handleMove(move) {
-            return
-        }
-        let rows = flatRows
-        guard !rows.isEmpty else {
-            if key == .left { menu.open() }
-            return
-        }
-        caret = min(caret, rows.count - 1)
-        switch key {
-        case .up, .down:
-            let next = caret + (key == .up ? -1 : 1)
-            guard rows.indices.contains(next) else { return }
-            caret = next
-            caretOnDelete = false
-            withAnimation(.easeOut(duration: 0.2)) { scrollProxy?.scrollTo(rows[next].id, anchor: .center) }
-        case .right:
-            caretOnDelete = true
-        case .left:
-            if caretOnDelete { caretOnDelete = false } else { menu.open() }
-        case .activate:
-            let record = rows[caret]
-            if caretOnDelete {
-                downloads.delete(record.contentId)
-                caretOnDelete = false
-            } else {
-                primary(record)
-            }
-        default:
-            break
-        }
-    }
-
-    private func direction(for key: MacKey) -> MoveCommandDirection? {
-        switch key {
-        case .up: return .up
-        case .down: return .down
-        case .left: return .left
-        case .right: return .right
-        default: return nil
         }
     }
 }

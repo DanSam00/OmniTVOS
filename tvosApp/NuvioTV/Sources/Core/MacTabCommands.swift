@@ -26,7 +26,7 @@ final class MacTabCommandBus: ObservableObject {
     /// Live TV only while the profile has an IPTV source.
     @MainActor
     static var availableTabs: [TVTab] {
-        let all: [TVTab] = [.profile, .home, .search, .guide, .library, .calendar, .downloads, .settings]
+        let all: [TVTab] = [.profile, .home, .search, .guide, .library, .calendar, .settings]
         return IPTVAvailability.shared.hasSources ? all : all.filter { $0 != .guide }
     }
 
@@ -110,7 +110,6 @@ struct MacTabCommands: Commands {
         (.library, "4"),
         (.calendar, "5"),
         (.settings, "6"),
-        (.downloads, "7"),
     ]
 
     @ObservedObject private var iptv = IPTVAvailability.shared

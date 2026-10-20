@@ -175,8 +175,6 @@ enum TVTab: String, CaseIterable, Identifiable {
     case guide = "Live TV"
     case library = "Library"
     case calendar = "Calendar"
-    /// Offline downloads (Mac; the iPhone keeps them in Library).
-    case downloads = "Downloads"
     case settings = "Settings"
 
     var id: String { rawValue }
@@ -196,8 +194,6 @@ enum TVTab: String, CaseIterable, Identifiable {
             return L10n.string("nav_library", fallback: "Library")
         case .calendar:
             return L10n.string("nav_calendar", fallback: "Calendar")
-        case .downloads:
-            return L10n.string("nav_downloads", fallback: "Downloads")
         case .settings:
             return L10n.string("nav_settings", fallback: "Settings")
         }
@@ -211,7 +207,6 @@ enum TVTab: String, CaseIterable, Identifiable {
         case .guide: return "tv"
         case .library: return "rectangle.stack"
         case .calendar: return "calendar"
-        case .downloads: return "arrow.down.circle"
         case .settings: return "gearshape"
         }
     }
@@ -3906,13 +3901,6 @@ private struct TVMainTabView: View {
             macTab(.guide) { guideTabContent }
             macTab(.library) { libraryTabContent }
             macTab(.calendar) { calendarTabContent }
-            macTab(.downloads) {
-                MacDownloadsView(
-                    isActive: selectedTab == .downloads,
-                    onPlay: { MacPlayDownloadModifier.request($0) },
-                    onOpen: onNavigateToDetails
-                )
-            }
             macTab(.settings) { settingsTabContent }
         }
     }
