@@ -428,6 +428,7 @@ class PlayerViewModel: ObservableObject {
         setupPipObservers()
         #if os(macOS)
         observeWindowFocusForPictureInPicture()
+        MacNowPlaying.shared.attach(self)
         #endif
         postPlayController.$uiState
             .receive(on: DispatchQueue.main)
@@ -2020,6 +2021,9 @@ class PlayerViewModel: ObservableObject {
             return
         }
         didShutdown = true
+        #if os(macOS)
+        MacNowPlaying.shared.detach(self)
+        #endif
         pollTimer?.invalidate()
         pollTimer = nil
         controlsHideTimer?.invalidate()
