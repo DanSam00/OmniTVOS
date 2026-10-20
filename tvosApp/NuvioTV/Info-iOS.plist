@@ -36,6 +36,8 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>infuse</string>
@@ -65,6 +67,10 @@
 	<string>Omni uses your local network to find Chromecast and other Cast devices.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>This app does not require microphone access.</string>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>com.saminaden.omni.watching</string>
+	</array>
 	<key>PREMIUMIZE_CLIENT_ID</key>
 	<string></string>
 	<key>UIAppFonts</key>
@@ -98,7 +104,5 @@
 	<string>Dark</string>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
-	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
 </dict>
 </plist>

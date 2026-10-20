@@ -41,5 +41,9 @@
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Omni connects to media servers and add-ons on your local network.</string>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>com.saminaden.omni.watching</string>
+	</array>
 </dict>
 </plist>

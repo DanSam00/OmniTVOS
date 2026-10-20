@@ -552,6 +552,12 @@ struct ContentView: View {
         // on Home, so Menu there keeps its normal tab-level behaviour.
         .onExitCommand(perform: isOverlayPresented ? dismissOverlay : nil)
         .onOpenURL(perform: handleDeepLink)
+        #if os(iOS) || os(macOS)
+        // Handoff from the other device: what was playing there.
+        .onContinueUserActivity(WatchingHandoff.activityType) { activity in
+            if let url = WatchingHandoff.deepLink(for: activity) { handleDeepLink(url) }
+        }
+        #endif
         .onAppear {
             syncManager.attach(authManager: authManager, profileViewModel: profileViewModel)
             ICloudSettingsSyncManager.shared.start()

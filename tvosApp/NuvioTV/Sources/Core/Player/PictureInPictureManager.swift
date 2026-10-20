@@ -267,6 +267,9 @@ final class PictureInPictureManager: NSObject, ObservableObject {
     ) {
         self.activeCoordinator = coordinator
         self.activeContext = context
+        #if os(iOS) || os(macOS)
+        WatchingHandoff.advertise(meta: context.meta, title: context.meta.name, subtitle: context.subtitle)
+        #endif
 
         setupPipController(for: coordinator.aetherController)
     }

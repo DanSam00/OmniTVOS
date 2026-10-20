@@ -2024,6 +2024,9 @@ class PlayerViewModel: ObservableObject {
         #if os(macOS)
         MacNowPlaying.shared.detach(self)
         #endif
+        #if os(iOS) || os(macOS)
+        WatchingHandoff.stop()
+        #endif
         pollTimer?.invalidate()
         pollTimer = nil
         controlsHideTimer?.invalidate()
