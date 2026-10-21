@@ -1041,6 +1041,9 @@ struct TrailerPreviewPlayer: View {
 
     @State private var player = AVPlayer()
     @State private var isRenderReady = false
+    /// The trailer reached its end: fade back to the still artwork rather
+    /// than hold the last frame.
+    @State private var didFinish = false
     /// When this preview began resolving, so the log can say how long the
     /// lookup and the first decoded frame each took.
     @State private var previewStartedAt: Date?
@@ -1067,6 +1070,12 @@ struct TrailerPreviewPlayer: View {
         .onChange(of: isActive) { _, active in
             if active {
                 logTrailer("activate", "ready=" + String(isRenderReady))
+                // Shown again after it ended: start over rather than sit on
+                // the final frame.
+                if didFinish {
+                    didFinish = false
+                    player.seek(to: .zero)
+                }
                 player.play()
                 if isRenderReady { onPlaybackReady() }
             } else {
@@ -1083,6 +1092,8 @@ struct TrailerPreviewPlayer: View {
                   item == player.currentItem else {
                 return
             }
+            didFinish = true
+            logTrailer("finished")
             onPlaybackFinished()
         }
         .onDisappear {
@@ -1097,7 +1108,7 @@ struct TrailerPreviewPlayer: View {
     }
 
     private var isVisible: Bool {
-        isActive && isRenderReady
+        isActive && isRenderReady && !didFinish
     }
 
     private func logTrailer(_ event: String, _ detail: String = "") {
@@ -1113,6 +1124,7 @@ struct TrailerPreviewPlayer: View {
 
     private func startPreview() async {
         isRenderReady = false
+        didFinish = false
         previewStartedAt = Date()
         logTrailer("resolve.begin")
 
