@@ -1097,6 +1097,12 @@ private struct ConditionalSettingsEntryAnchor: ViewModifier {
     }
 }
 
+/// Identity for presenting a language picker as a cover on tvOS.
+private struct LanguagePickerItem: Identifiable {
+    let kind: LanguagePickerKind
+    var id: LanguagePickerKind { kind }
+}
+
 private enum LanguagePickerKind: Hashable {
     case appLanguage
     case audio
@@ -1389,47 +1395,45 @@ struct SettingsView: View {
                 )
             }
 
+            #if !os(tvOS)
             if let picker = presentedLanguagePicker {
-                LanguagePickerWindow(
-                    title: languagePickerTitle(picker),
-                    subtitle: languagePickerSubtitle(picker),
-                    systemImage: languagePickerSystemImage(picker),
-                    selection: languagePickerSelection(picker),
-                    languages: picker == .appLanguage ? appLanguagePickerOptions : pickerLanguages,
-                    allowsMultiple: picker == .subtitles,
-                    accentColor: accentColor
-                ) {
-                    dismissLanguagePicker(picker)
-                }
-                .id(picker)
-                .transition(.opacity.combined(with: .scale(scale: 0.96)))
-                .zIndex(1)
+                languagePickerWindow(picker)
+                    .id(picker)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                    .zIndex(1)
             }
 
             if let mode = presentedProfilePinMode, let profile = activeProfile {
-                ProfilePinManagementView(
-                    mode: mode,
-                    profileName: ProfileDisplayName.resolve(
-                        profile: profile,
-                        settingsName: profile.name
-                    ),
-                    onVerify: { pin in
-                        await onVerifyProfilePin?(profile.id, pin) == true
-                    },
-                    onSave: { pin, currentPin in
-                        await onChangeProfilePin?(profile.id, pin, currentPin) == true
-                    },
-                    onDismiss: {
+                profilePinWindow(mode, profile: profile)
+                    .transition(.opacity)
+                    .zIndex(2)
+                    .onExitCommand {
                         presentedProfilePinMode = nil
                     }
-                )
-                .transition(.opacity)
-                .zIndex(2)
-                .onExitCommand {
-                    presentedProfilePinMode = nil
-                }
+            }
+            #endif
+        }
+        #if os(tvOS)
+        // Presented, not drawn over the page: drawn inline, focus could leave
+        // them for the app's menu behind (Left from the picker's Done landed
+        // on Settings in the menu). A cover holds focus until it closes.
+        .fullScreenCover(item: Binding(
+            get: { presentedLanguagePicker.map(LanguagePickerItem.init) },
+            set: { item in if item == nil, let picker = presentedLanguagePicker { dismissLanguagePicker(picker) } }
+        )) { item in
+            languagePickerWindow(item.kind)
+                .presentationBackground(.clear)
+        }
+        .fullScreenCover(item: Binding(
+            get: { activeProfile == nil ? nil : presentedProfilePinMode },
+            set: { if $0 == nil { presentedProfilePinMode = nil } }
+        )) { mode in
+            if let profile = activeProfile {
+                profilePinWindow(mode, profile: profile)
+                    .presentationBackground(.clear)
             }
         }
+        #endif
         .background(Color.nuvioBackground(amoled: amoled, body: bodyColor).ignoresSafeArea())
         .animation(.easeOut(duration: 0.16), value: presentedLanguagePicker != nil)
         .animation(.easeInOut(duration: 0.18), value: presentedProfilePinMode != nil)
@@ -1579,6 +1583,39 @@ struct SettingsView: View {
         case .audio: return audioLanguageSelection
         case .subtitles: return subtitleLanguageSelection
         }
+    }
+
+    private func languagePickerWindow(_ picker: LanguagePickerKind) -> some View {
+        LanguagePickerWindow(
+            title: languagePickerTitle(picker),
+            subtitle: languagePickerSubtitle(picker),
+            systemImage: languagePickerSystemImage(picker),
+            selection: languagePickerSelection(picker),
+            languages: picker == .appLanguage ? appLanguagePickerOptions : pickerLanguages,
+            allowsMultiple: picker == .subtitles,
+            accentColor: accentColor
+        ) {
+            dismissLanguagePicker(picker)
+        }
+    }
+
+    private func profilePinWindow(_ mode: ProfilePinSheetMode, profile: Profile) -> some View {
+        ProfilePinManagementView(
+            mode: mode,
+            profileName: ProfileDisplayName.resolve(
+                profile: profile,
+                settingsName: profile.name
+            ),
+            onVerify: { pin in
+                await onVerifyProfilePin?(profile.id, pin) == true
+            },
+            onSave: { pin, currentPin in
+                await onChangeProfilePin?(profile.id, pin, currentPin) == true
+            },
+            onDismiss: {
+                presentedProfilePinMode = nil
+            }
+        )
     }
 
     private func dismissLanguagePicker(_ picker: LanguagePickerKind) {
@@ -7432,6 +7469,12 @@ private struct SubtitleColorRow: View {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
         )
+        #if os(tvOS)
+        // Only the small controls at the row's right end can take focus;
+        // a section spanning the row lets Up and Down land in it from any
+        // column (see SettingsNativeTextFieldRow).
+        .focusSection()
+        #endif
         #endif
     }
 
@@ -12268,6 +12311,11 @@ private struct CollectionEditorSheet: View {
                                     action: addFolder
                                 )
                             }
+                            #if os(tvOS)
+                            // Add folder sits at the far right; the view-mode
+                            // chips above are on the left, so Down skipped it.
+                            .focusSection()
+                            #endif
 
                             if folders.isEmpty {
                                 Text(L10n.string("tvos_settings_add_at_least_one_folder_then_attach_catalogs", fallback: "Add at least one folder, then attach catalogs."))
@@ -12312,6 +12360,9 @@ private struct CollectionEditorSheet: View {
                         action: save
                     )
                 }
+                #if os(tvOS)
+                .focusSection()
+                #endif
                 .padding(.top, 22)
                 .padding(.horizontal, 12)
                 .frame(maxWidth: .infinity)
@@ -14138,6 +14189,12 @@ private struct SettingsStepperRow: View {
         .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
+        #if os(tvOS)
+        // Only the small controls at the row's right end can take focus;
+        // a section spanning the row lets Up and Down land in it from any
+        // column (see SettingsNativeTextFieldRow).
+        .focusSection()
+        #endif
         // No button of its own: Return steps it, wrapping at the top so the
         // whole range is reachable from the keyboard.
         .macSettingsRow(title) {
@@ -14270,6 +14327,13 @@ private struct SettingsNativeTextFieldRow: View {
             .modifier(GlassCapsule(focused: isFocused))
         }
         .entryLockable()
+        #if os(tvOS)
+        // Only the capsule at the row's right end can take focus. Without a
+        // section spanning the whole row, Up or Down from a control on the
+        // left (a sheet's Cancel button) searched straight above itself,
+        // found nothing, and the field could never be reached.
+        .focusSection()
+        #endif
     }
 
     private var displayText: String {
@@ -14623,6 +14687,14 @@ private struct SettingsSwatchRow: View {
         ScrollView(.horizontal, showsIndicators: false) {
             swatchStrip.padding(.horizontal, SettingsPhoneMetrics.rowHorizontalPadding).padding(.vertical, 6)
         }
+        #elseif os(tvOS)
+        swatchStrip
+            // A focused swatch grows by 18%. Without room above and below,
+            // it overlapped the row underneath, and the focus engine took
+            // that full-width row as the nearest thing to the left and right
+            // of every swatch: sideways presses dropped out of the row.
+            .padding(.vertical, 12)
+            .focusSection()
         #else
         swatchStrip
         #endif
@@ -14749,7 +14821,6 @@ private struct SettingsSwatchButton: View {
         .nuvioFocusable()
         .focused($isFocused)
         .focusEffectDisabledIfAvailable()
-        .entryLockable()
         .scaleEffect(isFocused ? 1.18 : 1.0)
         .zIndex(isFocused ? 1 : 0)
         .animation(.easeOut(duration: 0.14), value: isFocused)
@@ -15227,6 +15298,9 @@ struct SettingsActionRowStack<Content: View>: View {
     var body: some View {
         #if os(iOS)
         SettingsPhoneActionRowLayout { content }
+        #elseif os(tvOS)
+        HStack(spacing: 14) { content }
+            .focusSection()
         #else
         HStack(spacing: 14) { content }
         #endif
