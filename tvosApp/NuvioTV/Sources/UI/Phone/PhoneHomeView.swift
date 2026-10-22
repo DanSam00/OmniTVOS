@@ -1006,10 +1006,14 @@ private struct PhoneHeroSlideView: View {
                 if let line = item.episodeDisplayLine {
                     Text(line).font(.subheadline.weight(.semibold)).lineLimit(1)
                 }
-                Text(item.isUpNextEntry ? item.upNextBadgeText : item.remainingText)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.7))
-                if item.progress > 0 {
+                if PhoneLive.isLive(item) {
+                    PhoneLiveBadge()
+                } else {
+                    Text(item.isUpNextEntry ? item.upNextBadgeText : item.remainingText)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+                if item.progress > 0, item.cardKind == nil {
                     ProgressView(value: min(max(item.progress, 0), 1))
                         .tint(.white)
                         .frame(maxWidth: 220)
@@ -1017,6 +1021,7 @@ private struct PhoneHeroSlideView: View {
             }
         case .title(let meta):
             VStack(alignment: .leading, spacing: 6) {
+                if PhoneLive.isLive(meta) { PhoneLiveBadge() }
                 Text([meta.year.map(String.init), meta.genres?.prefix(2).joined(separator: " · ")]
                     .compactMap { $0 }.joined(separator: " · "))
                     .font(.caption.weight(.semibold))
@@ -1055,17 +1060,22 @@ private struct PhoneHeroSlideView: View {
         .padding(.top, 4)
     }
 
-    /// An Up Next episode that has not aired yet: nothing to play, so the
-    /// button opens the title instead.
+    /// An episode still to air, or a favourite team's match not yet under
+    /// way: nothing to play, so the button opens the page instead.
     private var isUnaired: Bool {
         guard case .resume(let item) = slide else { return false }
+        if item.isFixture { return !item.isFixtureLive }
         return item.isUpNextEntry && !item.hasAired && !item.isAiringToday
     }
 
     private var playTitle: String {
         if isUnaired { return "Details" }
-        if case .resume = slide { return "Resume" }
-        return "Play"
+        if case .resume(let item) = slide {
+            if item.isFixture || PhoneLive.isLive(item) { return "Watch Live" }
+            if item.isRecommendation { return "Play" }
+            return "Resume"
+        }
+        return PhoneLive.isLive(slide.meta) ? "Watch Live" : "Play"
     }
 
     private var playIcon: String {

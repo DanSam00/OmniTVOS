@@ -324,10 +324,15 @@ struct PhoneContinueCard: View {
             Text(item.meta.name)
                 .font(.subheadline.weight(.semibold))
                 .lineLimit(1)
-            Text(item.episodeDisplayLine ?? item.remainingText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            if PhoneLive.isLive(item) {
+                PhoneLiveBadge(font: .caption.weight(.semibold))
+            } else {
+                // A match or a suggestion says when, or that it is one.
+                Text(item.cardKind != nil ? item.upNextBadgeText : (item.episodeDisplayLine ?? item.remainingText))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         }
         .frame(width: PhoneLayout.landscapeWidth, alignment: .leading)
         .contentShape(Rectangle())
@@ -561,5 +566,42 @@ struct PhoneSourceFilterBar: View {
             .foregroundStyle(isActive ? (onDarkBackground ? Color.black : Color(uiColor: .systemBackground)) : base)
             .background(isActive ? base : base.opacity(0.12), in: Capsule())
             .contentShape(Capsule())
+    }
+}
+
+// MARK: - Live
+
+enum PhoneLive {
+    /// Live content: a channel, a sports listing the add-on marks LIVE, or a
+    /// favourite team's match under way. Its button always says Watch Live.
+    static func isLive(_ meta: NuvioMeta) -> Bool {
+        meta.isLiveContent
+    }
+
+    static func isLive(_ item: ContinueWatchingItem) -> Bool {
+        item.isFixtureLive || (item.cardKind == nil && isLive(item.meta))
+    }
+}
+
+/// "● LIVE": a red dot that glows and breathes, so what is on now stands out.
+struct PhoneLiveBadge: View {
+    var font: Font = .caption.weight(.bold)
+    @State private var glowing = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(Color.red)
+                .frame(width: 8, height: 8)
+                .shadow(color: .red.opacity(glowing ? 0.95 : 0.35), radius: glowing ? 6 : 2)
+                .scaleEffect(glowing ? 1.15 : 0.9)
+            Text("LIVE")
+                .font(font)
+                .foregroundStyle(.white)
+        }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { glowing = true }
+        }
+        .accessibilityLabel("Live")
     }
 }

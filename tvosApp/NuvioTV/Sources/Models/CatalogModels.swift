@@ -307,6 +307,45 @@ struct NuvioMeta: Identifiable, Codable, Equatable, Hashable {
         )
     }
 
+    /// Live content: a channel, or a sports listing marked live ("LIVE",
+    /// "🔴 LIVE: …"). Its play button says Watch Live.
+    var isLiveContent: Bool {
+        let kind = type.lowercased()
+        if kind == "tv" || kind == "channel" || id.hasPrefix("iptv:") || id.hasPrefix("iptvch:") { return true }
+        if releaseInfo?.trimmingCharacters(in: .whitespaces).uppercased() == "LIVE" { return true }
+        return name.range(of: #"^[^\p{L}\p{N}]*live\s*:"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    /// A copy with other art: a match drawn by the app (`FixtureArtwork`).
+    func withArtwork(poster: String?, background: String?, dropsLogo: Bool = false) -> NuvioMeta {
+        NuvioMeta(
+            id: id,
+            name: name,
+            description: description,
+            posterUrl: poster ?? posterUrl,
+            backgroundUrl: background ?? backgroundUrl,
+            logoUrl: dropsLogo ? nil : logoUrl,
+            imdbId: imdbId,
+            tmdbId: tmdbId,
+            type: type,
+            year: year,
+            genres: genres,
+            rating: rating,
+            releaseInfo: releaseInfo,
+            runtime: runtime,
+            cast: cast,
+            director: director,
+            writer: writer,
+            certification: certification,
+            country: country,
+            released: released,
+            status: status,
+            videos: videos,
+            trailerYtIds: trailerYtIds,
+            externalRatings: externalRatings
+        )
+    }
+
     func withExternalRatings(_ ratings: [NuvioExternalRating]) -> NuvioMeta {
         NuvioMeta(
             id: id,

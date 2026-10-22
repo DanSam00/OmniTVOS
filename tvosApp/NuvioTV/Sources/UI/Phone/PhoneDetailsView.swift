@@ -611,6 +611,7 @@ struct PhoneDetailsView: View {
     }
 
     private func playLabel(_ meta: NuvioMeta) -> String {
+        if PhoneLive.isLive(meta) { return "Watch Live" }
         guard meta.isSeries, let episode = nextEpisode(meta) else { return "Play" }
         return "Play S\(episode.season) E\(episode.episode)"
     }

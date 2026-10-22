@@ -1,12 +1,25 @@
 import Foundation
+#if os(iOS) || os(macOS)
+import WidgetKit
+#endif
 
 /// The favourite teams whose next match joins Continue Watching. Kept per
-/// profile, on this device.
+/// profile and synced with the account like the other profile settings, so
+/// one entry reaches every device. Stored as one name per line: the account
+/// sync carries strings, not lists.
 enum FavouriteTeamsStore {
     static let changedNotification = Notification.Name("omni.favouriteTeams.changed")
 
     static func teams() -> [String] {
-        (ProfileSettings.current.array(forKey: SettingsKey.favouriteTeams) as? [String]) ?? []
+        let store = ProfileSettings.current
+        if let text = store.string(forKey: SettingsKey.favouriteTeams) {
+            return text.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+        }
+        // 4.1.3 stored a list on this device only; rewritten as text, which
+        // the account sync then carries.
+        guard let list = store.array(forKey: SettingsKey.favouriteTeams) as? [String] else { return [] }
+        store.set(list.joined(separator: "\n"), forKey: SettingsKey.favouriteTeams)
+        return list
     }
 
     static func add(_ name: String) {
@@ -23,7 +36,7 @@ enum FavouriteTeamsStore {
     }
 
     private static func save(_ list: [String]) {
-        ProfileSettings.current.set(list, forKey: SettingsKey.favouriteTeams)
+        ProfileSettings.current.set(list.joined(separator: "\n"), forKey: SettingsKey.favouriteTeams)
         NotificationCenter.default.post(name: changedNotification, object: nil)
     }
 
@@ -171,6 +184,9 @@ final class ContinueWatchingExtras {
                 fixtures = []
                 NotificationCenter.default.post(name: Self.changedNotification, object: nil)
             }
+            #if os(iOS) || os(macOS)
+            if teams.isEmpty { publishToWidget([]) }
+            #endif
         }
         guard !teams.isEmpty, fixtureTask == nil,
               fixturesLoadedAt.map({ now.timeIntervalSince($0) > Self.fixtureLifetime }) ?? true else { return }
@@ -262,7 +278,7 @@ final class ContinueWatchingExtras {
             for await items in group { listed += items }
         }
 
-        var result: [ContinueWatchingItem] = []
+        var nextMatches: [ContinueWatchingItem] = []
         var used = Set<String>()
         for team in teams {
             let matches = listed
@@ -286,15 +302,64 @@ final class ContinueWatchingExtras {
                         kickoff: kickoff
                     )
                 }
-                .filter(Self.fixtureIsCurrent)
+                .filter(Self.fixtureIsNotOver)
                 .sorted { ($0.kickoff ?? .distantPast) < ($1.kickoff ?? .distantPast) }
             // The next one only: a live match, else the soonest.
             if let next = matches.first, used.insert(next.meta.id).inserted {
-                result.append(next)
+                nextMatches.append(next)
             }
         }
-        return result
+        // Their art is the app's own, set when the listing was read
+        // (`FixtureArtwork.decorated`).
+        #if os(iOS) || os(macOS)
+        publishToWidget(nextMatches)
+        #endif
+        // Continue Watching shows each from the day before.
+        return nextMatches.filter(Self.fixtureIsCurrent)
     }
+
+    /// Not yet finished: before the expected final whistle, or (with only a
+    /// date) that day or later.
+    static func fixtureIsNotOver(_ item: ContinueWatchingItem) -> Bool {
+        if let kickoff = item.kickoff {
+            return Date() <= kickoff.addingTimeInterval(expectedLength(of: item.meta))
+        }
+        guard let day = item.released else { return false }
+        return day >= CalendarDayKey.dayKey(offsetFromToday: 0)
+    }
+
+    #if os(iOS) || os(macOS)
+    /// The teams' next matches for the Coming Up widget, beside the episodes.
+    private func publishToWidget(_ matches: [ContinueWatchingItem]) {
+        let feed = matches.compactMap { item -> UpcomingEpisodeEntry? in
+            let day = item.kickoff ?? item.released.flatMap(CalendarDayKey.date(fromDayKey:))
+            guard let day else { return nil }
+            return UpcomingEpisodeEntry(
+                id: "match|" + item.meta.id,
+                metaId: item.meta.id,
+                type: item.meta.type,
+                title: item.meta.name,
+                episodeCode: nil,
+                episodeTitle: nil,
+                airDate: Calendar.current.startOfDay(for: day),
+                posterURL: item.meta.posterUrl,
+                imageURL: item.meta.backgroundUrl,
+                kickoff: item.kickoff,
+                matchLength: Self.expectedLength(of: item.meta)
+            )
+        }
+        guard UpcomingEpisodeFeedStore.readMatches() != feed else { return }
+        UpcomingEpisodeFeedStore.writeMatches(feed)
+        WidgetCenter.shared.reloadTimelines(ofKind: OmniWidgetKind.upcoming)
+        let sources = feed.flatMap { [$0.posterURL, $0.imageURL].compactMap { $0 } }
+        Task {
+            if await WidgetArtworkCache.fill(sources) {
+                WidgetCenter.shared.reloadTimelines(ofKind: OmniWidgetKind.upcoming)
+            }
+            WidgetArtworkCache.pruneToFeeds()
+        }
+    }
+    #endif
 
     /// From the start of the day before kick-off until the match should be
     /// over; with only a date, that day and the one before.
@@ -311,7 +376,7 @@ final class ContinueWatchingExtras {
     }
 
     /// How long a match runs, kick-off to final whistle with a margin, by sport.
-    private static func expectedLength(of meta: NuvioMeta) -> TimeInterval {
+    static func expectedLength(of meta: NuvioMeta) -> TimeInterval {
         let text = ([meta.name] + (meta.genres ?? [])).joined(separator: " ").lowercased()
         let hours: Double
         if text.contains("cricket") {

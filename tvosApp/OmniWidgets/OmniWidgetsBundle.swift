@@ -100,6 +100,7 @@ struct WidgetHero: View {
     let title: String
     let meta: String?
     var metaHighlighted = false
+    var isLive = false
     var progress: Double? = nil
     let art: String?
     var fallback: String? = nil
@@ -121,7 +122,7 @@ struct WidgetHero: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
                 if let meta {
-                    WidgetMeta(text: meta, highlighted: metaHighlighted)
+                    WidgetMeta(text: meta, highlighted: metaHighlighted, isLive: isLive)
                 }
                 if let progress {
                     WidgetProgressBar(value: progress, height: 3)
@@ -140,18 +141,27 @@ struct WidgetHero: View {
     }
 }
 
-/// The small capitals line: NEXT · S2, E1.
+/// The small capitals line: NEXT · S2, E1. Live content gets a red dot.
 struct WidgetMeta: View {
     let text: String
     var highlighted = false
+    var isLive = false
     var size: CGFloat = 11
 
     var body: some View {
-        Text(text.uppercased())
-            .font(.system(size: size, weight: .semibold))
-            .tracking(0.6)
-            .foregroundStyle(highlighted ? OmniWidgetStyle.accent : OmniWidgetStyle.secondary)
-            .lineLimit(1)
+        HStack(spacing: 5) {
+            if isLive {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: size * 0.7, height: size * 0.7)
+                    .shadow(color: .red.opacity(0.8), radius: 3)
+            }
+            Text(text.uppercased())
+                .font(.system(size: size, weight: .semibold))
+                .tracking(0.6)
+                .foregroundStyle(isLive ? .white : (highlighted ? OmniWidgetStyle.accent : OmniWidgetStyle.secondary))
+                .lineLimit(1)
+        }
     }
 }
 
@@ -166,6 +176,7 @@ struct WidgetRow: View {
     let title: String
     let meta: String?
     var metaHighlighted = false
+    var isLive = false
     var progress: Double? = nil
     let art: String?
     var fallback: String? = nil
@@ -188,7 +199,7 @@ struct WidgetRow: View {
                         .font(.system(size: compact ? 13 : 15, weight: .semibold))
                         .lineLimit(1)
                     if let meta {
-                        WidgetMeta(text: meta, highlighted: metaHighlighted, size: 10)
+                        WidgetMeta(text: meta, highlighted: metaHighlighted, isLive: isLive, size: 10)
                     }
                     if let progress {
                         WidgetProgressBar(value: progress, height: 2.5)

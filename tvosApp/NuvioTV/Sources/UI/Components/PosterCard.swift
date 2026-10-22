@@ -498,12 +498,18 @@ struct PosterCard: View {
     private var continueBadge: some View {
         if let continueBadgeDisplayText {
             let badgeRadius = AppCardStyle.badgeCornerRadius(for: cardCornerRadiusSetting, base: 10)
-            Text(continueBadgeDisplayText)
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundColor(.white)
-                .lineLimit(1)
-                .minimumScaleFactor(0.65)
-                .multilineTextAlignment(.center)
+            HStack(spacing: 8) {
+                // A match under way.
+                if continueIsUpNext, continueBadgeDisplayText.uppercased() == "LIVE" {
+                    LivePulseDot(size: 12)
+                }
+                Text(continueBadgeDisplayText)
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
+                    .multilineTextAlignment(.center)
+            }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
                 .background {
@@ -2003,6 +2009,8 @@ enum PosterDiskCacheFreshness {
 
 private let posterURLSession: URLSession = {
     let config = URLSessionConfiguration.default
+    // Match art is drawn by the app (`FixtureArtwork`), not downloaded.
+    config.protocolClasses = [FixtureArtURLProtocol.self] + (config.protocolClasses ?? [])
     config.timeoutIntervalForRequest = 10
     config.timeoutIntervalForResource = 20
     config.httpMaximumConnectionsPerHost = 10
@@ -2581,5 +2589,46 @@ extension View {
                 onRemoveFromContinueWatching: onRemoveFromContinueWatching
             )
         )
+    }
+}
+
+/// A red dot that glows and breathes, in front of "LIVE", so what is on now
+/// stands out on Apple TV and the Mac (`PhoneLiveBadge` on iPhone).
+struct LivePulseDot: View {
+    var size: CGFloat = 12
+    @State private var glowing = false
+
+    var body: some View {
+        Circle()
+            .fill(Color.red)
+            .frame(width: size, height: size)
+            .shadow(color: .red.opacity(glowing ? 0.95 : 0.35), radius: glowing ? size * 0.7 : size * 0.2)
+            .scaleEffect(glowing ? 1.15 : 0.9)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { glowing = true }
+            }
+    }
+}
+
+/// The Continue Watching line under a title: what is left, the next-up badge,
+/// or "● LIVE" for a match under way.
+struct ContinueBadgeLine: View {
+    let item: ContinueWatchingItem
+    let size: CGFloat
+    var opacity: Double = 0.7
+
+    var body: some View {
+        if item.isFixtureLive {
+            HStack(spacing: size * 0.45) {
+                LivePulseDot(size: size * 0.55)
+                Text(item.upNextBadgeText)
+                    .font(.custom("Inter-SemiBold", size: size))
+                    .foregroundColor(.white)
+            }
+        } else {
+            Text(item.isUpNextEntry ? item.upNextBadgeText : item.remainingText.uppercased())
+                .font(.custom("Inter-SemiBold", size: size))
+                .foregroundColor(.white.opacity(opacity))
+        }
     }
 }

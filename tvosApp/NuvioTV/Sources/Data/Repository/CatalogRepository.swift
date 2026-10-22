@@ -1896,8 +1896,10 @@ struct CinemetaMeta: Decodable {
         case imdbId = "imdb_id"
     }
 
+    /// A match gets the app's own art (`FixtureArtwork`) in place of the
+    /// add-on's single small picture.
     func toMeta(fallbackType: String) -> NuvioMeta {
-        NuvioMeta(
+        FixtureArtwork.decorated(NuvioMeta(
             id: id,
             name: name,
             description: description,
@@ -1921,7 +1923,7 @@ struct CinemetaMeta: Decodable {
             status: status,
             videos: videos?.compactMap { $0.toVideo() },
             trailerYtIds: trailerYtIds
-        )
+        ))
     }
 
     private var canonicalImdbId: String? {

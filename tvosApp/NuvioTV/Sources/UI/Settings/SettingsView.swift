@@ -248,7 +248,8 @@ enum SettingsKey {
     static let continueWatchingSort = "nuvio.tv.settings.layout.continueWatchingSort"
     static let upNextFromFurthestEpisode = "nuvio.tv.settings.layout.upNextFromFurthestEpisode"
     static let showUnairedNextUp = "nuvio.tv.settings.layout.showUnairedNextUp"
-    /// Teams whose next match joins Continue Watching (`FavouriteTeamsStore`).
+    /// Teams whose next match joins Continue Watching (`FavouriteTeamsStore`),
+    /// one per line; synced with the account.
     static let favouriteTeams = "omni.settings.favouriteTeams"
     static let cardCornerRadius = "nuvio.tv.settings.layout.cardCornerRadius"
     static let cardSize = "nuvio.tv.settings.layout.cardSize"
@@ -404,6 +405,7 @@ enum SettingsKey {
     ]
 
     static let all = [
+        favouriteTeams,
         profileName, profilePinEnabled, profileAutoSelectLast, profileRequireSelectionAfterBackground, kidsProfile,
         customAvatarPhoto,
         accountSyncWatchState,
@@ -1997,6 +1999,16 @@ private struct AccountSettingsView: View {
                 )
                 .opacity(!autoSelectLastProfile ? 1 : 0.46)
                 .disabled(autoSelectLastProfile)
+            }
+
+            SettingsGroup(
+                title: L10n.string("settings_sports", fallback: "Sports"),
+                subtitle: L10n.string(
+                    "settings_sports_subtitle",
+                    fallback: "This profile's teams, whose matches join Continue Watching"
+                )
+            ) {
+                SettingsFavouriteTeamsRows(accentColor: accentColor)
             }
 
             SettingsGroup(
@@ -3649,8 +3661,6 @@ private struct LayoutDiscoverySettingsView: View {
                     NotificationCenter.default.post(name: TraktSettingsStore.continueWatchingChangedNotification, object: nil)
                     NotificationCenter.default.post(name: ContinueWatchingStore.changedNotification, object: nil)
                 }
-
-                SettingsFavouriteTeamsRows(accentColor: accentColor)
 
                 SettingsToggleRow(
                     title: L10n.string(

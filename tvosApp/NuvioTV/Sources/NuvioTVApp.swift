@@ -20,6 +20,8 @@ import OSLog
 @main
 struct NuvioTVApp: App {
     init() {
+        // Match art is drawn by the app, behind `omni-fixture` addresses.
+        URLProtocol.registerClass(FixtureArtURLProtocol.self)
         #if os(macOS)
         MacDiagnostics.start()
         MacDiagnostics.watchArrowKeys()
@@ -9711,9 +9713,7 @@ struct TVHeroView: View {
             TVHeroMetaLine(meta: meta, episodeLine: episodeLine)
 
             if let continueItem {
-                Text(continueItem.isUpNextEntry ? continueItem.upNextBadgeText : continueItem.remainingText.uppercased())
-                    .font(.custom("Inter-SemiBold", size: 22))
-                    .foregroundColor(.white.opacity(0.66))
+                ContinueBadgeLine(item: continueItem, size: 22, opacity: 0.66)
             }
 
             if let description = heroDescription {
@@ -10145,9 +10145,7 @@ private struct TVFeatureHeroView: View {
 
             TVHeroMetaLine(meta: meta, episodeLine: item.episodeDisplayLine)
 
-            Text(item.isUpNextEntry ? item.upNextBadgeText : item.remainingText.uppercased())
-                .font(.custom("Inter-SemiBold", size: 21))
-                .foregroundColor(.white.opacity(0.70))
+            ContinueBadgeLine(item: item, size: 21)
 
             if let description = item.episodeOverview?.isEmpty == false
                 ? item.episodeOverview
@@ -10188,9 +10186,7 @@ private struct TVFeatureHeroView: View {
             TVHeroMetaLine(meta: meta, episodeLine: overrideContinueItem?.episodeDisplayLine)
 
             if let item = overrideContinueItem {
-                Text(item.isUpNextEntry ? item.upNextBadgeText : item.remainingText.uppercased())
-                    .font(.custom("Inter-SemiBold", size: 21))
-                    .foregroundColor(.white.opacity(0.70))
+                ContinueBadgeLine(item: item, size: 21)
             }
 
             if let description = overrideContinueItem?.episodeOverview?.isEmpty == false
@@ -10215,10 +10211,16 @@ private struct TVFeatureHeroView: View {
     private func watchPill(_ item: ContinueWatchingItem) -> some View {
         let accent = SettingsAccent.color(for: theme)
         return HStack(spacing: 12) {
-            Image(systemName: "play.fill")
+            // A match: Watch Live once it is on, its page before.
+            let upcomingMatch = item.isFixture && !item.isFixtureLive
+            Image(systemName: upcomingMatch ? "info.circle" : "play.fill")
                 .font(.system(size: 21, weight: .bold))
             Text(
-                item.isUpNextEntry
+                item.isFixtureLive
+                    ? L10n.string("feature_watch_live", fallback: "Watch Live")
+                    : upcomingMatch
+                    ? L10n.string("feature_details", fallback: "Details")
+                    : item.isUpNextEntry
                     ? L10n.string("feature_watch_now", fallback: "Watch Now")
                     : L10n.string("feature_resume", fallback: "Resume")
             )

@@ -61,6 +61,26 @@ struct UpcomingEpisodeEntry: Codable, Equatable, Identifiable {
     let posterURL: String?
     /// Episode still, else the show's backdrop.
     let imageURL: String?
+    /// Set for a favourite team's match: its kick-off, which the widget shows
+    /// as a time and then as LIVE. Nil for episodes and older feeds.
+    var kickoff: Date? = nil
+    /// How long the match runs, for when LIVE ends.
+    var matchLength: TimeInterval? = nil
+
+    var isMatch: Bool { kickoff != nil }
+
+    /// A match under way at `date`.
+    func isLive(at date: Date) -> Bool {
+        guard let kickoff else { return false }
+        return date >= kickoff && date < kickoff.addingTimeInterval(matchLength ?? 3 * 3600)
+    }
+
+    /// Still worth listing at `date`: an episode from its day on, a match
+    /// until it should have finished.
+    func isCurrent(at date: Date) -> Bool {
+        if let kickoff { return date < kickoff.addingTimeInterval(matchLength ?? 3 * 3600) }
+        return airDate >= Calendar.current.startOfDay(for: date)
+    }
 
     var deepLinkURL: URL? {
         var components = URLComponents()
@@ -81,6 +101,21 @@ struct UpcomingEpisodeFeed: Codable, Equatable {
 
 enum UpcomingEpisodeFeedStore {
     private static let feedKey = "omni.widgets.upcoming"
+    /// Favourite teams' next matches, written by Continue Watching's fixtures
+    /// and merged into the same widget.
+    private static let matchesKey = "omni.widgets.upcomingMatches"
+
+    static func writeMatches(_ entries: [UpcomingEpisodeEntry]) {
+        guard let defaults = sharedDefaults,
+              let data = try? JSONEncoder().encode(UpcomingEpisodeFeed(entries: entries, updatedAt: Date()))
+        else { return }
+        defaults.set(data, forKey: matchesKey)
+    }
+
+    static func readMatches() -> [UpcomingEpisodeEntry] {
+        guard let data = sharedDefaults?.data(forKey: matchesKey) else { return [] }
+        return (try? JSONDecoder().decode(UpcomingEpisodeFeed.self, from: data))?.entries ?? []
+    }
 
     private static var sharedDefaults: UserDefaults? {
         UserDefaults(suiteName: topShelfAppGroupID)
@@ -152,8 +187,8 @@ enum WidgetArtworkCache {
     static func pruneToFeeds() {
         let watching = TopShelfFeedStore.read()?.entries
             .flatMap { [$0.imageURL, $0.backdropURL].compactMap { $0 } } ?? []
-        let upcoming = UpcomingEpisodeFeedStore.read()?.entries
-            .flatMap { [$0.posterURL, $0.imageURL].compactMap { $0 } } ?? []
+        let upcoming = ((UpcomingEpisodeFeedStore.read()?.entries ?? []) + UpcomingEpisodeFeedStore.readMatches())
+            .flatMap { [$0.posterURL, $0.imageURL].compactMap { $0 } }
         prune(keeping: watching + upcoming)
     }
 

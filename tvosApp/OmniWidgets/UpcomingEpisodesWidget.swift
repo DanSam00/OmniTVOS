@@ -3,9 +3,10 @@ import WidgetKit
 
 // MARK: - Upcoming episodes
 //
-// New episodes of the shows you follow, from the Calendar's data. The app
-// refreshes the feed when the Calendar loads and, while this widget is on the
-// Home Screen or desktop, every few hours on opening Omni.
+// New episodes of the shows you follow, from the Calendar's data, and your
+// favourite teams' next matches. The app refreshes the episodes when the
+// Calendar loads and, while this widget is on the Home Screen or desktop,
+// every few hours on opening Omni; the matches whenever Home loads them.
 
 struct UpcomingEpisodesEntry: TimelineEntry {
     let date: Date
@@ -25,25 +26,38 @@ struct UpcomingEpisodesProvider: TimelineProvider {
             : entry)
     }
 
-    /// One entry now and one at each of the next midnights, so "Tomorrow"
-    /// turns into "Today" and aired episodes drop off without the app.
+    /// One entry now, one at each of the next midnights (so "Tomorrow" turns
+    /// into "Today" and aired episodes drop off without the app), and one at
+    /// each match's kick-off and expected end, for LIVE.
     func getTimeline(in context: Context, completion: @escaping (Timeline<UpcomingEpisodesEntry>) -> Void) {
         let calendar = Calendar.current
         let now = Date()
+        let horizon = now.addingTimeInterval(7 * 24 * 3600)
         var dates = [now]
         var day = calendar.startOfDay(for: now)
         for _ in 0..<7 {
             day = calendar.date(byAdding: .day, value: 1, to: day) ?? day
             dates.append(day)
         }
-        completion(Timeline(entries: dates.map(Self.entry(at:)), policy: .atEnd))
+        for match in UpcomingEpisodeFeedStore.readMatches() {
+            guard let kickoff = match.kickoff else { continue }
+            dates += [kickoff, kickoff.addingTimeInterval(match.matchLength ?? 3 * 3600)]
+                .filter { $0 > now && $0 < horizon }
+        }
+        completion(Timeline(entries: Set(dates).sorted().map(Self.entry(at:)), policy: .atEnd))
     }
 
     private static func entry(at date: Date) -> UpcomingEpisodesEntry {
         let feed = UpcomingEpisodeFeedStore.read()
-        let today = Calendar.current.startOfDay(for: date)
-        let episodes = (feed?.entries ?? []).filter { $0.airDate >= today }
-        return UpcomingEpisodesEntry(date: date, episodes: episodes, hasFeed: feed != nil)
+        let matches = UpcomingEpisodeFeedStore.readMatches()
+        // A match under way first, then everything by when it is on.
+        let episodes = ((feed?.entries ?? []) + matches)
+            .filter { $0.isCurrent(at: date) }
+            .sorted { lhs, rhs in
+                if lhs.isLive(at: date) != rhs.isLive(at: date) { return lhs.isLive(at: date) }
+                return (lhs.kickoff ?? lhs.airDate) < (rhs.kickoff ?? rhs.airDate)
+            }
+        return UpcomingEpisodesEntry(date: date, episodes: episodes, hasFeed: feed != nil || !matches.isEmpty)
     }
 
     private static let samples: [UpcomingEpisodeEntry] = (0..<6).map { index in
@@ -63,7 +77,7 @@ struct UpcomingEpisodesWidget: Widget {
             UpcomingEpisodesWidgetView(entry: entry)
         }
         .configurationDisplayName("Coming Up")
-        .description("New episodes of the shows you follow.")
+        .description("New episodes of the shows you follow, and your teams' next matches.")
         .supportedFamilies(OmniWidgetLayout.families)
         .contentMarginsDisabled()
     }
@@ -141,7 +155,10 @@ struct UpcomingEpisodesWidgetView: View {
     private var rectangular: some View {
         let next = episodes[0]
         return VStack(alignment: .leading, spacing: 1) {
-            Label(dayLabel(next.airDate), systemImage: "calendar")
+            Label(
+                next.isLive(at: entry.date) ? "LIVE" : dayLabel(next.kickoff ?? next.airDate),
+                systemImage: next.isMatch ? "sportscourt" : "calendar"
+            )
                 .font(.caption2.weight(.semibold))
                 .widgetAccentable()
             Text(next.title).font(.headline).lineLimit(1)
@@ -158,6 +175,7 @@ struct UpcomingEpisodesWidgetView: View {
             title: episode.title,
             meta: meta(episode),
             metaHighlighted: isToday(episode.airDate),
+            isLive: episode.isLive(at: entry.date),
             art: episode.imageURL,
             fallback: episode.posterURL,
             titleSize: titleSize
@@ -177,6 +195,7 @@ struct UpcomingEpisodesWidgetView: View {
                     title: episode.title,
                     meta: meta(episode),
                     metaHighlighted: isToday(episode.airDate),
+                    isLive: episode.isLive(at: entry.date),
                     art: episode.imageURL,
                     fallback: episode.posterURL,
                     isLast: index == list.count - 1,
@@ -193,9 +212,14 @@ struct UpcomingEpisodesWidgetView: View {
 
     // MARK: Text
 
-    /// "TOMORROW · S1, E6", in the Apple TV app's manner.
+    /// "TOMORROW · S1, E6", in the Apple TV app's manner; for a match
+    /// "TODAY · 7:30 PM", then "LIVE".
     private func meta(_ episode: UpcomingEpisodeEntry) -> String {
-        [dayLabel(episode.airDate), episodeCode(episode)].compactMap { $0 }.joined(separator: " · ")
+        if let kickoff = episode.kickoff {
+            if episode.isLive(at: entry.date) { return "LIVE" }
+            return [dayLabel(kickoff), kickoff.formatted(date: .omitted, time: .shortened)].joined(separator: " · ")
+        }
+        return [dayLabel(episode.airDate), episodeCode(episode)].compactMap { $0 }.joined(separator: " · ")
     }
 
     private func episodeCode(_ episode: UpcomingEpisodeEntry) -> String? {
@@ -206,7 +230,10 @@ struct UpcomingEpisodesWidgetView: View {
     }
 
     private func detail(_ episode: UpcomingEpisodeEntry) -> String {
-        [episode.episodeCode, episode.episodeTitle].compactMap { $0 }.joined(separator: " · ")
+        if let kickoff = episode.kickoff, !episode.isLive(at: entry.date) {
+            return kickoff.formatted(date: .omitted, time: .shortened)
+        }
+        return [episode.episodeCode, episode.episodeTitle].compactMap { $0 }.joined(separator: " · ")
     }
 
     private func isToday(_ date: Date) -> Bool {

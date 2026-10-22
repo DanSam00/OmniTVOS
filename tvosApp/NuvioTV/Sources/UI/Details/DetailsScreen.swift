@@ -4238,6 +4238,7 @@ struct TvDetailsContent: View {
         continueItem: ContinueWatchingItem?
     ) -> (episode: NuvioVideo?, label: String, isPlayable: Bool) {
         guard !episodes.isEmpty else {
+            if meta.isLiveContent { return (nil, L10n.string("action_watch_live", fallback: "Watch Live"), true) }
             return (nil, continueItem == nil ? L10n.string("action_play", fallback: "Play") : L10n.string("action_resume", fallback: "Resume"), true)
         }
 
