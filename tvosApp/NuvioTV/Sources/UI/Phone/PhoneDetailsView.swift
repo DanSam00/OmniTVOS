@@ -20,6 +20,8 @@ struct PhoneDetailsView: View {
     /// Play was pressed: the best source for the connection plays as soon
     /// as one is found (Smart Stream Selection), the list otherwise.
     @State private var isSmartPlayPending = false
+    /// The title being auto-played, so the pick is never a namesake's release.
+    @State private var smartPlayIdentity: StreamAvailability.Request?
     @AppStorage(SettingsKey.smartStreamSelection) private var smartStreamSelection = true
     @AppStorage(SettingsKey.smartStreamUseTopResult) private var smartStreamUseTopResult = false
     @AppStorage(SettingsKey.smartStreamQuality) private var smartStreamQuality = AutoStreamQuality.preference
@@ -46,6 +48,8 @@ struct PhoneDetailsView: View {
     @State private var trailerPreparedID: String?
     @State private var trailerShownID: String?
     @ObservedObject private var downloads = DownloadManager.shared
+    /// Play waits for a real source; this redraws it when the answer comes.
+    @ObservedObject private var availability = StreamAvailability.shared
     /// The movie or episode whose streams are loading, to choose one to download.
     @State private var preparingDownloadId: String?
     /// The episode being downloaded (nil for the movie itself).
@@ -343,8 +347,11 @@ struct PhoneDetailsView: View {
     }
 
     private func actions(_ meta: NuvioMeta) -> some View {
-        HStack(spacing: 12) {
+        let blocked = sourceBlockLabel(meta)
+        return HStack(spacing: 12) {
             Button {
+                // Choose Source, on a long press, stays open meanwhile.
+                guard blocked == nil else { return }
                 if meta.isSeries {
                     let next = nextEpisode(meta)
                     startPlayback(meta: meta, episode: next)
@@ -352,11 +359,11 @@ struct PhoneDetailsView: View {
                     startPlayback(meta: meta, episode: nil)
                 }
             } label: {
-                Label(playLabel(meta), systemImage: "play.fill")
+                Label(blocked ?? playLabel(meta), systemImage: blocked == nil ? "play.fill" : "clock")
                     .font(.headline)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
-                    .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .background(Color.white.opacity(blocked == nil ? 1 : 0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .foregroundStyle(.black)
             }
             // Long-press for the full list instead of the automatic pick.
@@ -570,6 +577,39 @@ struct PhoneDetailsView: View {
         playDownloaded(meta: meta, contentId: meta.id)
     }
 
+    /// Nil when Play can play: a real source was found, or this resumes
+    /// something that already played. Otherwise what the button says instead.
+    private func sourceBlockLabel(_ meta: NuvioMeta) -> String? {
+        if playDownloadedAvailable(meta) { return nil }
+        let episode = meta.isSeries ? nextEpisode(meta) : nil
+        if let item = ContinueWatchingStore.items().first(where: { $0.meta.id == meta.id }),
+           !item.isUpNextEntry, item.position > 0,
+           item.episodeNumbers?.season == episode?.season, item.episodeNumbers?.episode == episode?.episode {
+            return nil
+        }
+        guard let request = StreamAvailability.request(meta: meta, season: episode?.season, episode: episode?.episode) else {
+            return nil
+        }
+        switch availability.status(request) {
+        case .available:
+            return nil
+        case .unavailable:
+            return "Not Available Yet"
+        case .notYetReleased:
+            return request.releaseLabel
+        case .unknown:
+            Task { _ = await StreamAvailability.shared.check(request) }
+            return "Finding Sources…"
+        case .checking:
+            return "Finding Sources…"
+        }
+    }
+
+    private func playDownloadedAvailable(_ meta: NuvioMeta) -> Bool {
+        let id = meta.isSeries ? (nextEpisode(meta)?.id ?? meta.id) : meta.id
+        return downloads.completedDownload(id) != nil
+    }
+
     private func playLabel(_ meta: NuvioMeta) -> String {
         guard meta.isSeries, let episode = nextEpisode(meta) else { return "Play" }
         return "Play S\(episode.season) E\(episode.episode)"
@@ -741,6 +781,14 @@ struct PhoneDetailsView: View {
         }
         pickerEpisode = episode
         isSmartPlayPending = true
+        // The pick waits for the namesake lookup, then tries again.
+        smartPlayIdentity = StreamAvailability.request(meta: meta, season: episode?.season, episode: episode?.episode)
+        if let identity = smartPlayIdentity, TitleAmbiguity.cached(for: identity) == nil {
+            Task {
+                _ = await TitleAmbiguity.answer(for: identity)
+                finishSmartPlay(meta: meta)
+            }
+        }
         // Always for this title or episode: sources already on hand may be
         // another title's. The load is keyed and cached, so a repeat is free.
         prepareStreams(meta: meta, episode: episode, force: false)
@@ -751,13 +799,17 @@ struct PhoneDetailsView: View {
     /// add-on has answered; opens the list when nothing playable came back.
     private func finishSmartPlay(meta: NuvioMeta) {
         guard isSmartPlayPending else { return }
+        if let identity = smartPlayIdentity, TitleAmbiguity.cached(for: identity) == nil { return }
         let state = viewModel.uiState
         let store = ProfileSettings.current
         let debrid = DebridResolver(store: store).isEnabled
         let cachedOnly = (store.object(forKey: SettingsKey.cachedOnlyStreams) as? Bool) ?? false
         let candidate: NuvioStream?
         if smartStreamUseTopResult {
-            candidate = PhoneSourcesSheet.displayedStreams(state: state).first
+            candidate = SmartPlaybackSelector.identityFiltered(
+                PhoneSourcesSheet.displayedStreams(state: state),
+                identity: smartPlayIdentity
+            ).first
         } else {
             candidate = SmartPlaybackSelector.bestStream(
                 from: state.streams,
@@ -773,7 +825,8 @@ struct PhoneDetailsView: View {
                 preferredTags: LastStreamQualityStore.load(metaId: meta.id),
                 cachedOnly: cachedOnly,
                 runtimeMinutes: AutoStreamQuality.runtimeMinutes(meta.runtime),
-                title: meta.name
+                title: meta.name,
+                identity: smartPlayIdentity
             )
         }
         if let stream = candidate {

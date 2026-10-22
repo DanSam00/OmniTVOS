@@ -36,6 +36,8 @@ struct DetailsScreen: View {
     @StateObject private var viewModel: DetailsViewModel
     @State private var isStreamPickerPresented = false
     @State private var isSmartPlaybackPending = false
+    /// The title being auto-played, so the pick is never a namesake's release.
+    @State private var smartPlaybackIdentity: StreamAvailability.Request?
     @State private var isPreparingPlayback = false
     /// Episode line shown under the title in the player ("" for movies).
     @State private var pendingEpisodeSubtitle = ""
@@ -552,6 +554,16 @@ struct DetailsScreen: View {
         PlaybackStartupTiming.start(title: meta.name)
         isSmartPlaybackPending = true
         isStreamPickerPresented = false
+        // Which title this is, so the pick is never a namesake's release. The
+        // pick waits for the namesake lookup, then tries again.
+        let numbers = StreamsRepository.seasonEpisode(fromVideoId: streamId)
+        smartPlaybackIdentity = StreamAvailability.request(meta: meta, season: numbers.season, episode: numbers.episode)
+        if let identity = smartPlaybackIdentity, TitleAmbiguity.cached(for: identity) == nil {
+            Task {
+                _ = await TitleAmbiguity.answer(for: identity)
+                finishSmartPlaybackIfPossible(meta: meta)
+            }
+        }
 
         if reload {
             viewModel.prepareStreams(forId: streamId, type: type, forceRefresh: true)
@@ -563,6 +575,7 @@ struct DetailsScreen: View {
         guard isSmartPlaybackPending else { return }
         let meta = explicitMeta ?? viewModel.uiState.meta
         guard let meta else { return }
+        if let identity = smartPlaybackIdentity, TitleAmbiguity.cached(for: identity) == nil { return }
 
         let debrid = DebridResolver(store: ProfileSettings.current)
         let cachedOnly = (ProfileSettings.current.object(forKey: SettingsKey.cachedOnlyStreams) as? Bool) ?? false
@@ -571,7 +584,7 @@ struct DetailsScreen: View {
         if smartStreamUseTopResult {
             let sortRaw = ProfileSettings.current.string(forKey: SettingsKey.streamSortOption)
             let sortOption = sortRaw.flatMap(StreamSortOption.init(rawValueOrSync:)) ?? .quality
-            let displayed = StreamPickerListBuilder.displayedStreams(
+            let listed = StreamPickerListBuilder.displayedStreams(
                 streams: viewModel.uiState.streams,
                 groups: viewModel.uiState.streamGroups,
                 selectedAddonId: nil,
@@ -580,6 +593,7 @@ struct DetailsScreen: View {
                 cachedOnly: cachedOnly
             )
             // Filter out 0-res / ticket streams if valid streams exist
+            let displayed = SmartPlaybackSelector.identityFiltered(listed, identity: smartPlaybackIdentity)
             let valid = displayed.filter {
                 !SmartPlaybackSelector.isLowQualityOrTicketStream($0) && StreamPickerListBuilder.resolution(for: $0) >= 720
             }
@@ -594,7 +608,8 @@ struct DetailsScreen: View {
                 preferredTags: LastStreamQualityStore.load(metaId: meta.id),
                 cachedOnly: cachedOnly,
                 runtimeMinutes: AutoStreamQuality.runtimeMinutes(meta.runtime),
-                title: meta.name
+                title: meta.name,
+                identity: smartPlaybackIdentity
             )
         }
 
@@ -1984,7 +1999,8 @@ enum SmartPlaybackSelector {
         preferredTags: StreamQualityTags? = nil,
         cachedOnly: Bool = false,
         runtimeMinutes: Int? = nil,
-        title: String? = nil
+        title: String? = nil,
+        identity: StreamAvailability.Request? = nil
     ) -> NuvioStream? {
         rankedStreams(
             from: streams,
@@ -1995,7 +2011,8 @@ enum SmartPlaybackSelector {
             preferredTags: preferredTags,
             cachedOnly: cachedOnly,
             runtimeMinutes: runtimeMinutes,
-            title: title
+            title: title,
+            identity: identity
         ).first
     }
 
@@ -2009,7 +2026,8 @@ enum SmartPlaybackSelector {
         preferredTags: StreamQualityTags? = nil,
         cachedOnly: Bool = false,
         runtimeMinutes: Int? = nil,
-        title: String? = nil
+        title: String? = nil,
+        identity: StreamAvailability.Request? = nil
     ) -> [NuvioStream] {
         let playable = streams.enumerated().compactMap { index, stream -> (index: Int, stream: NuvioStream)? in
             if let url = stream.url?.trimmingCharacters(in: .whitespacesAndNewlines), !url.isEmpty {
@@ -2044,6 +2062,17 @@ enum SmartPlaybackSelector {
             let words = titleWords(title)
             let named = candidatePool.filter { namesTitle($0.stream, words: words) }
             if !named.isEmpty { candidatePool = named }
+        }
+        // The right title, not a namesake: another episode or season, a year
+        // outside this title's, or another service's tag is never picked.
+        // Where another title shares the name, only a release that says it is
+        // this one (its year, the episode's title, its service) is picked —
+        // for a recent release, nothing else at all, so the viewer chooses
+        // rather than being started on the 2015 Dark Matter for the 2024 one.
+        if let identity {
+            let kept = Set(identityFiltered(candidatePool.map(\.stream), identity: identity).map(\.id))
+            candidatePool = candidatePool.filter { kept.contains($0.stream.id) }
+            if candidatePool.isEmpty { return [] }
         }
         // Cinema copies (cam, TeleSync, telecine, screener) only when there
         // is nothing else: a "1080p" TeleSync otherwise outranked a proper
@@ -2133,6 +2162,21 @@ enum SmartPlaybackSelector {
             if lhs.score != rhs.score { return lhs.score > rhs.score }
             return lhs.index < rhs.index
         }.map(\.stream)
+    }
+
+    /// The streams that are this title rather than a namesake's (see
+    /// `rankedStreams`). Empty when none can be trusted to be.
+    static func identityFiltered(_ streams: [NuvioStream], identity: StreamAvailability.Request?) -> [NuvioStream] {
+        guard let identity else { return streams }
+        let namesake = TitleAmbiguity.cached(for: identity)
+        let judged = streams.map {
+            ($0, StreamAvailability.identity(of: $0, for: identity, serviceTags: namesake?.serviceTags ?? []))
+        }
+        let fitting = judged.filter { !$0.1.contradicts }
+        guard namesake?.shared == true else { return fitting.map(\.0) }
+        let confirmed = fitting.filter { $0.1.confirms }.map(\.0)
+        if !confirmed.isEmpty { return confirmed }
+        return identity.isRecent ? [] : fitting.map(\.0)
     }
 
     /// `applyQualityFloor` drops anything that is not provably 720p or better.
@@ -2341,7 +2385,7 @@ enum SmartPlaybackSelector {
         return placeholderHosts.contains(host)
     }
 
-    private static func isPromotionalStream(_ stream: NuvioStream) -> Bool {
+    static func isPromotionalStream(_ stream: NuvioStream) -> Bool {
         let text = ([stream.name, stream.description, stream.addonName, stream.url])
             .compactMap { $0 }
             .joined(separator: " ")
@@ -2390,7 +2434,7 @@ enum SmartPlaybackSelector {
         return false
     }
 
-    private static func isPlatformPlaybackCompatible(_ stream: NuvioStream) -> Bool {
+    static func isPlatformPlaybackCompatible(_ stream: NuvioStream) -> Bool {
         #if targetEnvironment(simulator)
         // AV1 falls back to software decoding in the tvOS simulator. Its
         // decoded frames then use MoltenVK/libplacebo's PBO upload path, which
@@ -2824,6 +2868,8 @@ struct TvDetailsContent: View {
     #if os(macOS)
     @ObservedObject private var downloads = DownloadManager.shared
     #endif
+    /// Play waits for a real source; this redraws it when the answer comes.
+    @ObservedObject private var availability = StreamAvailability.shared
 
     /// The action row's Download button: the movie, or a season of the series.
     private var macDownloadAction: (() -> Void)? {
@@ -2934,7 +2980,9 @@ struct TvDetailsContent: View {
         if let meta = uiState.meta {
             let episodes = sortedEpisodes(meta)
             let continueItem = currentContinueWatchingItem(for: meta, revision: progressRevision)
-            let playTarget = playTarget(for: meta, episodes: episodes, continueItem: continueItem)
+            let rawPlayTarget = playTarget(for: meta, episodes: episodes, continueItem: continueItem)
+            let sourceRequest = Self.sourceRequest(meta: meta, target: rawPlayTarget, continueItem: continueItem)
+            let playTarget = sourceGated(rawPlayTarget, request: sourceRequest)
 
             GeometryReader { proxy in
                 ZStack(alignment: .topLeading) {
@@ -2976,7 +3024,9 @@ struct TvDetailsContent: View {
                                         }
                                     },
                                     onPlayLongPress: smartStreamSelection ? {
-                                        guard playTarget.isPlayable else { return }
+                                        // Choosing a source by hand stays open
+                                        // while no real source is found.
+                                        guard rawPlayTarget.isPlayable else { return }
                                         if let episode = playTarget.episode {
                                             if let onEpisodePlayManually {
                                                 onEpisodePlayManually(episode)
@@ -4227,6 +4277,42 @@ struct TvDetailsContent: View {
 
         let first = firstPlayableEpisode(episodes)
         return (first, first.map { "\(L10n.string("action_play", fallback: "Play")) S\($0.season) E\($0.episode)" } ?? L10n.string("action_play", fallback: "Play"), true)
+    }
+
+    /// The source check for the Play button: the film, or the episode it
+    /// would start. Nil when resuming, which already played from a source.
+    static func sourceRequest(
+        meta: NuvioMeta,
+        target: (episode: NuvioVideo?, label: String, isPlayable: Bool),
+        continueItem: ContinueWatchingItem?
+    ) -> StreamAvailability.Request? {
+        if let continueItem, !continueItem.isUpNextEntry, continueItem.position > 0,
+           continueItem.episodeNumbers?.season == target.episode?.season,
+           continueItem.episodeNumbers?.episode == target.episode?.episode {
+            return nil
+        }
+        return StreamAvailability.request(meta: meta, season: target.episode?.season, episode: target.episode?.episode)
+    }
+
+    /// Play only plays once a real source is found; until then it says so.
+    private func sourceGated(
+        _ target: (episode: NuvioVideo?, label: String, isPlayable: Bool),
+        request: StreamAvailability.Request?
+    ) -> (episode: NuvioVideo?, label: String, isPlayable: Bool) {
+        guard target.isPlayable, let request else { return target }
+        switch availability.status(request) {
+        case .available:
+            return target
+        case .unavailable:
+            return (target.episode, L10n.string("details_no_source_yet", fallback: "Not Available Yet"), false)
+        case .notYetReleased:
+            return (target.episode, request.releaseLabel, false)
+        case .unknown, .checking:
+            if case .unknown = availability.status(request) {
+                Task { _ = await StreamAvailability.shared.check(request) }
+            }
+            return (target.episode, L10n.string("details_finding_sources", fallback: "Finding Sources…"), false)
+        }
     }
 
     /// `revision` is deliberately unused: taking it forces the lookup to be

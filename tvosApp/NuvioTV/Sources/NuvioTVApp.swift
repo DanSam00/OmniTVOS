@@ -2535,6 +2535,13 @@ struct ContentView: View {
         let sortRaw = store.string(forKey: SettingsKey.streamSortOption)
         let sortOption = sortRaw.flatMap(StreamSortOption.init(rawValueOrSync:)) ?? .quality
 
+        // Which title this is, so a namesake's release is never started.
+        let numbers = Self.seasonEpisode(fromContentId: contentId)
+        let identity = meta.flatMap {
+            StreamAvailability.request(meta: $0, season: numbers.season, episode: numbers.episode)
+        }
+        if let identity { _ = await TitleAmbiguity.answer(for: identity) }
+
         let ranked: [NuvioStream]
         if useTopResult {
             let playable = SmartPlaybackSelector.playableStreams(
@@ -2542,7 +2549,10 @@ struct ContentView: View {
                 includeDebrid: debrid.isEnabled,
                 cachedOnly: cachedOnly
             )
-            ranked = StreamPickerListBuilder.sorted(playable, by: sortOption)
+            ranked = SmartPlaybackSelector.identityFiltered(
+                StreamPickerListBuilder.sorted(playable, by: sortOption),
+                identity: identity
+            )
         } else {
             ranked = Self.rankedPlayableStreams(
                 from: streams,
@@ -2553,7 +2563,8 @@ struct ContentView: View {
                 preferredTags: preferredTags,
                 cachedOnly: cachedOnly,
                 runtimeMinutes: AutoStreamQuality.runtimeMinutes(meta?.runtime),
-                title: meta?.name
+                title: meta?.name,
+                identity: identity
             )
         }
         guard !ranked.isEmpty else { return nil }
@@ -2733,7 +2744,8 @@ struct ContentView: View {
         preferredTags: StreamQualityTags? = nil,
         cachedOnly: Bool = false,
         runtimeMinutes: Int? = nil,
-        title: String? = nil
+        title: String? = nil,
+        identity: StreamAvailability.Request? = nil
     ) -> [NuvioStream] {
         SmartPlaybackSelector.rankedStreams(
             from: streams,
@@ -2744,7 +2756,8 @@ struct ContentView: View {
             preferredTags: preferredTags,
             cachedOnly: cachedOnly,
             runtimeMinutes: runtimeMinutes,
-            title: title
+            title: title,
+            identity: identity
         )
     }
 
@@ -5956,6 +5969,16 @@ struct TVHomeView: View {
                 armReturnFocusAnimationSuppression()
             }
         }
+        // A next episode's source turning up, a favourite team's match coming
+        // into its window, or new recommendations: the same progress, composed
+        // again.
+        .onReceive(
+            NotificationCenter.default.publisher(for: StreamAvailability.changedNotification)
+                .merge(with: NotificationCenter.default.publisher(for: ContinueWatchingExtras.changedNotification))
+                .receive(on: RunLoop.main)
+        ) { _ in
+            setContinueWatching(rawContinueWatchingItems)
+        }
         .onChange(of: continueWatchingSort) { _, _ in
             if !rawContinueWatchingItems.isEmpty {
                 setContinueWatching(rawContinueWatchingItems)
@@ -8410,13 +8433,16 @@ struct TVHomeView: View {
     /// important part of this helper.
     private func setContinueWatching(_ rawItems: [ContinueWatchingItem]) {
         rawContinueWatchingItems = rawItems
+        // Next episodes without a real source yet are held back; fixtures and
+        // recommendations join. See `ContinueWatchingExtras`.
+        let composed = ContinueWatchingExtras.shared.compose(rawItems)
         let (items, upcoming): ([ContinueWatchingItem], [ContinueWatchingItem]) = {
             if continueWatchingSort == "Separate Upcoming Row" {
-                let released = ContinueWatchingSortPolicy.sorted(rawItems, preference: continueWatchingSort)
-                let unreleased = ContinueWatchingSortPolicy.upcomingItems(rawItems)
+                let released = ContinueWatchingSortPolicy.sorted(composed, preference: continueWatchingSort)
+                let unreleased = ContinueWatchingSortPolicy.upcomingItems(composed)
                 return (released, unreleased)
             } else {
-                return (ContinueWatchingSortPolicy.sorted(rawItems, preference: continueWatchingSort), [])
+                return (ContinueWatchingSortPolicy.sorted(composed, preference: continueWatchingSort), [])
             }
         }()
 
@@ -8444,7 +8470,7 @@ struct TVHomeView: View {
 
         continueWatching = items
         // The Apple TV's Top Shelf, and the Mac's Continue Watching widget.
-        ContinueWatchingStore.publishHomeRowToTopShelf(items)
+        ContinueWatchingStore.publishHomeRowToTopShelf(items.filter { $0.cardKind == nil })
         #if os(macOS)
         WidgetTheme.publishFromSettings()
         #endif

@@ -11,8 +11,10 @@ final class PhoneHomeLoader: ObservableObject {
     @Published private(set) var sections: [TVHomeSection] = []
     @Published private(set) var continueWatching: [ContinueWatchingItem] = [] {
         // The Continue Watching widget shows exactly this row.
-        didSet { ContinueWatchingStore.publishHomeRowToTopShelf(continueWatching) }
+        didSet { ContinueWatchingStore.publishHomeRowToTopShelf(continueWatching.filter { $0.cardKind == nil }) }
     }
+    /// The progress the row was last built from, before `ContinueWatchingExtras`.
+    private var rawContinueWatching: [ContinueWatchingItem] = []
     /// The synced collections, one row of folder cards each, as on the TV.
     @Published private(set) var collectionRows: [TVHomeSection] = TVHomeSection.collectionRows()
     @Published private(set) var isLoading = false
@@ -29,6 +31,16 @@ final class PhoneHomeLoader: ObservableObject {
         for name in [ContinueWatchingStore.changedNotification, ContinueWatchingDismissStore.changedNotification] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in self?.refreshContinueWatching() }
+            })
+        }
+        // A next episode's source turning up, a fixture or new recommendations:
+        // the same progress, composed again.
+        for name in [StreamAvailability.changedNotification, ContinueWatchingExtras.changedNotification] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.publishContinueWatching(self.rawContinueWatching)
+                }
             })
         }
         // A sync pull or a Settings edit replaces the collections.
@@ -167,10 +179,7 @@ final class PhoneHomeLoader: ObservableObject {
                 guard !Task.isCancelled, let items else { return }
                 var seen = Set<String>()
                 let visible = items.filter { shouldDisplay($0) && seen.insert($0.meta.id).inserted }
-                // Same order the TV and Mac show: the profile's Continue
-                // Watching sort, not the provider's raw order.
-                let sort = ProfileSettings.current.string(forKey: SettingsKey.continueWatchingSort) ?? "Default"
-                continueWatching = ContinueWatchingSortPolicy.sorted(visible, preference: sort)
+                publishContinueWatching(visible)
             }
             return
         }
@@ -180,8 +189,18 @@ final class PhoneHomeLoader: ObservableObject {
         let visible = byId.values
             .sorted { $0.recencySortDate > $1.recencySortDate }
             .filter(shouldDisplay)
+        publishContinueWatching(visible)
+    }
+
+    /// Same row the TV and Mac show: held-back next episodes, fixtures and
+    /// recommendations from `ContinueWatchingExtras`, in the profile's sort.
+    private func publishContinueWatching(_ visible: [ContinueWatchingItem]) {
+        rawContinueWatching = visible
         let sort = ProfileSettings.current.string(forKey: SettingsKey.continueWatchingSort) ?? "Default"
-        continueWatching = ContinueWatchingSortPolicy.sorted(visible, preference: sort)
+        continueWatching = ContinueWatchingSortPolicy.sorted(
+            ContinueWatchingExtras.shared.compose(visible),
+            preference: sort
+        )
     }
 
     private func shouldDisplay(_ item: ContinueWatchingItem) -> Bool {

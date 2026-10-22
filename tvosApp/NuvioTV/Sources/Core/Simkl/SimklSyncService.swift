@@ -1981,12 +1981,22 @@ struct SimklProgressService {
         // A real paused row wins over a generated suggestion for the same
         // title. This also keeps the one-card-per-title rule in Home from
         // hiding a resume row behind its Up Next counterpart.
+        //
+        // Shows with a new episode out since they were last watched go first,
+        // and get room even when paused rows fill the list: a show finished
+        // long ago is otherwise too far down the history to ever come back.
+        let candidates = upNextSeeds.filter { seed in
+            !playbackMetas.contains(where: { WatchedStore.sameContent($0, seed.meta) })
+        }
+        let freshShows = await FreshEpisodeScanner.freshShowIds(candidates.map { ($0.meta.id, $0.watchedAt) })
+        let fresh = candidates.filter { freshShows.contains($0.meta.id) }
+        let rest = candidates.filter { !freshShows.contains($0.meta.id) }
+        if !fresh.isEmpty {
+            results += await resolveUpNextItems(fresh, limit: fresh.count, repository: repository)
+        }
         if results.count < 20 {
-            let candidates = upNextSeeds.filter { seed in
-                !playbackMetas.contains(where: { WatchedStore.sameContent($0, seed.meta) })
-            }
             results += await resolveUpNextItems(
-                candidates,
+                rest,
                 limit: 20 - results.count,
                 repository: repository
             )

@@ -1243,10 +1243,19 @@ struct TraktProgressService {
             return Calendar.current.date(byAdding: .day, value: -days, to: Date())
         }()
 
+        // A show watched long ago that has a new episode out is the card most
+        // worth showing, so it passes the day cap and is built first.
+        let freshShows = await FreshEpisodeScanner.freshShowIds(
+            seeds.filter(\.isUpNext).map { ($0.contentID, $0.lastUpdated) }
+        )
+        func isFresh(_ seed: TraktProgressSeed) -> Bool {
+            seed.isUpNext && freshShows.contains(seed.contentID)
+        }
         let recentSeeds = seeds
-            .filter { cutoff == nil || $0.lastUpdated >= cutoff! }
+            .filter { cutoff == nil || $0.lastUpdated >= cutoff! || isFresh($0) }
             .sorted {
-                ordersBefore(
+                if isFresh($0) != isFresh($1) { return isFresh($0) }
+                return ordersBefore(
                     isUpNext: $0.isUpNext,
                     updatedAt: $0.lastUpdated,
                     otherIsUpNext: $1.isUpNext,

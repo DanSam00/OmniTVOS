@@ -878,6 +878,10 @@ struct NuvioStream: Identifiable, Codable {
     /// `behaviorHints.proxyHeaders.request`. Some hosts reject playback without
     /// the add-on's Referer or User-Agent.
     let httpHeaders: [String: String]?
+    /// True when the add-on gave an `externalUrl` rather than a `url`: a link
+    /// out to another app or web page (WatchHub's service links, Watch Next's
+    /// suggestions), not media. Nil in JSON written before this existed.
+    let isExternalLink: Bool?
 
     init(
         url: String?,
@@ -893,7 +897,8 @@ struct NuvioStream: Identifiable, Codable {
         videoSize: Int64? = nil,
         bingeGroup: String? = nil,
         isCached: Bool? = nil,
-        httpHeaders: [String: String]? = nil
+        httpHeaders: [String: String]? = nil,
+        isExternalLink: Bool? = nil
     ) {
         self.url = url
         self.name = name
@@ -909,6 +914,7 @@ struct NuvioStream: Identifiable, Codable {
         self.bingeGroup = bingeGroup
         self.isCached = isCached
         self.httpHeaders = httpHeaders
+        self.isExternalLink = isExternalLink
     }
 
     /// A stream that has no direct URL but carries a torrent info-hash: it must
@@ -929,7 +935,8 @@ struct NuvioStream: Identifiable, Codable {
             url: url, name: name, description: description, addonName: addonName,
             subtitles: subtitles, addonLogoURL: logo, infoHash: infoHash,
             fileIdx: fileIdx, sources: sources, filename: filename, videoSize: videoSize,
-            bingeGroup: bingeGroup, isCached: isCached, httpHeaders: httpHeaders
+            bingeGroup: bingeGroup, isCached: isCached, httpHeaders: httpHeaders,
+            isExternalLink: isExternalLink
         )
     }
 
@@ -956,7 +963,8 @@ struct NuvioStream: Identifiable, Codable {
             videoSize: videoSize,
             bingeGroup: bingeGroup,
             isCached: isCached,
-            httpHeaders: httpHeaders
+            httpHeaders: httpHeaders,
+            isExternalLink: isExternalLink
         )
     }
 }
@@ -1101,6 +1109,12 @@ struct ContinueWatchingItem: Identifiable, Codable {
     /// entries, for JSON written before this existed, and wherever the seed is
     /// unknown — a rollover is then simply not claimed.
     let upNextSeedSeason: Int?
+    /// Set on the cards Home adds to the row that are not watch progress: a
+    /// suggestion ("recommendation") or a favourite team's next match
+    /// ("fixture"). Never stored or synced; nil for everything else.
+    let cardKind: String?
+    /// A fixture's kick-off, when the add-on gave one.
+    let kickoff: Date?
 
     /// The episode this entry points at, resolved once at construction.
     ///
@@ -1119,14 +1133,29 @@ struct ContinueWatchingItem: Identifiable, Codable {
     }
 
     var isUpNextEntry: Bool { isUpNext == true }
+    var isRecommendation: Bool { cardKind == ContinueWatchingItem.recommendationKind }
+    var isFixture: Bool { cardKind == ContinueWatchingItem.fixtureKind }
+    static let recommendationKind = "recommendation"
+    static let fixtureKind = "fixture"
+
+    /// A fixture under way: past kick-off (a match listed as live is given a
+    /// kick-off of when it was seen live).
+    var isFixtureLive: Bool {
+        guard isFixture, let kickoff else { return false }
+        return Date() >= kickoff
+    }
     /// The episode guide travels with refreshed metadata. Prefer it over the
     /// stored enrichment override so an air-date correction is reflected without
     /// waiting for a progress record to be rebuilt.
     private var effectiveEpisodeReleaseDate: String? { episodeVideo?.released ?? released }
-    var hasAired: Bool { EpisodeReleasePolicy.hasAired(effectiveEpisodeReleaseDate) }
+    /// Recommendations and fixtures are offered as they are, never as
+    /// something still to air.
+    var hasAired: Bool { cardKind != nil || EpisodeReleasePolicy.hasAired(effectiveEpisodeReleaseDate) }
     var isAiringToday: Bool { EpisodeReleasePolicy.isAiringToday(effectiveEpisodeReleaseDate) }
     var airDateText: String? { EpisodeReleasePolicy.airDateText(for: effectiveEpisodeReleaseDate) }
     var upNextBadgeText: String {
+        if isRecommendation { return L10n.string("cw_badge_recommended", fallback: "RECOMMENDED") }
+        if isFixture { return fixtureBadgeText }
         guard isUpNextEntry else { return remainingText }
         if hasAired {
             if isNewSeasonDrop { return L10n.string("cw_badge_new_season", fallback: "NEW SEASON") }
@@ -1134,6 +1163,26 @@ struct ContinueWatchingItem: Identifiable, Codable {
         }
         if let airDateText { return L10n.format("cw_badge_airs_date", fallback: "AIRS %@", airDateText.uppercased()) }
         return L10n.string("cw_badge_upcoming", fallback: "UPCOMING")
+    }
+
+    /// "LIVE", or the day and local kick-off time: "TOMORROW · 20:00".
+    private var fixtureBadgeText: String {
+        if isFixtureLive { return L10n.string("cw_badge_live", fallback: "LIVE") }
+        guard let kickoff else {
+            return released == CalendarDayKey.dayKey(offsetFromToday: 1)
+                ? L10n.string("cw_badge_match_tomorrow", fallback: "TOMORROW")
+                : L10n.string("cw_badge_match_today", fallback: "TODAY")
+        }
+        let calendar = Calendar.current
+        let day: String
+        if calendar.isDateInToday(kickoff) {
+            day = L10n.string("cw_badge_match_today", fallback: "TODAY")
+        } else if calendar.isDateInTomorrow(kickoff) {
+            day = L10n.string("cw_badge_match_tomorrow", fallback: "TOMORROW")
+        } else {
+            day = kickoff.formatted(.dateTime.weekday(.wide)).uppercased()
+        }
+        return "\(day) · \(kickoff.formatted(date: .omitted, time: .shortened))"
     }
 
     /// An aired up-next episode reads as a "New Episode" drop only while it is
@@ -1144,7 +1193,7 @@ struct ContinueWatchingItem: Identifiable, Codable {
     /// said "New Episode" for any episode released in the last two months, even
     /// one that was already out weeks before they watched the previous one.
     var isNewEpisodeDrop: Bool {
-        isUpNextEntry && hasAired && EpisodeReleasePolicy.isNewEpisodeDrop(
+        cardKind == nil && isUpNextEntry && hasAired && EpisodeReleasePolicy.isNewEpisodeDrop(
             released: effectiveEpisodeReleaseDate,
             seedWatchedAt: lastWatchedAt
         )
@@ -1191,7 +1240,9 @@ struct ContinueWatchingItem: Identifiable, Codable {
         episodeOverviewOverride: String? = nil,
         episodeThumbnailOverride: String? = nil,
         isUpNext: Bool? = nil,
-        upNextSeedSeason: Int? = nil
+        upNextSeedSeason: Int? = nil,
+        cardKind: String? = nil,
+        kickoff: Date? = nil
     ) {
         self.meta = meta
         self.streamUrl = streamUrl
@@ -1206,6 +1257,8 @@ struct ContinueWatchingItem: Identifiable, Codable {
         self.episodeThumbnailOverride = episodeThumbnailOverride
         self.isUpNext = isUpNext
         self.upNextSeedSeason = upNextSeedSeason
+        self.cardKind = cardKind
+        self.kickoff = kickoff
         self.resolved = Self.resolveEpisode(
             meta: meta,
             streamUrl: streamUrl,
@@ -1232,6 +1285,8 @@ struct ContinueWatchingItem: Identifiable, Codable {
         episodeThumbnailOverride = try container.decodeIfPresent(String.self, forKey: .episodeThumbnailOverride)
         isUpNext = try container.decodeIfPresent(Bool.self, forKey: .isUpNext)
         upNextSeedSeason = try container.decodeIfPresent(Int.self, forKey: .upNextSeedSeason)
+        cardKind = nil
+        kickoff = nil
         resolved = Self.resolveEpisode(
             meta: meta,
             streamUrl: streamUrl,
@@ -1400,7 +1455,38 @@ enum ContinueWatchingSortPolicy {
         item.isUpNextEntry && !item.hasAired && !item.isAiringToday
     }
 
+    /// The row in the order the viewer reads it, whatever the sort chosen:
+    ///
+    /// 1. a favourite team's match under way,
+    /// 2. new episodes of shows being watched or watched before,
+    /// 3. a favourite team's next match,
+    /// 4. what is being watched — films and shows, by the chosen sort,
+    /// 5. recommendations,
+    /// 6. episodes still to air, when the row shows them.
+    ///
+    /// The chosen sort still orders the cards inside each group.
     static func sorted(_ items: [ContinueWatchingItem], preference: String) -> [ContinueWatchingItem] {
+        let ordered = sortedByPreference(items, preference: preference)
+        return ordered.enumerated()
+            .sorted { lhs, rhs in
+                let left = tier(lhs.element)
+                let right = tier(rhs.element)
+                if left != right { return left < right }
+                if left == 2, let a = lhs.element.kickoff, let b = rhs.element.kickoff, a != b { return a < b }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
+    }
+
+    static func tier(_ item: ContinueWatchingItem) -> Int {
+        if item.isFixture { return item.isFixtureLive ? 0 : 2 }
+        if item.isNewEpisodeDrop { return 1 }
+        if item.isRecommendation { return 4 }
+        if isUpcomingItem(item) { return 5 }
+        return 3
+    }
+
+    private static func sortedByPreference(_ items: [ContinueWatchingItem], preference: String) -> [ContinueWatchingItem] {
         switch preference {
         case "Streaming Style":
             let (released, unreleased) = partitionByAirStatus(items)

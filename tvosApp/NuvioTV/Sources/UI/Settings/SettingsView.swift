@@ -248,6 +248,8 @@ enum SettingsKey {
     static let continueWatchingSort = "nuvio.tv.settings.layout.continueWatchingSort"
     static let upNextFromFurthestEpisode = "nuvio.tv.settings.layout.upNextFromFurthestEpisode"
     static let showUnairedNextUp = "nuvio.tv.settings.layout.showUnairedNextUp"
+    /// Teams whose next match joins Continue Watching (`FavouriteTeamsStore`).
+    static let favouriteTeams = "omni.settings.favouriteTeams"
     static let cardCornerRadius = "nuvio.tv.settings.layout.cardCornerRadius"
     static let cardSize = "nuvio.tv.settings.layout.cardSize"
     static let liquidGlassCards = "nuvio.tv.settings.layout.liquidGlassCards"
@@ -3647,6 +3649,8 @@ private struct LayoutDiscoverySettingsView: View {
                     NotificationCenter.default.post(name: TraktSettingsStore.continueWatchingChangedNotification, object: nil)
                     NotificationCenter.default.post(name: ContinueWatchingStore.changedNotification, object: nil)
                 }
+
+                SettingsFavouriteTeamsRows(accentColor: accentColor)
 
                 SettingsToggleRow(
                     title: L10n.string(
@@ -14635,6 +14639,45 @@ private struct SettingsActionRow: View {
         .focusEffectDisabledIfAvailable()
         .entryLockable()
         .macSettingsRow(macRowID ?? title, action: action)
+    }
+}
+
+/// Favourite teams: a field to add one, then a row per team that removes it.
+/// Their next match, from the sports add-ons, joins Continue Watching.
+private struct SettingsFavouriteTeamsRows: View {
+    let accentColor: Color
+    @State private var draft = ""
+    @State private var teams = FavouriteTeamsStore.teams()
+
+    var body: some View {
+        SettingsTextFieldRow(
+            title: L10n.string("layout_favourite_teams", fallback: "Favourite Teams"),
+            subtitle: L10n.string(
+                "layout_favourite_teams_sub",
+                fallback: "Their next match joins Continue Watching from the day before until it ends"
+            ),
+            placeholder: L10n.string("layout_favourite_teams_add", fallback: "Add a team"),
+            text: $draft,
+            onCommit: add
+        )
+        ForEach(teams, id: \.self) { team in
+            SettingsActionRow(
+                title: team,
+                subtitle: L10n.string("layout_favourite_team_sub", fallback: "Next match in Continue Watching"),
+                value: L10n.string("action_remove", fallback: "Remove"),
+                accentColor: accentColor,
+                macRowID: "favourite-team-\(team)"
+            ) {
+                FavouriteTeamsStore.remove(team)
+                teams = FavouriteTeamsStore.teams()
+            }
+        }
+    }
+
+    private func add() {
+        FavouriteTeamsStore.add(draft)
+        draft = ""
+        teams = FavouriteTeamsStore.teams()
     }
 }
 

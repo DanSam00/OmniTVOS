@@ -576,7 +576,11 @@ final class DownloadManager: NSObject, ObservableObject {
         let sort = store.string(forKey: SettingsKey.streamSortOption)
             .flatMap(StreamSortOption.init(rawValueOrSync:)) ?? .quality
         let debrid = DebridResolver(store: store).isEnabled
-        let ordered = StreamPickerListBuilder.displayedStreams(
+        // Never a namesake's release ("Dark Matter" 2015 for the 2024 one).
+        let identity = StreamAvailability.request(meta: record.meta, season: record.season, episode: record.episode)
+        if let identity { _ = await TitleAmbiguity.answer(for: identity) }
+        guard records[key]?.state == .findingSource else { return }
+        let listed = StreamPickerListBuilder.displayedStreams(
             streams: repository.state.allStreams,
             groups: repository.state.groups,
             selectedAddonId: nil,
@@ -584,6 +588,7 @@ final class DownloadManager: NSObject, ObservableObject {
             includeDebrid: debrid,
             cachedOnly: (store.object(forKey: SettingsKey.cachedOnlyStreams) as? Bool) ?? false
         )
+        let ordered = SmartPlaybackSelector.identityFiltered(listed, identity: identity)
         switch DownloadStreamChooser.choose(
             from: ordered,
             maxBytes: isMovie ? DownloadSettings.maxMovieBytes(in: store) : DownloadSettings.maxEpisodeBytes(in: store),

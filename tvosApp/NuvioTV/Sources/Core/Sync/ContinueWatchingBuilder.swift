@@ -41,9 +41,14 @@ enum ContinueWatchingBuilder {
     /// whose show already has progress is dropped rather than rendered twice.
     /// The result is newest-first, which is also the order pages are filled in —
     /// so the first page is always the most recent activity.
+    ///
+    /// `freshSeeds` are shows with a new episode out since they were last
+    /// watched. They go first whatever their age, so a show finished long ago
+    /// still reaches the first page on the day it comes back.
     static func planEntries(
         candidates: [WatchProgressRecord],
-        seeds: [WatchProgressRecord]
+        seeds: [WatchProgressRecord],
+        freshSeeds: Set<String> = []
     ) -> [PlanEntry] {
         let candidateIds = Set(candidates.map(\.contentId))
         return (
@@ -51,7 +56,12 @@ enum ContinueWatchingBuilder {
                 + seeds
                 .filter { !candidateIds.contains($0.contentId) }
                 .map { PlanEntry(record: $0, isSeed: true) }
-        ).sorted { $0.record.lastWatchedAt > $1.record.lastWatchedAt }
+        ).sorted { lhs, rhs in
+            let lhsFresh = lhs.isSeed && freshSeeds.contains(lhs.record.contentId)
+            let rhsFresh = rhs.isSeed && freshSeeds.contains(rhs.record.contentId)
+            if lhsFresh != rhsFresh { return lhsFresh }
+            return lhs.record.lastWatchedAt > rhs.record.lastWatchedAt
+        }
     }
 
     private static var plan: [PlanEntry] = []
@@ -136,7 +146,11 @@ enum ContinueWatchingBuilder {
             return
         }
 
-        plan = planEntries(candidates: candidates, seeds: seeds)
+        let freshSeeds = await FreshEpisodeScanner.freshShowIds(
+            seeds.map { ($0.contentId, $0.lastWatchedAt) }
+        )
+        guard !Task.isCancelled, currentGeneration == generation else { return }
+        plan = planEntries(candidates: candidates, seeds: seeds, freshSeeds: freshSeeds)
         materialized = []
         consumedEntries = 0
         materializedProfileId = profileId

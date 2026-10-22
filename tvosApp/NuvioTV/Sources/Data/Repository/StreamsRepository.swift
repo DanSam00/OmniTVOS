@@ -243,6 +243,63 @@ final class StreamsRepository: ObservableObject {
         return state.requestKey == key ? state.allStreams : []
     }
 
+    // MARK: - Availability probe
+
+    /// True as soon as one source for this title passes `accepts`.
+    ///
+    /// Asks the same add-ons Details would, but on its own: it never touches
+    /// `state`, so a background check cannot cancel or replace the search for
+    /// the title on screen. The add-ons are asked together and the first
+    /// acceptable stream ends the check. Sources the user owns (a download, a
+    /// local share, Jellyfin, IPTV) are matched by id and so always count.
+    func hasSource(
+        type: String,
+        videoId: String,
+        accepts: (NuvioStream) -> Bool
+    ) async -> Bool {
+        #if os(iOS) || os(macOS)
+        if DownloadManager.shared.completedDownload(videoId) != nil { return true }
+        #endif
+        if localStreamGroup(videoId: videoId) != nil
+            || jellyfinStreamGroup(videoId: videoId) != nil
+            || iptvStreamGroup(videoId: videoId) != nil {
+            return true
+        }
+
+        let enabledURLs = CinemetaCatalogRepository.configuredStreamAddonPreferences.compactMap { pref -> URL? in
+            guard pref.enabled else { return nil }
+            return CinemetaCatalogRepository.normalizedManifestURL(from: pref.url)
+        }
+        let manifestsByURL = await Self.loadManifestsConcurrently(urls: enabledURLs)
+        let targets: [StreamAddonTarget] = enabledURLs.compactMap { url in
+            guard let manifest = manifestsByURL[url],
+                  manifest.supportsResource("stream", type: type, id: videoId) else { return nil }
+            return StreamAddonTarget(
+                addonId: Self.stableAddonId(manifest: manifest, manifestURL: url),
+                displayName: manifest.displayName ?? CinemetaCatalogRepository.streamAddonName(for: url),
+                manifestURL: url,
+                logo: manifest.logo
+            )
+        }
+
+        let found = await withTaskGroup(of: [NuvioStream].self) { group -> Bool in
+            for target in targets {
+                group.addTask {
+                    await Self.fetchAddonGroup(target: target, type: type, videoId: videoId).group.streams
+                }
+            }
+            for await streams in group where streams.contains(where: accepts) {
+                group.cancelAll()
+                return true
+            }
+            return false
+        }
+        if found { return true }
+
+        guard Self.searchesIPTVLibrary(type: type, videoId: videoId) else { return false }
+        return await iptvVODGroup(type: type, videoId: videoId) != nil
+    }
+
     // MARK: - Discovery
 
     private func runDiscovery(requestKey: String, type: String, videoId: String) async {
@@ -866,7 +923,8 @@ struct StreamAddonStreamDTO: Decodable {
             videoSize: behaviorHints?.videoSize,
             bingeGroup: cleaned(behaviorHints?.bingeGroup),
             isCached: behaviorHints?.cached ?? behaviorHints?.isCached,
-            httpHeaders: behaviorHints?.proxyHeaders?.request
+            httpHeaders: behaviorHints?.proxyHeaders?.request,
+            isExternalLink: cleaned(url) == nil && cleaned(externalUrl) != nil
         )
     }
 

@@ -63,6 +63,47 @@ enum TraktDetailsService {
         return []
     }
 
+    /// The account's own Trakt recommendations, films and shows interleaved,
+    /// for the end of Continue Watching. Empty unless Trakt is connected.
+    static func fetchRecommendations(limit: Int = 10) async -> [RelatedTitle] {
+        guard isAuthenticated else { return [] }
+        async let moviesData = traktGET(route: "recommendations/movies?limit=\(limit)&ignore_collected=true&extended=full,images")
+        async let showsData = traktGET(route: "recommendations/shows?limit=\(limit)&ignore_collected=true&extended=full,images")
+        let (movieBytes, showBytes) = await (moviesData, showsData)
+        let movies = movieBytes.flatMap { try? JSONDecoder().decode([TraktRelatedMovieDTO].self, from: $0) }?
+            .compactMap { $0.toRelatedTitle() } ?? []
+        let shows = showBytes.flatMap { try? JSONDecoder().decode([TraktRelatedShowDTO].self, from: $0) }?
+            .compactMap { $0.toRelatedTitle() } ?? []
+        var mixed: [RelatedTitle] = []
+        for index in 0..<max(movies.count, shows.count) {
+            if index < shows.count { mixed.append(shows[index]) }
+            if index < movies.count { mixed.append(movies[index]) }
+        }
+        return mixed
+    }
+
+    /// Trakt's "related" list for a title, asked with the app's client id
+    /// alone: it is public, so it needs no sign-in, Trakt or otherwise.
+    static func fetchPublicRelated(for meta: NuvioMeta, limit: Int = 8) async -> [RelatedTitle] {
+        let imdb = meta.imdbId ?? String(meta.id.split(separator: ":").first ?? "")
+        guard imdb.hasPrefix("tt") else { return [] }
+        let endpoint = isSeries(meta.type) ? "shows" : "movies"
+        guard let url = URL(string: "\(TraktConfig.apiBaseURL)/\(endpoint)/\(imdb)/related?limit=\(limit)&extended=full,images") else {
+            return []
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("2", forHTTPHeaderField: "trakt-api-version")
+        request.setValue(TraktConfig.builtInClientID, forHTTPHeaderField: "trakt-api-key")
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return [] }
+        if endpoint == "movies" {
+            return (try? JSONDecoder().decode([TraktRelatedMovieDTO].self, from: data))?.compactMap { $0.toRelatedTitle() } ?? []
+        }
+        return (try? JSONDecoder().decode([TraktRelatedShowDTO].self, from: data))?.compactMap { $0.toRelatedTitle() } ?? []
+    }
+
     // MARK: - Path resolution
 
     private struct Path {
