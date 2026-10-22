@@ -8792,6 +8792,23 @@ struct TVHomeView: View {
     }
 }
 
+extension TVHomeSection {
+    /// The sections with any newly drawn match art swapped in, or nil when
+    /// nothing changed (so an unchanged Home is not republished).
+    static func withDrawnMatchArt(_ sections: [TVHomeSection]) -> [TVHomeSection]? {
+        var changed = false
+        var updated = sections
+        for index in updated.indices {
+            let items = updated[index].items.map(FixtureArtwork.decorated)
+            if items.map(\.posterUrl) != updated[index].items.map(\.posterUrl) {
+                updated[index].items = items
+                changed = true
+            }
+        }
+        return changed ? updated : nil
+    }
+}
+
 struct TVHomeSection: Identifiable {
     static let continueWatchingId = "continue_watching"
     static let upcomingId = "upcoming"
@@ -9503,6 +9520,24 @@ struct TVHomeContentIdentity: Hashable {
 final class TVHomeStore: ObservableObject {
     @Published var sections: [TVHomeSection] = []
     @Published var hero: NuvioMeta?
+    private var matchArtObserver: NSObjectProtocol?
+
+    init() {
+        // A match shows its add-on's image until the app's art is drawn;
+        // swap it in as soon as it is.
+        matchArtObserver = NotificationCenter.default.addObserver(
+            forName: FixtureArtwork.artDrawnNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if let updated = TVHomeSection.withDrawnMatchArt(self.sections) { self.sections = updated }
+                if let hero = self.hero {
+                    let art = FixtureArtwork.decorated(hero)
+                    if art.posterUrl != hero.posterUrl { self.hero = art }
+                }
+            }
+        }
+    }
     /// True when any last-known-good tree is available. Cache reuse additionally
     /// requires `loadedContentIdentity` to match the requested profile/revision.
     @Published private(set) var hasLoaded = false

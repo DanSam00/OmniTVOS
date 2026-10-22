@@ -271,6 +271,12 @@ struct PhonePosterCard: View {
     }
 
     var body: some View {
+        // A match on screen is drawn ahead of the rest of the queue.
+        tileBody.onAppear { FixtureArtwork.prioritise(meta) }
+    }
+
+    @ViewBuilder
+    private var tileBody: some View {
         VStack(alignment: .leading, spacing: 6) {
             PhoneArtwork(url: meta.posterUrl ?? meta.backgroundUrl)
                 .frame(width: width, height: width * PhoneLayout.posterAspect)
@@ -458,6 +464,12 @@ struct PhoneFlexiblePoster: View {
     @AppStorage(SettingsKey.cardCornerRadius) private var cornerRadiusRaw = CardCornerRadiusOption.subtle.rawValue
 
     var body: some View {
+        // A match on screen is drawn ahead of the rest of the queue.
+        tileBody.onAppear { FixtureArtwork.prioritise(meta) }
+    }
+
+    @ViewBuilder
+    private var tileBody: some View {
         VStack(alignment: .leading, spacing: 6) {
             Color.clear
                 .aspectRatio(1 / PhoneLayout.posterAspect, contentMode: .fit)

@@ -28,7 +28,7 @@ struct PauseOverlayView: View {
                     .kerning(2)
 
                 if let logoURL {
-                    AsyncImage(url: logoURL) { phase in
+                    AsyncImage(url: FixtureArtwork.displayURL(logoURL)) { phase in
                         switch phase {
                         case .success(let image):
                             image

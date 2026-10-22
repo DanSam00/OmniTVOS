@@ -124,7 +124,7 @@ struct MacDownloadsList: View {
         return HStack(spacing: 22) {
             Button { Self.activate(record, onOpen: onOpen) } label: {
                 HStack(spacing: 22) {
-                    AsyncImage(url: URL(string: DownloadManager.listArtwork(for: record) ?? "")) { image in
+                    AsyncImage(url: FixtureArtwork.displayURL(URL(string: DownloadManager.listArtwork(for: record) ?? ""))) { image in
                         image.resizable().aspectRatio(contentMode: .fill)
                     } placeholder: {
                         Color.white.opacity(0.08)

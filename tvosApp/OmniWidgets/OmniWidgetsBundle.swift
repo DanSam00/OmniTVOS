@@ -87,6 +87,7 @@ struct WidgetWordmark: View {
         if let wordmark = OmniWidgetStyle.wordmark {
             wordmark
                 .resizable()
+                .fullColorInTintedModes()
                 .scaledToFit()
                 .frame(height: height)
                 .shadow(color: .black.opacity(0.5), radius: 4)
@@ -106,15 +107,34 @@ struct WidgetHero: View {
     var fallback: String? = nil
     var titleSize: CGFloat = 18
     var showsWordmark = true
+    @Environment(\.widgetRenderingMode) private var renderingMode
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            WidgetArtwork(source: art, fallback: fallback)
-            LinearGradient(
-                colors: [.black.opacity(0.25), .clear, .black.opacity(0.78)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
+            if renderingMode == .fullColor {
+                WidgetArtwork(source: art, fallback: fallback)
+                LinearGradient(
+                    colors: [.black.opacity(0.25), .clear, .black.opacity(0.78)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            } else {
+                // Clear and Tinted styles draw anything but marked images in
+                // the tint colour, so a black fade came out white. Fade the
+                // artwork itself into the widget's ground instead.
+                WidgetArtwork(source: art, fallback: fallback)
+                    .mask(
+                        LinearGradient(
+                            stops: [
+                                .init(color: .black, location: 0),
+                                .init(color: .black, location: 0.45),
+                                .init(color: .black.opacity(0.08), location: 1),
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+            }
             VStack(alignment: .leading, spacing: 3) {
                 Spacer(minLength: 0)
                 Text(title)
@@ -238,6 +258,7 @@ struct WidgetArtwork: View {
         if let image = Self.image(for: source) ?? Self.image(for: fallback) {
             image
                 .resizable()
+                .fullColorInTintedModes()
                 .scaledToFill()
         } else {
             LinearGradient(
@@ -308,6 +329,20 @@ extension View {
             containerBackground(for: .widget) { AccessoryWidgetBackground() }
         } else {
             containerBackground(for: .widget) { OmniWidgetStyle.background }
+        }
+    }
+}
+
+extension Image {
+    /// In the Clear and Tinted Home Screen styles iOS draws widget images as
+    /// a flat tint, which turned every poster into a white box. Artwork
+    /// keeps its own colours in every style.
+    @ViewBuilder
+    func fullColorInTintedModes() -> some View {
+        if #available(iOS 18.0, macOS 15.0, *) {
+            widgetAccentedRenderingMode(.fullColor)
+        } else {
+            self
         }
     }
 }

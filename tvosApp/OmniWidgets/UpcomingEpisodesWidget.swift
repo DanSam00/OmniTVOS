@@ -50,11 +50,16 @@ struct UpcomingEpisodesProvider: TimelineProvider {
     private static func entry(at date: Date) -> UpcomingEpisodesEntry {
         let feed = UpcomingEpisodeFeedStore.read()
         let matches = UpcomingEpisodeFeedStore.readMatches()
-        // A match under way first, then everything by when it is on.
+        // Your teams' matches lead (one under way first), then the episodes,
+        // each by when it is on. A row of today's episodes otherwise pushed
+        // tomorrow's match out of a widget that shows five.
+        func rank(_ entry: UpcomingEpisodeEntry) -> Int {
+            entry.isLive(at: date) ? 0 : (entry.isMatch ? 1 : 2)
+        }
         let episodes = ((feed?.entries ?? []) + matches)
             .filter { $0.isCurrent(at: date) }
             .sorted { lhs, rhs in
-                if lhs.isLive(at: date) != rhs.isLive(at: date) { return lhs.isLive(at: date) }
+                if rank(lhs) != rank(rhs) { return rank(lhs) < rank(rhs) }
                 return (lhs.kickoff ?? lhs.airDate) < (rhs.kickoff ?? rhs.airDate)
             }
         return UpcomingEpisodesEntry(date: date, episodes: episodes, hasFeed: feed != nil || !matches.isEmpty)

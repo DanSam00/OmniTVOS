@@ -1125,7 +1125,7 @@ private struct DayThumb: View {
         ZStack {
             Color.white.opacity(0.08)
             if attempt < candidates.count, let parsed = URL(string: candidates[attempt]) {
-                AsyncImage(url: parsed) { phase in
+                AsyncImage(url: FixtureArtwork.displayURL(parsed)) { phase in
                     switch phase {
                     case .success(let image):
                         image.resizable().aspectRatio(contentMode: .fill)
@@ -1370,7 +1370,7 @@ private struct EntryArtwork: View {
             Color.white.opacity(0.07)
 
             if attempt < candidates.count, let url = URL(string: candidates[attempt]) {
-                AsyncImage(url: url) { phase in
+                AsyncImage(url: FixtureArtwork.displayURL(url)) { phase in
                     switch phase {
                     case .success(let image):
                         image.resizable().aspectRatio(contentMode: .fill)

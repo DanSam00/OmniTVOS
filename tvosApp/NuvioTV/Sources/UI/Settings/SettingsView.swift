@@ -10420,7 +10420,7 @@ private struct SyncedAddonSettingsRow: View {
     private var addonArtwork: some View {
         Group {
             if let logoURL = addon.logoURL {
-                AsyncImage(url: logoURL) { phase in
+                AsyncImage(url: FixtureArtwork.displayURL(logoURL)) { phase in
                     if let image = phase.image {
                         image
                             .resizable()
@@ -11520,7 +11520,7 @@ private struct StreamingServiceLogoTile: View {
                 .fill(Color.black.opacity(0.78))
 
             if let logoURL, let url = URL(string: logoURL) {
-                AsyncImage(url: url) { phase in
+                AsyncImage(url: FixtureArtwork.displayURL(url)) { phase in
                     if case .success(let image) = phase {
                         image
                             .resizable()

@@ -829,7 +829,7 @@ struct MacCastingView: View {
         ZStack {
             Color.black.ignoresSafeArea()
             if let backdropURL {
-                AsyncImage(url: backdropURL) { image in
+                AsyncImage(url: FixtureArtwork.displayURL(backdropURL)) { image in
                     image.resizable().aspectRatio(contentMode: .fill)
                 } placeholder: {
                     Color.clear

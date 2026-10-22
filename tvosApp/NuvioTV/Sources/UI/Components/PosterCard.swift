@@ -282,6 +282,8 @@ struct PosterCard: View {
                 )
             }
             .onAppear {
+                // A match on screen is drawn ahead of the rest of the queue.
+                FixtureArtwork.prioritise(meta)
                 guard shouldRequestInitialFocus, !didRequestInitialFocus else {
                     return
                 }
@@ -429,7 +431,7 @@ struct PosterCard: View {
             if continueEpisodeText != nil {
                 continueLandscapeSummary
             } else if let logoURL = landscapeLogoURL {
-                AsyncImage(url: logoURL) { phase in
+                AsyncImage(url: FixtureArtwork.displayURL(logoURL)) { phase in
                     if case .success(let image) = phase {
                         image
                             .resizable()

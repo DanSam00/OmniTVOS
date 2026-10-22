@@ -472,7 +472,7 @@ struct IPTVGuideView: View {
 
     private func channelCell(_ group: IPTVChannelGroup) -> some View {
         HStack(spacing: 12) {
-            AsyncImage(url: group.logo.flatMap(URL.init(string:))) { image in
+            AsyncImage(url: FixtureArtwork.displayURL(group.logo.flatMap(URL.init(string:)))) { image in
                 image.resizable().scaledToFit()
             } placeholder: {
                 Image(systemName: "tv").foregroundColor(.white.opacity(0.4))

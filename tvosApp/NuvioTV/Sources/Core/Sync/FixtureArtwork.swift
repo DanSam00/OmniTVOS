@@ -25,22 +25,161 @@ enum FixtureArtwork {
 
     enum Shape: String {
         case portrait = "p"
+        /// Wide, the match centred: tiles, and the iPhone's pages, which crop
+        /// the sides.
         case landscape = "l"
+        /// Wide, the match on the right: Apple TV and Mac heroes and pages put
+        /// the title and buttons over the left.
+        case backdrop = "b"
 
         var size: CGSize {
             self == .portrait ? CGSize(width: 1000, height: 1500) : CGSize(width: 1600, height: 900)
         }
     }
 
+    /// The wide shape this platform uses for a listing's background.
+    static var wideShape: Shape {
+        #if os(iOS)
+        .landscape
+        #else
+        .backdrop
+        #endif
+    }
+
     // MARK: Addresses
 
-    /// The listing with the app's art, when it is a match; otherwise as is.
+    /// Posted (debounced) when newly drawn pictures are ready, so screens
+    /// showing a match's add-on image can swap in the art.
+    static let artDrawnNotification = Notification.Name("omni.fixtureArt.drawn")
+
+    /// The listing with the app's art when it is a match whose art is drawn.
+    ///
+    /// Until then it keeps the add-on's own image — on a slow connection the
+    /// first drawing takes a while, and a blank tile is worse than a rough
+    /// one — and the match joins the queue to be drawn in the background.
+    /// `artDrawnNotification` tells screens to call this again.
     static func decorated(_ meta: NuvioMeta) -> NuvioMeta {
-        guard isMatch(meta),
+        guard isMatchCached(meta) else { return meta }
+        let genres = meta.genres ?? []
+        guard isDrawn(title: meta.name, genres: genres),
               let poster = artURL(for: meta, shape: .portrait),
-              let background = artURL(for: meta, shape: .landscape) else { return meta }
+              let background = artURL(for: meta, shape: wideShape) else {
+            enqueue(title: meta.name, genres: genres)
+            return meta
+        }
         // The add-on's logo (its own badge) does not belong over the match.
         return meta.withArtwork(poster: poster, background: background, dropsLogo: true)
+    }
+
+    /// The address to hand SwiftUI's `AsyncImage`, which does not go through
+    /// `FixtureArtURLProtocol`: match art as its saved file, anything else
+    /// unchanged. Art addresses are only given out once the file is saved.
+    static func displayURL(_ url: URL?) -> URL? {
+        guard let url, url.scheme == scheme,
+              let shape = Shape(rawValue: String(url.path.dropFirst())),
+              let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems,
+              let title = query.first(where: { $0.name == "t" })?.value else { return url }
+        let genres = (query.first(where: { $0.name == "g" })?.value ?? "")
+            .split(separator: "|").map(String.init).filter { !$0.isEmpty }
+        guard let file = drawnFile(title: title, genres: genres, shape: shape),
+              FileManager.default.fileExists(atPath: file.path) else { return url }
+        return file
+    }
+
+    /// Draws a match's art now, for the few cards that should never show the
+    /// add-on's image (your teams' matches). True when it is ready.
+    @MainActor
+    static func ensureDrawn(_ meta: NuvioMeta) async -> Bool {
+        guard isMatch(meta) else { return false }
+        let genres = meta.genres ?? []
+        if isDrawn(title: meta.name, genres: genres) { return true }
+        await draw(title: meta.name, genres: genres)
+        return isDrawn(title: meta.name, genres: genres)
+    }
+
+    // MARK: Background drawing
+
+    @MainActor private static var queue: [(title: String, genres: [String])] = []
+    @MainActor private static var queuedKeys: Set<String> = []
+    /// When each match was last tried, so one that cannot be drawn yet (its
+    /// lookups failing) is not retried on every refresh.
+    @MainActor private static var lastTried: [String: Date] = [:]
+    @MainActor private static var isDrawing = false
+    @MainActor private static var announceTask: Task<Void, Never>?
+
+    /// Puts a match on screen at the front of the queue. Home reads several
+    /// sports catalogs at once, a few hundred matches, and TheSportsDB allows
+    /// one request every two seconds: in listing order, the tiles being
+    /// looked at could wait many minutes.
+    static func prioritise(_ meta: NuvioMeta) {
+        guard isMatchCached(meta), !isDrawn(title: meta.name, genres: meta.genres ?? []) else { return }
+        enqueue(title: meta.name, genres: meta.genres ?? [], atFront: true)
+    }
+
+    private static func enqueue(title: String, genres: [String], atFront: Bool = false) {
+        Task { @MainActor in
+            let key = artKey(title: title, genres: genres)
+            if atFront {
+                // Moved up even when already waiting; a recent failure still
+                // holds it back.
+                guard lastTried[key].map({ Date().timeIntervalSince($0) > 600 }) ?? true else { return }
+                queue.removeAll { artKey(title: $0.title, genres: $0.genres) == key }
+                queuedKeys.insert(key)
+                queue.insert((title, genres), at: 0)
+            } else {
+                guard !queuedKeys.contains(key),
+                      lastTried[key].map({ Date().timeIntervalSince($0) > 600 }) ?? true else { return }
+                queuedKeys.insert(key)
+                queue.append((title, genres))
+            }
+            guard !isDrawing else { return }
+            isDrawing = true
+            while !queue.isEmpty {
+                let next = queue.removeFirst()
+                let nextKey = artKey(title: next.title, genres: next.genres)
+                lastTried[nextKey] = Date()
+                await draw(title: next.title, genres: next.genres)
+                queuedKeys.remove(nextKey)
+                if isDrawn(title: next.title, genres: next.genres) { announce() }
+            }
+            isDrawing = false
+        }
+    }
+
+    @MainActor
+    private static func draw(title: String, genres: [String]) async {
+        for shape in [Shape.portrait, wideShape] {
+            guard let url = artURL(title: title, genres: genres, shape: shape).flatMap(URL.init(string:)) else { continue }
+            _ = await imageData(for: url)
+        }
+    }
+
+    /// Batches notices: a row of matches finishing together refreshes once.
+    @MainActor
+    private static func announce() {
+        guard announceTask == nil else { return }
+        announceTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            announceTask = nil
+            NotificationCenter.default.post(name: artDrawnNotification, object: nil)
+        }
+    }
+
+    private static let matchLock = NSLock()
+    nonisolated(unsafe) private static var matchMemo: [String: Bool] = [:]
+
+    /// `isMatch`, remembered: screens ask on every redraw.
+    private static func isMatchCached(_ meta: NuvioMeta) -> Bool {
+        let key = meta.type + "|" + meta.id + "|" + meta.name + "|" + (meta.genres ?? []).joined(separator: "|")
+        matchLock.lock()
+        if let known = matchMemo[key] { matchLock.unlock(); return known }
+        matchLock.unlock()
+        let answer = isMatch(meta)
+        matchLock.lock()
+        if matchMemo.count > 4000 { matchMemo.removeAll() }
+        matchMemo[key] = answer
+        matchLock.unlock()
+        return answer
     }
 
     /// A sports listing naming two teams: a "sport" item, or a live one
@@ -48,19 +187,34 @@ enum FixtureArtwork {
     /// whatever its name ("Coyote vs. Acme").
     static func isMatch(_ meta: NuvioMeta) -> Bool {
         let type = meta.type.lowercased()
-        guard !["movie", "series"].contains(type) else { return false }
-        let isSports = type.contains("sport") || meta.id.lowercased().contains("sport")
+        let genres = (meta.genres ?? []).map { $0.lowercased() }
+        // Some add-ons list matches as films ("Real Madrid vs RB Leipzig",
+        // genres Soccer, La Liga): a sports genre says what they are.
+        let sportsGenre = genres.contains { genre in sportWords.contains { genre.contains($0) } }
+        if ["movie", "series"].contains(type), !sportsGenre { return false }
+        let isSports = type.contains("sport") || meta.id.lowercased().contains("sport") || sportsGenre
         return isSports && teams(in: meta.name) != nil
     }
 
+    private static let sportWords = [
+        "soccer", "football", "basketball", "cricket", "rugby", "tennis", "hockey", "baseball", "volleyball",
+        "handball", "nfl", "nba", "nhl", "mlb", "afl", "nrl", "mma", "ufc", "boxing", "motorsport", "formula",
+        "golf", "la liga", "laliga", "premier league", "serie a", "bundesliga", "ligue 1", "champions league",
+        "europa league", "uefa", "mls", "eredivisie",
+    ]
+
     static func artURL(for meta: NuvioMeta, shape: Shape) -> String? {
+        artURL(title: meta.name, genres: meta.genres ?? [], shape: shape)
+    }
+
+    static func artURL(title: String, genres: [String], shape: Shape) -> String? {
         var components = URLComponents()
         components.scheme = scheme
         components.host = "art"
         components.path = "/" + shape.rawValue
         components.queryItems = [
-            URLQueryItem(name: "t", value: meta.name),
-            URLQueryItem(name: "g", value: (meta.genres ?? []).joined(separator: "|")),
+            URLQueryItem(name: "t", value: title),
+            URLQueryItem(name: "g", value: genres.joined(separator: "|")),
             URLQueryItem(name: "v", value: String(designVersion)),
         ]
         return components.url?.absoluteString
@@ -104,11 +258,21 @@ enum FixtureArtwork {
         guard let range = text.range(of: versus, options: [.regularExpression, .caseInsensitive]) else {
             return nil
         }
-        let home = text[..<range.lowerBound].trimmingCharacters(in: .whitespaces)
-        let away = text[range.upperBound...].trimmingCharacters(in: .whitespaces)
+        let home = cleanTeamName(String(text[..<range.lowerBound]))
+        let away = cleanTeamName(String(text[range.upperBound...]))
         guard !home.isEmpty, !away.isEmpty else { return nil }
         let label = [prefix, suffix].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
         return (home, away, label.isEmpty ? nil : label)
+    }
+
+    /// A team's name without what listings tack on after it: "RB Leipzig UEFA
+    /// Champions League Football download free at Real Madrid" → "RB Leipzig",
+    /// "Arsenal (H)" → "Arsenal".
+    static func cleanTeamName(_ raw: String) -> String {
+        var name = raw.replacingOccurrences(of: #"\s*[\(\[].*$"#, with: "", options: .regularExpression)
+        let noise = #"(?i)\s(uefa|champions league|europa league|conference league|premier league|la ?liga|serie a|bundesliga|ligue 1|eredivisie|mls|football|soccer|download|highlights|full match|replay|live stream|stream|free|hd|fhd|4k)\b.*$"#
+        name = name.replacingOccurrences(of: noise, with: "", options: .regularExpression)
+        return name.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
     }
 
     /// TheSportsDB's sport for the listing, to pick India's cricket side for a
@@ -130,7 +294,7 @@ enum FixtureArtwork {
 
     /// The design's version. Part of every art address, so a new design is a
     /// new address and no image cache keeps showing the old one.
-    static let designVersion = 9
+    static let designVersion = 14
     private static var folderName: String { "fixture-art-v\(designVersion)" }
 
     /// The picture behind an `omni-fixture` address, drawn once and kept.
@@ -144,28 +308,43 @@ enum FixtureArtwork {
         let genres = (query.first(where: { $0.name == "g" })?.value ?? "")
             .split(separator: "|").map(String.init).filter { !$0.isEmpty }
 
-        let file = folder?.appendingPathComponent(
-            String(stableHash(title + "|" + genres.joined(separator: "|")), radix: 16) + "-" + shape.rawValue + ".jpg"
-        )
+        let file = drawnFile(title: title, genres: genres, shape: shape)
         if let file, let data = try? Data(contentsOf: file) { return data }
 
         let sport = sportHint(title: title, genres: genres)
-        async let homeTeam = team(named: names.home, sport: sport)
-        async let awayTeam = team(named: names.away, sport: sport)
-        let (home, away) = await (homeTeam, awayTeam)
-        let badge = await leagueBadge(home: home, away: away, listing: ([title] + genres).joined(separator: " "))
+        // ESPN first (a whole league per request, no tight limit), then
+        // TheSportsDB for a side it does not know.
+        let espn = await SportsLogos.match(home: names.home, away: names.away, sport: sport)
+        var (home, homeAnswered) = await espnTeam(espn?.home, named: names.home)
+        if home == nil { (home, homeAnswered) = await team(named: names.home, sport: sport) }
+        var (away, awayAnswered) = await espnTeam(espn?.away, named: names.away)
+        if away == nil { (away, awayAnswered) = await team(named: names.away, sport: sport) }
+        let homeSide = home!, awaySide = away!
+        let badge: CGImage?
+        let badgeAnswered: Bool
+        if let league = espn?.league {
+            badge = await image(at: league.logo)
+            badgeAnswered = league.logo == nil || badge != nil
+        } else {
+            (badge, badgeAnswered) = await leagueBadge(
+                home: homeSide, away: awaySide, listing: ([title] + genres).joined(separator: " ")
+            )
+        }
+        // Kept only when every lookup was answered: a picture drawn while
+        // TheSportsDB was busy is shown now and drawn again next time.
+        let complete = homeAnswered && awayAnswered && badgeAnswered
         // The badge stands for the competition; without one, the sport is
         // written instead. A match label ("1st T20I") is kept either way.
         let sportName = genres.first(where: { !$0.contains("-") })
         let label = badge == nil ? [sportName, names.suffix].compactMap { $0 }.joined(separator: " · ") : names.suffix
 
         let renderer = ImageRenderer(
-            content: FixtureArtView(home: home, away: away, badge: badge, label: label?.nilIfEmpty, shape: shape)
+            content: FixtureArtView(home: homeSide, away: awaySide, badge: badge, label: label?.nilIfEmpty, shape: shape)
                 .frame(width: shape.size.width, height: shape.size.height)
         )
         renderer.scale = 1
         guard let image = renderer.cgImage, let data = jpeg(image) else { return nil }
-        if let file { try? data.write(to: file, options: .atomic) }
+        if complete, let file { try? data.write(to: file, options: .atomic) }
         return data
     }
 
@@ -174,21 +353,38 @@ enum FixtureArtwork {
     private struct Team {
         let name: String
         let crest: CGImage?
+        /// The crest is a country's flag.
+        var isFlag = false
         let colour: Color
         let secondColour: Color
         /// The competitions it plays in, as (id, name), main league first.
         let leagues: [(id: String, name: String)]
     }
 
-    private struct TeamRecord {
+    /// What TheSportsDB said about a team. Saved, so each team is asked once.
+    private struct TeamRecord: Codable {
+        struct League: Codable {
+            let id: String
+            let name: String
+        }
         let crest: String?
         let colour: String?
         let secondColour: String?
-        let leagues: [(id: String, name: String)]
+        let leagues: [League]
+        let savedAt: Date
     }
 
-    @MainActor private static var teamCache: [String: TeamRecord] = [:]
-    @MainActor private static var leagueBadgeCache: [String: String?] = [:]
+    private struct LookupStore: Codable {
+        var teams: [String: TeamRecord] = [:]
+        /// League id → badge address ("" when it has none).
+        var leagueBadges: [String: String] = [:]
+    }
+
+    @MainActor private static var store: LookupStore = loadStore()
+    /// When the next TheSportsDB request may go: its free tier allows about
+    /// 30 a minute, and a row of matches asks for far more at once. Going
+    /// over failed whole rows into monograms.
+    @MainActor private static var nextRequestSlot = Date.distantPast
 
     private struct SearchResponse: Decodable {
         struct Team: Decodable {
@@ -204,48 +400,129 @@ enum FixtureArtwork {
             let strLeague6: String?, idLeague6: String?
             let strLeague7: String?, idLeague7: String?
 
-            var leagues: [(id: String, name: String)] {
+            var leagues: [TeamRecord.League] {
                 [(idLeague, strLeague), (idLeague2, strLeague2), (idLeague3, strLeague3), (idLeague4, strLeague4),
                  (idLeague5, strLeague5), (idLeague6, strLeague6), (idLeague7, strLeague7)]
                     .compactMap { id, name in
                         guard let id, !id.isEmpty, let name, !name.isEmpty else { return nil }
-                        return (id, name)
+                        return TeamRecord.League(id: id, name: name)
                     }
             }
         }
         let teams: [Team]?
     }
 
+    /// While TheSportsDB is turning requests away, it is not asked at all.
+    @MainActor private static var sportsDBBusyUntil = Date.distantPast
+
+    /// One TheSportsDB request, spaced from the last. Nil when it could not
+    /// be answered (not when it found nothing).
+    ///
+    /// A busy answer is not waited out: that held the whole drawing queue
+    /// for minutes behind one team, while matches ESPN could draw at once sat
+    /// waiting. The match is drawn later instead, keeping the add-on's image
+    /// meanwhile.
     @MainActor
-    private static func team(named name: String, sport: String?) async -> Team {
+    private static func sportsDB(_ url: URL) async -> Data? {
+        guard Date() >= sportsDBBusyUntil else { return nil }
+        let wait = nextRequestSlot.timeIntervalSinceNow
+        nextRequestSlot = max(nextRequestSlot, Date()).addingTimeInterval(2.2)
+        if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+        guard let (data, response) = try? await URLSession.shared.data(from: url) else { return nil }
+        switch (response as? HTTPURLResponse)?.statusCode ?? 0 {
+        case 200:
+            return data
+        case 429:
+            sportsDBBusyUntil = Date().addingTimeInterval(60)
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    /// The forms a name is searched under, in turn: as written, without club
+    /// initials ("F.C. København" → "København"), and without accents.
+    static func searchNames(for name: String) -> [String] {
+        var names = [name]
+        let bare = name.replacingOccurrences(
+            of: #"(?i)(^|\s)(f\.?c\.?|c\.?f\.?|a\.?f\.?c\.?|s\.?c\.?|fk|sk|ac|as|cd|cf|sc)(?=\s|$)"#,
+            with: " ", options: .regularExpression
+        ).trimmingCharacters(in: .whitespaces)
+        if !bare.isEmpty, bare != name { names.append(bare) }
+        let folded = bare.folding(options: .diacriticInsensitive, locale: nil)
+        if folded != bare { names.append(folded) }
+        return names
+    }
+
+    /// A side from ESPN's lists, with its crest downloaded; nil when ESPN did
+    /// not know it.
+    @MainActor
+    private static func espnTeam(_ entry: SportsLogos.Team?, named name: String) async -> (Team?, Bool) {
+        guard let entry else { return (nil, true) }
+        let crest = await image(at: entry.logo)
+        return (
+            Team(
+                name: name,
+                crest: crest,
+                colour: colour(hex: entry.colour) ?? colour(seed: name),
+                secondColour: colour(hex: entry.secondColour) ?? .white,
+                leagues: []
+            ),
+            entry.logo == nil || crest != nil
+        )
+    }
+
+    /// The team, and whether it could be looked up (a busy or unreachable
+    /// TheSportsDB is not the same as a team it does not know).
+    @MainActor
+    private static func team(named name: String, sport: String?) async -> (team: Team, answered: Bool) {
         let key = name.lowercased() + "|" + (sport ?? "")
-        if teamCache[key] == nil {
-            var found = TeamRecord(crest: nil, colour: nil, secondColour: nil, leagues: [])
-            var components = URLComponents(string: "https://www.thesportsdb.com/api/v1/json/123/searchteams.php")
-            components?.queryItems = [URLQueryItem(name: "t", value: name)]
-            if let url = components?.url,
-               let (data, response) = try? await URLSession.shared.data(from: url),
-               (response as? HTTPURLResponse)?.statusCode == 200,
-               let teams = (try? JSONDecoder().decode(SearchResponse.self, from: data))?.teams, !teams.isEmpty {
+        var answered = true
+        if store.teams[key] == nil {
+            var found: TeamRecord?
+            for candidate in searchNames(for: name) {
+                var components = URLComponents(string: "https://www.thesportsdb.com/api/v1/json/123/searchteams.php")
+                components?.queryItems = [URLQueryItem(name: "t", value: candidate)]
+                guard let url = components?.url else { continue }
+                guard let data = await sportsDB(url) else { answered = false; break }
+                let teams = (try? JSONDecoder().decode(SearchResponse.self, from: data))?.teams ?? []
                 let pick = teams.first { team in
                     guard let sport, let teamSport = team.strSport else { return false }
                     return teamSport.caseInsensitiveCompare(sport) == .orderedSame
                 } ?? (sport == nil ? teams.first : nil)
-                found = TeamRecord(
-                    crest: pick?.strBadge, colour: pick?.strColour1, secondColour: pick?.strColour2,
-                    leagues: pick?.leagues ?? []
-                )
+                if let pick {
+                    found = TeamRecord(
+                        crest: pick.strBadge, colour: pick.strColour1, secondColour: pick.strColour2,
+                        leagues: pick.leagues, savedAt: Date()
+                    )
+                    break
+                }
             }
-            teamCache[key] = found
+            if answered {
+                store.teams[key] = found
+                    ?? TeamRecord(crest: nil, colour: nil, secondColour: nil, leagues: [], savedAt: Date())
+                saveStore()
+            }
         }
-        let entry = teamCache[key] ?? TeamRecord(crest: nil, colour: nil, secondColour: nil, leagues: [])
-        let mainColour = colour(hex: entry.colour) ?? colour(seed: name)
-        return Team(
-            name: name,
-            crest: await image(at: entry.crest),
-            colour: mainColour,
-            secondColour: colour(hex: entry.secondColour) ?? .white,
-            leagues: entry.leagues
+        let entry = store.teams[key]
+        var crest = await image(at: entry?.crest)
+        if entry?.crest != nil, crest == nil { answered = false }
+        // A national side TheSportsDB does not know (Jersey's cricketers,
+        // say): its country's flag.
+        if crest == nil, entry?.crest == nil, let code = countryCode(for: name) {
+            crest = await image(at: "https://flagcdn.com/w640/\(code).png")
+        }
+        let isFlag = entry?.crest == nil && crest != nil
+        return (
+            Team(
+                name: name,
+                crest: crest,
+                isFlag: isFlag,
+                colour: colour(hex: entry?.colour) ?? colour(seed: name),
+                secondColour: colour(hex: entry?.secondColour) ?? .white,
+                leagues: (entry?.leagues ?? []).map { ($0.id, $0.name) }
+            ),
+            answered
         )
     }
 
@@ -258,7 +535,7 @@ enum FixtureArtwork {
     /// Lakers v Warriors, the Europa League for Juventus v Rennes), the one
     /// the listing names when it names one, never a friendly.
     @MainActor
-    private static func leagueBadge(home: Team, away: Team, listing: String) async -> CGImage? {
+    private static func leagueBadge(home: Team, away: Team, listing: String) async -> (badge: CGImage?, answered: Bool) {
         let awayIds = Set(away.leagues.map(\.id))
         var shared = home.leagues.filter { awayIds.contains($0.id) && !$0.name.lowercased().contains("friendl") }
         if shared.isEmpty, away.crest == nil {
@@ -267,18 +544,32 @@ enum FixtureArtwork {
         }
         let lower = listing.lowercased()
         guard let league = shared.first(where: { lower.contains($0.name.lowercased()) }) ?? shared.first else {
-            return nil
+            return (nil, true)
         }
-        if leagueBadgeCache[league.id] == nil {
-            var badge: String?
-            if let url = URL(string: "https://www.thesportsdb.com/api/v1/json/123/lookupleague.php?id=\(league.id)"),
-               let (data, response) = try? await URLSession.shared.data(from: url),
-               (response as? HTTPURLResponse)?.statusCode == 200 {
-                badge = (try? JSONDecoder().decode(LeagueResponse.self, from: data))?.leagues?.first?.strBadge
+        if store.leagueBadges[league.id] == nil {
+            guard let url = URL(string: "https://www.thesportsdb.com/api/v1/json/123/lookupleague.php?id=\(league.id)"),
+                  let data = await sportsDB(url) else { return (nil, false) }
+            store.leagueBadges[league.id] =
+                (try? JSONDecoder().decode(LeagueResponse.self, from: data))?.leagues?.first?.strBadge ?? ""
+            saveStore()
+        }
+        let address = store.leagueBadges[league.id] ?? ""
+        guard !address.isEmpty else { return (nil, true) }
+        let badge = await image(at: address)
+        return (badge, badge != nil)
+    }
+
+    /// The ISO region code of a country named exactly, in English.
+    static func countryCode(for name: String) -> String? {
+        let wanted = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+        let english = Locale(identifier: "en_US")
+        for code in Locale.Region.isoRegions.map(\.identifier) where code.count == 2 {
+            guard let country = english.localizedString(forRegionCode: code) else { continue }
+            if country.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil) == wanted {
+                return code.lowercased()
             }
-            leagueBadgeCache[league.id] = badge
         }
-        return await image(at: leagueBadgeCache[league.id] ?? nil)
+        return nil
     }
 
     private static func image(at address: String?) async -> CGImage? {
@@ -286,6 +577,26 @@ enum FixtureArtwork {
               let (data, _) = try? await URLSession.shared.data(from: url),
               let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
         return CGImageSourceCreateImageAtIndex(source, 0, nil)
+    }
+
+    private static var storeFile: URL? {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("sportsdb-lookups.json")
+    }
+
+    private static func loadStore() -> LookupStore {
+        guard let file = storeFile, let data = try? Data(contentsOf: file),
+              var store = try? JSONDecoder().decode(LookupStore.self, from: data) else { return LookupStore() }
+        // A month on, a team may have a new crest; ask again.
+        let cutoff = Date().addingTimeInterval(-30 * 24 * 3600)
+        store.teams = store.teams.filter { $0.value.savedAt > cutoff }
+        return store
+    }
+
+    @MainActor
+    private static func saveStore() {
+        guard let file = storeFile, let data = try? JSONEncoder().encode(store) else { return }
+        try? data.write(to: file, options: .atomic)
     }
 
     private static func colour(hex: String?) -> Color? {
@@ -304,6 +615,23 @@ enum FixtureArtwork {
     }
 
     // MARK: Storage
+
+    private static func artKey(title: String, genres: [String]) -> String {
+        String(stableHash(title + "|" + genres.joined(separator: "|")), radix: 16)
+    }
+
+    private static func drawnFile(title: String, genres: [String], shape: Shape) -> URL? {
+        folder?.appendingPathComponent(artKey(title: title, genres: genres) + "-" + shape.rawValue + ".jpg")
+    }
+
+    /// Both shapes are on disk.
+    private static func isDrawn(title: String, genres: [String]) -> Bool {
+        [Shape.portrait, wideShape].allSatisfy { shape in
+            drawnFile(title: title, genres: genres, shape: shape).map {
+                FileManager.default.fileExists(atPath: $0.path)
+            } ?? false
+        }
+    }
 
     private static var folder: URL? {
         guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
@@ -365,6 +693,15 @@ enum FixtureArtwork {
                         crestView(home, size: crest).position(x: size.width / 2, y: size.height * 0.15)
                         centre(badgeSize: crest * 0.46).position(x: size.width / 2, y: size.height * 0.365)
                         crestView(away, size: crest).position(x: size.width / 2, y: size.height * 0.575)
+                    } else if shape == .backdrop {
+                        // The match in the right two-fifths: the left is where
+                        // an Apple TV or Mac hero and page put their title
+                        // (which can run past half the width) and buttons.
+                        let crest = size.height * 0.4
+                        let row = size.height * 0.42
+                        crestView(home, size: crest).position(x: size.width * 0.59, y: row)
+                        centre(badgeSize: crest * 0.48).position(x: size.width * 0.745, y: row)
+                        crestView(away, size: crest).position(x: size.width * 0.875, y: row)
                     } else {
                         // Side by side, the badge on the seam between them —
                         // close enough in that a narrower header cropping
@@ -385,9 +722,15 @@ enum FixtureArtwork {
         /// The seam's two ends. Landscape: a slant from top to bottom, home on
         /// the left. Portrait: a slant from side to side, home on top.
         private func seamEnds(_ size: CGSize) -> (CGPoint, CGPoint) {
-            isPortrait
-                ? (CGPoint(x: 0, y: size.height * 0.43), CGPoint(x: size.width, y: size.height * 0.30))
-                : (CGPoint(x: size.width * 0.57, y: 0), CGPoint(x: size.width * 0.43, y: size.height))
+            switch shape {
+            case .portrait:
+                return (CGPoint(x: 0, y: size.height * 0.43), CGPoint(x: size.width, y: size.height * 0.30))
+            case .landscape:
+                return (CGPoint(x: size.width * 0.57, y: 0), CGPoint(x: size.width * 0.43, y: size.height))
+            case .backdrop:
+                // Through the badge, between the two crests on the right.
+                return (CGPoint(x: size.width * 0.8, y: 0), CGPoint(x: size.width * 0.67, y: size.height))
+            }
         }
 
         private func halfPath(size: CGSize, isFirst: Bool) -> Path {
@@ -445,10 +788,21 @@ enum FixtureArtwork {
         private func crestView(_ team: Team, size: CGFloat) -> some View {
             Group {
                 if let crest = team.crest {
-                    Image(decorative: crest, scale: 1)
-                        .resizable()
-                        .interpolation(.high)
-                        .aspectRatio(contentMode: .fit)
+                    VStack(spacing: size * 0.06) {
+                        Image(decorative: crest, scale: 1)
+                            .resizable()
+                            .interpolation(.high)
+                            .aspectRatio(contentMode: .fit)
+                            .modifier(FlagFrame(isFlag: team.isFlag, size: size))
+                        // A flag says less than a crest: name the side.
+                        if team.isFlag {
+                            Text(team.name)
+                                .font(.system(size: size * 0.12, weight: .bold))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.6)
+                        }
+                    }
                 } else {
                     VStack(spacing: size * 0.06) {
                         Circle()
@@ -510,6 +864,26 @@ enum FixtureArtwork {
                         .padding(.vertical, 6)
                         .background(Capsule().fill(Color.black.opacity(0.55)))
                         .frame(width: badgeSize * 1.8)
+                }
+            }
+        }
+
+        /// A flag gets rounded corners and a thin edge, as a badge would.
+        struct FlagFrame: ViewModifier {
+            let isFlag: Bool
+            let size: CGFloat
+
+            func body(content: Content) -> some View {
+                if isFlag {
+                    content
+                        .frame(width: size * 0.82)
+                        .clipShape(RoundedRectangle(cornerRadius: size * 0.06, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: size * 0.06, style: .continuous)
+                                .stroke(.white.opacity(0.7), lineWidth: size * 0.015)
+                        )
+                } else {
+                    content
                 }
             }
         }

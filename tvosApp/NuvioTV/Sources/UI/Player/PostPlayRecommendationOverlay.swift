@@ -172,7 +172,7 @@ struct PostPlayRecommendationOverlay: View {
 
             if let backdropUrl = recommendation.backdrop ?? recommendation.poster,
                let url = URL(string: backdropUrl) {
-                AsyncImage(url: url) { phase in
+                AsyncImage(url: FixtureArtwork.displayURL(url)) { phase in
                     switch phase {
                     case .success(let image):
                         image
@@ -241,7 +241,7 @@ struct PostPlayRecommendationOverlay: View {
 
             // Logo or Title
             if let logoUrl = recommendation.logo, let url = URL(string: logoUrl) {
-                AsyncImage(url: url) { phase in
+                AsyncImage(url: FixtureArtwork.displayURL(url)) { phase in
                     if case .success(let image) = phase {
                         image
                             .resizable()

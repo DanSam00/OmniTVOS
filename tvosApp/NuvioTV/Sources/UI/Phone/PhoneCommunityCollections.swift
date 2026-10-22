@@ -68,7 +68,7 @@ struct PhoneCommunityCollectionsSheet: View {
 
     private func row(_ item: CommunityCollections.Item) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            AsyncImage(url: item.imageURL) { image in
+            AsyncImage(url: FixtureArtwork.displayURL(item.imageURL)) { image in
                 image.resizable().aspectRatio(contentMode: .fill)
             } placeholder: {
                 Color.white.opacity(0.08)

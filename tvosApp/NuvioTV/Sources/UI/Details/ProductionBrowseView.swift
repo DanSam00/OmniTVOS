@@ -284,7 +284,7 @@ private struct CompanyBrowseContent: View {
 
         return ZStack {
             if let backdropURL {
-                AsyncImage(url: backdropURL) { phase in
+                AsyncImage(url: FixtureArtwork.displayURL(backdropURL)) { phase in
                     if case .success(let image) = phase {
                         image
                             .resizable()
@@ -348,7 +348,7 @@ private struct CompanyBrowseContent: View {
             Spacer(minLength: 20)
 
             if let logoURL, let url = URL(string: logoURL) {
-                AsyncImage(url: url) { phase in
+                AsyncImage(url: FixtureArtwork.displayURL(url)) { phase in
                     if case .success(let image) = phase {
                         if usesWhiteLogo {
                             image
@@ -520,7 +520,7 @@ struct PersonBrowseView: View {
                 HStack(spacing: 28) {
                     if let profileURL = person.profileURL,
                        let url = URL(string: profileURL) {
-                        AsyncImage(url: url) { phase in
+                        AsyncImage(url: FixtureArtwork.displayURL(url)) { phase in
                             if case .success(let image) = phase {
                                 image
                                     .resizable()
@@ -750,7 +750,7 @@ private struct ProductionBrowseCard: View {
                     shape
                         .fill(Color.white.opacity(0.08))
                     if let poster = title.posterURL, let url = URL(string: poster) {
-                        AsyncImage(url: url) { phase in
+                        AsyncImage(url: FixtureArtwork.displayURL(url)) { phase in
                             if case .success(let image) = phase {
                                 image
                                     .resizable()

@@ -175,7 +175,7 @@ struct PlayerLoadingOverlay: View {
             if let backdrop = backdropUrl, let url = URL(string: backdrop) {
                 Color.clear
                     .overlay {
-                        AsyncImage(url: url) { phase in
+                        AsyncImage(url: FixtureArtwork.displayURL(url)) { phase in
                             switch phase {
                             case .success(let image):
                                 image
@@ -217,7 +217,7 @@ struct PlayerLoadingOverlay: View {
             // 4. Center Logo / Title + Status Text
             VStack(spacing: compact ? 10 : 24) {
                 if let logo = logoUrl, !logo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !logoLoadFailed, let url = URL(string: logo) {
-                    AsyncImage(url: url) { phase in
+                    AsyncImage(url: FixtureArtwork.displayURL(url)) { phase in
                         switch phase {
                         case .success(let image):
                             image

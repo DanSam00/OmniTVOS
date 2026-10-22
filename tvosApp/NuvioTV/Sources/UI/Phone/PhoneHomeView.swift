@@ -43,6 +43,13 @@ final class PhoneHomeLoader: ObservableObject {
                 }
             })
         }
+        // A match shows its add-on's image until the app's art is drawn.
+        observers.append(center.addObserver(forName: FixtureArtwork.artDrawnNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let updated = TVHomeSection.withDrawnMatchArt(self.sections) else { return }
+                self.sections = updated
+            }
+        })
         // A sync pull or a Settings edit replaces the collections.
         observers.append(center.addObserver(forName: CollectionsStore.changedNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.collectionRows = TVHomeSection.collectionRows() }
@@ -868,6 +875,12 @@ private struct PhoneGridPoster: View {
     let showsLabel: Bool
 
     var body: some View {
+        // A match on screen is drawn ahead of the rest of the queue.
+        tileBody.onAppear { FixtureArtwork.prioritise(meta) }
+    }
+
+    @ViewBuilder
+    private var tileBody: some View {
         VStack(alignment: .leading, spacing: 6) {
             Color.clear
                 .aspectRatio(1 / PhoneLayout.posterAspect, contentMode: .fit)

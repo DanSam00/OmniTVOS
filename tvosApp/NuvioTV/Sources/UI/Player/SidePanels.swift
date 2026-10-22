@@ -223,7 +223,7 @@ struct PlayerEpisodesPanel: View {
             ZStack {
                 Color.white.opacity(0.08)
                 if let thumb = episode.thumbnail, let url = URL(string: thumb) {
-                    AsyncImage(url: url) { image in
+                    AsyncImage(url: FixtureArtwork.displayURL(url)) { image in
                         image.resizable().aspectRatio(contentMode: .fill)
                     } placeholder: {
                         Image(systemName: "play.rectangle")

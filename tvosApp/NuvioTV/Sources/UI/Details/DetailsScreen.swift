@@ -4408,14 +4408,17 @@ private struct TvDetailsBackdrop: View {
     var scrollOffset: CGFloat = 0
     @AppStorage(SettingsKey.amoled) private var amoled = false
     @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
+    /// Bumped when match art is drawn, to swap it in for the add-on's image.
+    @State private var matchArtRevision = 0
 
     var body: some View {
         let backdropColor = Color.nuvioBackground(amoled: amoled, body: bodyColor)
+        let meta = matchArtRevision >= 0 ? FixtureArtwork.decorated(self.meta) : self.meta
 
         ZStack {
             if let imageUrl = meta.backgroundUrl ?? meta.posterUrl,
                let url = URL(string: imageUrl.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                AsyncImage(url: url) { phase in
+                AsyncImage(url: FixtureArtwork.displayURL(url)) { phase in
                     if case .success(let image) = phase {
                         image
                             .resizable()
@@ -4454,6 +4457,10 @@ private struct TvDetailsBackdrop: View {
 
         }
         .ignoresSafeArea()
+        .onAppear { FixtureArtwork.prioritise(self.meta) }
+        .onReceive(NotificationCenter.default.publisher(for: FixtureArtwork.artDrawnNotification)) { _ in
+            matchArtRevision &+= 1
+        }
     }
 }
 
@@ -4464,7 +4471,7 @@ private struct TvDetailsLogo: View {
         Group {
             if let logoUrl = meta.logoUrl,
                let url = URL(string: logoUrl) {
-                AsyncImage(url: url) { phase in
+                AsyncImage(url: FixtureArtwork.displayURL(url)) { phase in
                     if case .success(let image) = phase {
                         image
                             .resizable()
@@ -5318,7 +5325,7 @@ private struct TvDetailsCompanyCard: View {
                     shape
                         .fill(Color.white.opacity(liquidGlassCards ? 0.90 : 1))
                     if let logo = company.logoURL, let url = URL(string: logo) {
-                        AsyncImage(url: url) { phase in
+                        AsyncImage(url: FixtureArtwork.displayURL(url)) { phase in
                             if case .success(let image) = phase {
                                 image
                                     .resizable()
@@ -7396,7 +7403,7 @@ private struct TvStreamCard: View {
             .foregroundColor(.white.opacity(0.9))
 
         if let logo = stream.addonLogoURL, let url = URL(string: logo) {
-            AsyncImage(url: url) { phase in
+            AsyncImage(url: FixtureArtwork.displayURL(url)) { phase in
                 switch phase {
                 case .success(let image):
                     image.resizable().scaledToFit()
@@ -7537,7 +7544,7 @@ private struct TvStreamImportedBadge: View {
         Group {
             if !badge.imageURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                let url = URL(string: badge.imageURL.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                AsyncImage(url: url) { phase in
+                AsyncImage(url: FixtureArtwork.displayURL(url)) { phase in
                     switch phase {
                     case .success(let image):
                         image.resizable().scaledToFit()
@@ -7624,7 +7631,7 @@ struct MobileDetailsContent: View {
                         // Background image with gradient
                         ZStack(alignment: .bottom) {
                             if let backgroundUrl = meta.backgroundUrl ?? meta.posterUrl {
-                                AsyncImage(url: URL(string: backgroundUrl)) { image in
+                                AsyncImage(url: FixtureArtwork.displayURL(URL(string: backgroundUrl))) { image in
                                     image
                                         .resizable()
                                         .aspectRatio(contentMode: .fill)
@@ -8297,7 +8304,7 @@ struct MacRailRowView: View {
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
             if let url = row.thumbnailURL {
-                AsyncImage(url: url) { phase in
+                AsyncImage(url: FixtureArtwork.displayURL(url)) { phase in
                     if case .success(let image) = phase {
                         image.resizable().aspectRatio(contentMode: .fill)
                     } else {

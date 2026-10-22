@@ -309,8 +309,21 @@ final class ContinueWatchingExtras {
                 nextMatches.append(next)
             }
         }
-        // Their art is the app's own, set when the listing was read
-        // (`FixtureArtwork.decorated`).
+        // Your teams' cards (and the widget) always get the app's art: there
+        // are few of them, so it is drawn now rather than queued.
+        for index in nextMatches.indices {
+            let item = nextMatches[index]
+            guard await FixtureArtwork.ensureDrawn(item.meta) else { continue }
+            nextMatches[index] = ContinueWatchingItem(
+                meta: FixtureArtwork.decorated(item.meta),
+                streamUrl: "", position: 0, duration: 1,
+                lastWatchedAt: item.lastWatchedAt,
+                released: item.released,
+                isUpNext: true,
+                cardKind: ContinueWatchingItem.fixtureKind,
+                kickoff: item.kickoff
+            )
+        }
         #if os(iOS) || os(macOS)
         publishToWidget(nextMatches)
         #endif

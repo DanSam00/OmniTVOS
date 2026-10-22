@@ -1395,7 +1395,7 @@ private struct AvatarGridCell: View {
             VStack(spacing: 8) {
                 ZStack {
                     Circle().fill(avatar.backgroundColor)
-                    AsyncImage(url: avatar.imageURL) { phase in
+                    AsyncImage(url: FixtureArtwork.displayURL(avatar.imageURL)) { phase in
                         if let image = phase.image {
                             image.resizable().aspectRatio(contentMode: .fill)
                         } else {
