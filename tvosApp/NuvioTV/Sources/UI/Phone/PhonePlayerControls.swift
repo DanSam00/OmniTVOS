@@ -581,13 +581,16 @@ struct PhonePlayerControls: View {
 
     @ViewBuilder
     private func portraitMovieInfo(_ meta: NuvioMeta) -> some View {
-        if let synopsis = meta.description, !synopsis.isEmpty {
+        // A title saved before the description was cleaned still opens with
+        // its own name.
+        if let synopsis = CinemetaMeta.description(meta.description, withoutRepeating: meta.name), !synopsis.isEmpty {
             Text(synopsis)
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.85))
                 .fixedSize(horizontal: false, vertical: true)
         }
-        if let cast = meta.cast, !cast.isEmpty {
+        // A match's "cast" is its two teams, already in the title.
+        if let cast = meta.cast, !cast.isEmpty, !RelatedMatches.applies(to: meta) {
             portraitCredit("Cast", cast.prefix(8).joined(separator: ", "))
         }
         if let director = meta.director, !director.isEmpty {

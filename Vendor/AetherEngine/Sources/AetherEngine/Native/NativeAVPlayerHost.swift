@@ -157,6 +157,15 @@ final class NativeAVPlayerHost {
     /// AVFoundation user agent. Separate from the carriage signal because the evidence is different;
     /// a refusal is the origin's decision, not a verdict about what AVFoundation can demux.
     @Published private(set) var remoteHLSOriginRefused = false
+    /// Fires once when a video track exists and the clock is rolling (audio playing) but no video frame
+    /// has reached the screen past a grace window: VideoToolbox rejecting every frame (-8969 on
+    /// interlaced broadcast H.264, which AVPlayer neither decodes nor deinterlaces). The engine reroutes
+    /// onto the loopback ingest, whose probe sends interlaced video to the software decoder.
+    @Published private(set) var remoteHLSVideoNeverDisplayed = false
+    private var pictureWatchdogTask: Task<Void, Never>?
+    /// Seconds of advancing playback, with a video track and no frame on screen, before the picture
+    /// watchdog concludes the frames are not decoding.
+    static let pictureWatchdogGraceSeconds = 6.0
     /// Set per load; arms both live-ingest fallbacks. The carriage watchdog itself starts at
     /// readyToPlay (a dead origin never reaches it), the refusal path fires before readiness.
     private var ingestFallbackArmed = false
@@ -591,6 +600,9 @@ final class NativeAVPlayerHost {
                     // (HEVC-in-MPEG-TS carriage); anchored at readyToPlay so dead origins never arm it.
                     if self.ingestFallbackArmed, self.carriageWatchdogTask == nil {
                         self.startVideoCarriageWatchdog(item: item)
+                    }
+                    if self.ingestFallbackArmed, self.pictureWatchdogTask == nil {
+                        self.startPictureWatchdog(item: item)
                     }
                 case .failed:
                     let desc = item.error?.localizedDescription ?? "AVPlayerItem failed (no description)"
@@ -1786,8 +1798,11 @@ final class NativeAVPlayerHost {
         // #168 follow-up: the carriage verdict belongs to the outgoing item.
         carriageWatchdogTask?.cancel()
         carriageWatchdogTask = nil
+        pictureWatchdogTask?.cancel()
+        pictureWatchdogTask = nil
         ingestFallbackArmed = false
         remoteHLSVideoCarriageRejected = false
+        remoteHLSVideoNeverDisplayed = false
         remoteHLSOriginRefused = false
         carriageProbeTask?.cancel()
         carriageProbeTask = nil
@@ -1977,6 +1992,8 @@ final class NativeAVPlayerHost {
             )
             carriageWatchdogTask?.cancel()
             carriageWatchdogTask = nil
+            pictureWatchdogTask?.cancel()
+            pictureWatchdogTask = nil
             remoteHLSVideoCarriageRejected = true
             return
         }
@@ -2115,6 +2132,38 @@ final class NativeAVPlayerHost {
                 }
                 try? await Task.sleep(
                     nanoseconds: UInt64(Self.carriageWatchdogTickSeconds * 1_000_000_000))
+            }
+        }
+    }
+
+    /// Watches for a video track whose frames never display while the clock runs (see
+    /// `remoteHLSVideoNeverDisplayed`). Measured in playback time, not wall time, so a slow join or a
+    /// stall never counts against the grace.
+    private func startPictureWatchdog(item: AVPlayerItem) {
+        let sid = sessionID
+        pictureWatchdogTask = Task { @MainActor [weak self] in
+            var rollStart: Double?
+            while !Task.isCancelled {
+                guard let self, self.playerItem === item else { return }
+                if self.isVideoReadyForDisplay { return }
+                let now = self.avPlayer.currentTime().seconds
+                if self.currentVideoTrackCount() > 0, self.timeControlStatus == .playing, now.isFinite {
+                    if let start = rollStart {
+                        if now - start >= Self.pictureWatchdogGraceSeconds {
+                            EngineLog.emit(
+                                "[NativeAVPlayerHost] #\(sid) video track present and playback advanced "
+                                + "\(String(format: "%.1f", now - start))s with no frame on screen; "
+                                + "decoder rejecting frames (interlaced H.264 suspected), rerouting",
+                                category: .engine
+                            )
+                            self.remoteHLSVideoNeverDisplayed = true
+                            return
+                        }
+                    } else {
+                        rollStart = now
+                    }
+                }
+                try? await Task.sleep(nanoseconds: 500_000_000)
             }
         }
     }

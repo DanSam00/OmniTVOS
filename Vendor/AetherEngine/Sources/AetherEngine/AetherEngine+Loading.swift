@@ -415,6 +415,19 @@ extension AetherEngine {
                 }
             }
             .store(in: &nativeCancellables)
+        // Same destination: a video track whose frames never display (VideoToolbox rejecting interlaced
+        // broadcast H.264). The ingest's probe routes interlaced video to the software decoder.
+        host.$remoteHLSVideoNeverDisplayed
+            .filter { $0 }
+            .prefix(1)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                Task { @MainActor in
+                    await self.rerouteRemoteHLSOntoLiveIngest(url: url, expectedGeneration: bypassGeneration,
+                                                              evidence: "no video frame displayed")
+                }
+            }
+            .store(in: &nativeCancellables)
         // AE#363: same destination, different evidence. The origin refused AVPlayer (401 / 403) rather
         // than serving something it could not demux, and the ingest fetcher is a different client at that
         // origin. The verdict is NOT remembered for the next load: a refusal can be a token that expired

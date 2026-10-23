@@ -166,7 +166,8 @@ struct PhoneDetailsView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     actions(meta)
 
-                    if let description = meta.description, !description.isEmpty {
+                    if let description = CinemetaMeta.description(meta.description, withoutRepeating: meta.name),
+                       !description.isEmpty {
                         Text(description)
                             .font(.subheadline)
                             .foregroundStyle(.white.opacity(0.85))

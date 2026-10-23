@@ -4855,7 +4855,8 @@ private struct TvDetailsSummary: View {
                 TvDetailsRatingsRow(badges: externalRatingBadges)
             }
 
-            if let description = meta.description, !description.isEmpty {
+            if let description = CinemetaMeta.description(meta.description, withoutRepeating: meta.name),
+               !description.isEmpty {
                 Text(description)
                     .font(.system(size: 30, weight: .regular))
                     .foregroundColor(.white)
