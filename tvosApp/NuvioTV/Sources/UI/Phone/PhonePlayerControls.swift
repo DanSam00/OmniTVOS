@@ -583,7 +583,10 @@ struct PhonePlayerControls: View {
     private func portraitMovieInfo(_ meta: NuvioMeta) -> some View {
         // A title saved before the description was cleaned still opens with
         // its own name.
-        if let synopsis = CinemetaMeta.description(meta.description, withoutRepeating: meta.name), !synopsis.isEmpty {
+        // A match's description is the add-on's status notes (LIVE NOW,
+        // Popular match, its sources), nothing to read under the stream.
+        if !RelatedMatches.applies(to: meta),
+           let synopsis = CinemetaMeta.description(meta.description, withoutRepeating: meta.name), !synopsis.isEmpty {
             Text(synopsis)
                 .font(.subheadline)
                 .foregroundStyle(.white.opacity(0.85))
