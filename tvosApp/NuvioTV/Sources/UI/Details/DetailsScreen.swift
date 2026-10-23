@@ -2868,6 +2868,12 @@ struct TvDetailsContent: View {
     #if os(macOS)
     @ObservedObject private var downloads = DownloadManager.shared
     #endif
+    /// A match's page: the other matches in its category, in the row More
+    /// Like This uses (sports listings have no More Like This of their own).
+    @State private var relatedMatches: [NuvioMeta] = []
+    @State private var relatedMatchesFor: String?
+    /// Bumped when match art is drawn, so the row's tiles swap it in.
+    @State private var matchArtRevision = 0
     /// Play waits for a real source; this redraws it when the answer comes.
     @ObservedObject private var availability = StreamAvailability.shared
 
@@ -2983,6 +2989,8 @@ struct TvDetailsContent: View {
             let rawPlayTarget = playTarget(for: meta, episodes: episodes, continueItem: continueItem)
             let sourceRequest = Self.sourceRequest(meta: meta, target: rawPlayTarget, continueItem: continueItem)
             let playTarget = sourceGated(rawPlayTarget, request: sourceRequest)
+
+            relatedMatchesLoader(for: meta)
 
             GeometryReader { proxy in
                 ZStack(alignment: .topLeading) {
@@ -3111,6 +3119,8 @@ struct TvDetailsContent: View {
                                 }
                                 #endif
 
+                                // Matches have no cast or trailer.
+                                if !isSportsPage {
                                 TvDetailsCastAndTrailer(
                                     meta: meta,
                                     people: uiState.people,
@@ -3134,11 +3144,12 @@ struct TvDetailsContent: View {
                                     restoreEpisodeKey != nil
                                         || !isDetailsFocusReachable(.cast)
                                 )
+                                }
 
-                                if !uiState.moreLikeThis.isEmpty {
+                                if !relatedRowItems.isEmpty {
                                     TvDetailsRelatedRow(
-                                        title: L10n.string("settings_tmdb_module_more_like_this", fallback: "More Like This"),
-                                        items: uiState.moreLikeThis,
+                                        title: relatedRowTitle,
+                                        items: relatedRowItems,
                                         entryLocked: isSectionEntryLocked(.related),
                                         macFocusedIndex: macFocusedIndex(in: .related),
                                         onSelect: { item in
@@ -3410,12 +3421,13 @@ struct TvDetailsContent: View {
                 }
             }
             #if os(macOS)
-            .onChange(of: uiState.moreLikeThis.count, initial: true) { _, count in
+            .onChange(of: relatedRowItems.count, initial: true) { _, count in
                 macFocus.begin(page: uiState.meta?.id ?? "")
                 macFocus.setCount(count, for: .related)
                 macFocus.register(.related) { index in
-                    guard uiState.moreLikeThis.indices.contains(index) else { return }
-                    let item = uiState.moreLikeThis[index]
+                    let items = relatedRowItems
+                    guard items.indices.contains(index) else { return }
+                    let item = items[index]
                     onOpenTitle?(item.id, item.type)
                 }
             }
@@ -3570,8 +3582,8 @@ struct TvDetailsContent: View {
         if let meta = uiState.meta, !(meta.videos ?? []).isEmpty {
             order.append(.episodes)
         }
-        order.append(.cast)
-        if !uiState.moreLikeThis.isEmpty { order.append(.related) }
+        if !isSportsPage { order.append(.cast) }
+        if !relatedRowItems.isEmpty { order.append(.related) }
         if uiState.companies.contains(where: { $0.kind == .network }) {
             order.append(.network)
         }
@@ -4278,6 +4290,49 @@ struct TvDetailsContent: View {
 
         let first = firstPlayableEpisode(episodes)
         return (first, first.map { "\(L10n.string("action_play", fallback: "Play")) S\($0.season) E\($0.episode)" } ?? L10n.string("action_play", fallback: "Play"), true)
+    }
+
+    private var relatedRowItems: [RelatedTitle] {
+        guard uiState.moreLikeThis.isEmpty else { return uiState.moreLikeThis }
+        _ = matchArtRevision
+        return relatedMatches.map(FixtureArtwork.decorated).map { match in
+            RelatedTitle(
+                id: match.id, type: match.type, name: match.name, posterURL: match.posterUrl,
+                year: nil, rating: nil, overview: match.description, backdropURL: match.backgroundUrl
+            )
+        }
+    }
+
+    /// Loads the other matches once per page; invisible.
+    private func relatedMatchesLoader(for meta: NuvioMeta) -> some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .task(id: meta.id) {
+                guard relatedMatchesFor != meta.id else { return }
+                relatedMatchesFor = meta.id
+                relatedMatches = []
+                guard RelatedMatches.applies(to: meta) else { return }
+                relatedMatches = await RelatedMatches.matches(for: meta)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: FixtureArtwork.artDrawnNotification)) { _ in
+                matchArtRevision &+= 1
+            }
+    }
+
+    /// A match or other sports listing: no cast, no trailer.
+    private var isSportsPage: Bool {
+        uiState.meta.map(RelatedMatches.applies(to:)) ?? false
+    }
+
+    /// "More Basketball", else More Like This.
+    private var relatedRowTitle: String {
+        guard uiState.moreLikeThis.isEmpty else {
+            return L10n.string("settings_tmdb_module_more_like_this", fallback: "More Like This")
+        }
+        if let sport = uiState.meta?.genres?.first(where: { !$0.contains("-") }) {
+            return L10n.format("details_more_sport", fallback: "More %@", sport)
+        }
+        return L10n.string("details_more_matches", fallback: "More Matches")
     }
 
     /// The source check for the Play button: the film, or the episode it

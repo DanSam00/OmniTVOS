@@ -1902,7 +1902,7 @@ struct CinemetaMeta: Decodable {
         FixtureArtwork.decorated(NuvioMeta(
             id: id,
             name: name,
-            description: description,
+            description: Self.description(description, withoutRepeating: name),
             posterUrl: poster,
             backgroundUrl: background,
             logoUrl: logo,
@@ -1924,6 +1924,26 @@ struct CinemetaMeta: Decodable {
             videos: videos?.compactMap { $0.toVideo() },
             trailerYtIds: trailerYtIds
         ))
+    }
+
+    /// The description without a line that only repeats the title: sports
+    /// add-ons open every match's description with its name, which then
+    /// showed twice on its page and under the player.
+    static func description(_ text: String?, withoutRepeating title: String) -> String? {
+        guard let text else { return nil }
+        func key(_ value: String) -> String {
+            value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+                .lowercased()
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { !$0.isEmpty && $0 != "vs" && $0 != "v" }
+                .joined(separator: " ")
+        }
+        let titleKey = key(title)
+        guard !titleKey.isEmpty else { return text }
+        let lines = text.components(separatedBy: .newlines)
+            .filter { key($0) != titleKey }
+        let kept = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return kept.isEmpty ? nil : kept
     }
 
     private var canonicalImdbId: String? {

@@ -294,7 +294,7 @@ enum FixtureArtwork {
 
     /// The design's version. Part of every art address, so a new design is a
     /// new address and no image cache keeps showing the old one.
-    static let designVersion = 14
+    static let designVersion = 15
     private static var folderName: String { "fixture-art-v\(designVersion)" }
 
     /// The picture behind an `omni-fixture` address, drawn once and kept.
@@ -458,7 +458,8 @@ enum FixtureArtwork {
     /// not know it.
     @MainActor
     private static func espnTeam(_ entry: SportsLogos.Team?, named name: String) async -> (Team?, Bool) {
-        guard let entry else { return (nil, true) }
+        // ESPN lists some leagues without crests (EuroLeague): TheSportsDB then.
+        guard let entry, entry.logo != nil else { return (nil, true) }
         let crest = await image(at: entry.logo)
         return (
             Team(

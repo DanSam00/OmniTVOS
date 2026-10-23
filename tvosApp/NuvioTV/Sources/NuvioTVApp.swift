@@ -552,6 +552,14 @@ struct ContentView: View {
         // on Home, so Menu there keeps its normal tab-level behaviour.
         .onExitCommand(perform: isOverlayPresented ? dismissOverlay : nil)
         .onOpenURL(perform: handleDeepLink)
+        // Another title picked inside the player (a match from the grid under
+        // the iPhone's portrait player): played the way a card is.
+        .onReceive(NotificationCenter.default.publisher(for: RelatedMatches.playNotification)) { note in
+            guard let meta = note.object as? NuvioMeta else { return }
+            resumePlayback(ContinueWatchingItem(
+                meta: meta, streamUrl: "", position: 0, duration: 1, lastWatchedAt: Date()
+            ))
+        }
         #if os(iOS) || os(macOS)
         // Handoff from the other device: what was playing there.
         .onContinueUserActivity(WatchingHandoff.activityType) { activity in

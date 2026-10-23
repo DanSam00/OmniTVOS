@@ -28,6 +28,8 @@ struct PhonePlayerControls: View {
     @State private var isPortrait = false
     /// The season the portrait episode list shows; nil follows the playing one.
     @State private var portraitSeason: Int?
+    /// Watching a match: the other matches in its category.
+    @State private var relatedMatches: [NuvioMeta] = []
     /// Off from the moment the player starts shrinking to the mini bar until
     /// it has grown back. While the frame changes size the controls would lay
     /// themselves out for each in-between shape (wider than tall reads as
@@ -459,8 +461,39 @@ struct PhonePlayerControls: View {
             } else if let meta {
                 portraitMovieInfo(meta)
             }
+
+            if let meta, RelatedMatches.applies(to: meta) {
+                portraitMatches(meta)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Watching a match: the rest of its category under it, a tap away.
+    private func portraitMatches(_ meta: NuvioMeta) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if !relatedMatches.isEmpty {
+                Text(meta.genres?.first(where: { !$0.contains("-") }).map { "More \($0)" } ?? "More Matches")
+                    .font(.headline)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 12, alignment: .top)], spacing: 16) {
+                    ForEach(relatedMatches, id: \.id) { match in
+                        Button {
+                            NotificationCenter.default.post(name: RelatedMatches.playNotification, object: match)
+                        } label: {
+                            PhoneFlexiblePoster(meta: match)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .padding(.top, 6)
+        .task(id: meta.id) {
+            relatedMatches = await RelatedMatches.matches(for: meta)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: FixtureArtwork.artDrawnNotification)) { _ in
+            relatedMatches = relatedMatches.map(FixtureArtwork.decorated)
+        }
     }
 
     private var portraitSeasons: [Int] {

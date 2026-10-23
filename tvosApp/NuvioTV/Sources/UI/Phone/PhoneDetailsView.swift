@@ -50,6 +50,9 @@ struct PhoneDetailsView: View {
     @ObservedObject private var downloads = DownloadManager.shared
     /// Play waits for a real source; this redraws it when the answer comes.
     @ObservedObject private var availability = StreamAvailability.shared
+    /// A match's page: the other matches in its category, as a grid.
+    @State private var relatedMatches: [NuvioMeta] = []
+    @State private var relatedMatchesFor: String?
     /// The movie or episode whose streams are loading, to choose one to download.
     @State private var preparingDownloadId: String?
     /// The episode being downloaded (nil for the movie itself).
@@ -169,7 +172,7 @@ struct PhoneDetailsView: View {
                             .foregroundStyle(.white.opacity(0.85))
                     }
 
-                    if let cast = meta.cast, !cast.isEmpty {
+                    if let cast = meta.cast, !cast.isEmpty, !RelatedMatches.applies(to: meta) {
                         Text("Cast: " + cast.prefix(6).joined(separator: ", "))
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -184,6 +187,8 @@ struct PhoneDetailsView: View {
                 if !viewModel.uiState.moreLikeThis.isEmpty {
                     moreLikeThis
                 }
+
+                relatedMatchesSection(meta)
                 }
                 // Everything below the art keeps clear of the Dynamic Island
                 // in landscape; the art itself runs to the screen edges.
@@ -741,6 +746,28 @@ struct PhoneDetailsView: View {
             WatchedStore.setSeasonWatched(meta: meta, season: season, episodes: videos.map(\.episode), isWatched: true)
         }
         refreshWatchedEpisodes()
+    }
+
+    /// "More Basketball": the rest of the match's category, in a grid. Loads
+    /// once per page; tiles swap in the app's art as it is drawn.
+    @ViewBuilder
+    private func relatedMatchesSection(_ meta: NuvioMeta) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !relatedMatches.isEmpty {
+                PhoneSectionHeader(title: meta.genres?.first(where: { !$0.contains("-") }).map { "More \($0)" } ?? "More Matches")
+                PhonePosterGrid(items: relatedMatches) { onOpenTitle($0.id, $0.type) }
+            }
+        }
+        .task(id: meta.id) {
+            guard relatedMatchesFor != meta.id else { return }
+            relatedMatchesFor = meta.id
+            relatedMatches = []
+            guard RelatedMatches.applies(to: meta) else { return }
+            relatedMatches = await RelatedMatches.matches(for: meta)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: FixtureArtwork.artDrawnNotification)) { _ in
+            relatedMatches = relatedMatches.map(FixtureArtwork.decorated)
+        }
     }
 
     private var moreLikeThis: some View {
