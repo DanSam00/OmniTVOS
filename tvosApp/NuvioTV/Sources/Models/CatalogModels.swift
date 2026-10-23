@@ -1512,6 +1512,9 @@ enum ContinueWatchingSortPolicy {
                 let right = tier(rhs.element)
                 if left != right { return left < right }
                 if left == 2, let a = lhs.element.kickoff, let b = rhs.element.kickoff, a != b { return a < b }
+                // New episodes: the latest release first, today's ahead of
+                // yesterday's, whatever the chosen sort.
+                if left == 1, let a = airDate(lhs.element), let b = airDate(rhs.element), a != b { return a > b }
                 return lhs.offset < rhs.offset
             }
             .map(\.element)
@@ -1519,7 +1522,9 @@ enum ContinueWatchingSortPolicy {
 
     static func tier(_ item: ContinueWatchingItem) -> Int {
         if item.isFixture { return item.isFixtureLive ? 0 : 2 }
-        if item.isNewEpisodeDrop { return 1 }
+        if item.isNewEpisodeDrop || isRecentlyReleasedProgress(item) { return 1 }
+        // Out today: shown only once a real source is found, so it is out.
+        if item.cardKind == nil, item.isUpNextEntry, item.isAiringToday { return 1 }
         if item.isRecommendation { return 4 }
         if isUpcomingItem(item) { return 5 }
         return 3
@@ -1620,6 +1625,22 @@ enum ContinueWatchingSortPolicy {
                 return lhs.offset < rhs.offset
             }
             .map(\.element)
+    }
+
+    /// A new episode already started: still news for a week, not just
+    /// something being watched. Starting today's MobLand moved it behind
+    /// yesterday's new season of The Terminal List.
+    static let newEpisodeTierDays = 7
+
+    private static func isRecentlyReleasedProgress(_ item: ContinueWatchingItem) -> Bool {
+        guard item.cardKind == nil, !item.isUpNextEntry, item.meta.isSeries,
+              item.progress < 0.9,
+              let released = airDate(item) else { return false }
+        // Released today counts even when the listed time is still ahead:
+        // already started, it is out (MobLand dropped hours early).
+        if Calendar.current.isDateInToday(released) { return true }
+        let age = Date().timeIntervalSince(released)
+        return age >= 0 && age < Double(newEpisodeTierDays) * 24 * 3600
     }
 
     private static func airDate(_ item: ContinueWatchingItem) -> Date? {

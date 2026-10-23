@@ -47,7 +47,12 @@ final class StreamAvailability: ObservableObject {
 
         var key: String { "\(type)|\(videoId)" }
 
-        var isReleased: Bool { releaseDate.map { $0 <= Date() } ?? true }
+        /// Out by its listed time, or listed for today: services often drop
+        /// a day's episodes hours before the time the guide gives. The
+        /// namesake checks still apply to what is found.
+        var isReleased: Bool {
+            releaseDate.map { $0 <= Date() || Calendar.current.isDateInToday($0) } ?? true
+        }
 
         /// Out within the last two months, or when unknown.
         var isRecent: Bool { releaseDate.map { Date().timeIntervalSince($0) < 60 * 24 * 3600 } ?? true }
