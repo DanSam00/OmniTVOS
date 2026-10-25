@@ -3081,8 +3081,12 @@ struct CrossfadingBackdrop: View {
     @State private var imageShift: CGFloat = 0
     @State private var outgoingShift: CGFloat = 0
     @State private var lastGridPosition: CGPoint?
-    /// The change on screen is a carousel page rather than a nudge.
+    /// Whether each picture is moving as a carousel page rather than a nudge.
+    /// Kept per picture: one shared flag let a later change switch the
+    /// outgoing picture's layout halfway through its slide, and it jumped to
+    /// the window's full speed instead of half of it.
     @State private var isPaging = false
+    @State private var outgoingIsPaging = false
     /// How far the art travels, as a fraction of the width.
     private static let slideDistance: CGFloat = 0.04
     /// With `parallax`, the art is overscanned (see `backdropImage`) and the
@@ -3099,11 +3103,11 @@ struct CrossfadingBackdrop: View {
             ZStack {
                 placeholder
                 if let outgoingImage {
-                    pane(outgoingImage, shift: outgoingShift, size: proxy.size)
+                    pane(outgoingImage, shift: outgoingShift, paging: outgoingIsPaging, size: proxy.size)
                         .opacity(outgoingOpacity)
                 }
                 if let image {
-                    pane(image, shift: imageShift, size: proxy.size)
+                    pane(image, shift: imageShift, paging: isPaging, size: proxy.size)
                         .opacity(imageOpacity)
                         .id(loadedURL)
                 }
@@ -3121,6 +3125,11 @@ struct CrossfadingBackdrop: View {
                 return
             }
             let position = gridPosition
+            // Where the caret was, read before the download. Recorded after it,
+            // a quick second step was measured from a position two steps back
+            // and could slide the wrong way.
+            let previousPosition = lastGridPosition
+            lastGridPosition = position
             guard let loaded = await BackdropImageCache.shared.image(for: imageURL) else { return }
             // Some catalog add-ons (including BetterPosters) only provide a
             // poster URL. PosterCard uses that same image for its landscape
@@ -3135,7 +3144,7 @@ struct CrossfadingBackdrop: View {
             }
             var slideDirection: CGFloat = 0
             var paging = false
-            if let position, let last = lastGridPosition, position.y == last.y, position.x != last.x {
+            if let position, let last = previousPosition, position.y == last.y, position.x != last.x {
                 slideDirection = position.x > last.x ? 1 : -1
                 if let pagedRow, position.y == pagedRow {
                     paging = true
@@ -3144,9 +3153,10 @@ struct CrossfadingBackdrop: View {
                     if pageCount > 2, last.x == 0, position.x == lastIndex { slideDirection = -1 }
                 }
             }
-            lastGridPosition = position
             if !parallax { slideDirection = 0 }
             paging = paging && slideDirection != 0 && previousImage != nil
+            // The picture leaving keeps the layout it was moving in.
+            outgoingIsPaging = isPaging || paging
             image = loaded
             loadedURL = url
             isPaging = paging
@@ -3192,8 +3202,8 @@ struct CrossfadingBackdrop: View {
     /// the whole shift and the picture inside it back by half, as the
     /// iPhone's carousel does; otherwise the picture itself nudges.
     @ViewBuilder
-    private func pane(_ uiImage: UIImage, shift: CGFloat, size: CGSize) -> some View {
-        if isPaging {
+    private func pane(_ uiImage: UIImage, shift: CGFloat, paging: Bool, size: CGSize) -> some View {
+        if paging {
             backdropImage(uiImage, size: size)
                 .offset(x: -shift * size.width * Self.pageDepth)
                 .frame(width: size.width, height: size.height)

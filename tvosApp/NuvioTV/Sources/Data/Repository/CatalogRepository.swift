@@ -212,6 +212,9 @@ struct AddonCatalogOption: Identifiable {
     let type: String
     let catalogId: String
     let catalogName: String
+    /// The genres the catalog's manifest offers, in its order; empty when it
+    /// declares none.
+    var genreOptions: [String] = []
     var id: String { "\(addonId)_\(type)_\(catalogId)" }
 }
 
@@ -1223,12 +1226,15 @@ final class CinemetaCatalogRepository: CatalogRepository {
         async let movies = fetchCatalog(type: "movie", catalogId: "top", skip: nil, search: query, genre: nil)
         async let series = fetchCatalog(type: "series", catalogId: "top", skip: nil, search: query, genre: nil)
         async let live = searchLiveChannels(query: query)
+        // Other add-ons' searchable catalogs of their own types (anime,
+        // adult, music...): Cinemeta knows only films and series.
+        async let addonTypes = searchAddonCatalogs(query: query)
         // Profiles with TMDB connected also search people; without it this
         // returns nothing and Search stays Cinemeta's.
         async let people = TmdbDetailsService.searchPeopleTitles(query: query)
         let results = try await movies + series
         let localized = await TmdbDetailsService.localizedMetadata(for: results)
-        let channels = await live
+        let channels = await live + addonTypes
         // A person's title Cinemeta already found stays as Cinemeta's entry.
         let known = Set(localized.map { "\(SearchRanking.normalized($0.name))|\($0.year ?? 0)" })
         let byPeople = await people.filter {
@@ -1307,6 +1313,44 @@ final class CinemetaCatalogRepository: CatalogRepository {
         }
         var seen = Set<String>()
         return (iptvMatches + found.flatMap { $0 }).filter { seen.insert($0.id).inserted }.prefix(80).map { $0 }
+    }
+
+    /// Searches every installed add-on catalog that declares `search` and lists
+    /// a type of its own (not films, series or live TV, which have their own
+    /// paths above). The add-on decides what matches: a performer, a title, a
+    /// tag.
+    private func searchAddonCatalogs(query: String) async -> [NuvioMeta] {
+        struct Target { let base: URL; let type: String; let id: String }
+        var targets: [Target] = []
+        var seenAddonIds = Set<String>()
+        for manifestURL in Self.configuredStreamAddonManifestURLs {
+            guard !Task.isCancelled else { return [] }
+            guard let manifest = await manifest(for: manifestURL),
+                  manifest.id != Self.cinemetaAddonId,
+                  seenAddonIds.insert(manifest.id).inserted else { continue }
+            let base = manifestURL.deletingLastPathComponent()
+            for catalog in manifest.catalogs ?? [] where catalog.declaresSearch {
+                let type = catalog.type.lowercased()
+                guard !["movie", "series"].contains(type), !Self.isLiveSearchType(type) else { continue }
+                targets.append(Target(base: base, type: catalog.type, id: catalog.id))
+            }
+        }
+        guard !targets.isEmpty else { return [] }
+        let found: [[NuvioMeta]] = await withTaskGroup(of: [NuvioMeta].self) { group in
+            for target in targets.prefix(12) {
+                group.addTask {
+                    (try? await self.fetchCatalog(
+                        sourceBaseURL: target.base, type: target.type, catalogId: target.id,
+                        skip: nil, search: query, genre: nil
+                    )) ?? []
+                }
+            }
+            var all: [[NuvioMeta]] = []
+            for await batch in group { all.append(batch) }
+            return all
+        }
+        var seen = Set<String>()
+        return found.flatMap { $0 }.filter { seen.insert($0.id).inserted }.prefix(100).map { $0 }
     }
 
     /// Search's Live TV: the live content types plus Stremio's plain `tv`,
@@ -1435,7 +1479,8 @@ final class CinemetaCatalogRepository: CatalogRepository {
                         addonName: addonName,
                         type: catalog.type,
                         catalogId: catalog.id,
-                        catalogName: catalog.name ?? catalog.id
+                        catalogName: catalog.name ?? catalog.id,
+                        genreOptions: catalog.genreOptions
                     )
                 )
             }
@@ -1760,6 +1805,11 @@ private struct AddonManifestCatalog: Decodable {
     var declaresSearch: Bool {
         (extra ?? []).contains { $0.name.lowercased() == "search" }
             || (extraRequired ?? []).contains { $0.lowercased() == "search" }
+    }
+
+    /// Every declared genre option.
+    var genreOptions: [String] {
+        extra?.first { $0.name.lowercased() == "genre" }?.options ?? []
     }
 
     /// First declared genre option, used to satisfy a required-genre catalog.

@@ -912,8 +912,15 @@ final class MacOptionPanel: ObservableObject {
     @Published private(set) var options: [FilterOption] = []
     @Published private(set) var highlighted = 0
     private var token: UUID?
+    /// Sheets showing their own copy of the panel. While one is up the main
+    /// window's host stays out of it: drawn there, a dropdown opened from a
+    /// sheet sat behind the sheet, and both hosts acted on each key.
+    @Published private(set) var sheetHosts = 0
 
     var isPresented: Bool { !options.isEmpty }
+
+    func sheetHostAppeared() { sheetHosts += 1 }
+    func sheetHostDisappeared() { sheetHosts = max(0, sheetHosts - 1) }
 
     func present(title: String, options: [FilterOption]) {
         guard !options.isEmpty else { return }
@@ -963,12 +970,16 @@ final class MacOptionPanel: ObservableObject {
 /// Hosts `MacOptionPanel` inside the canvas, so it is scaled and positioned
 /// with the rest of the app rather than against the window.
 struct MacOptionPanelHost: View {
+    /// The copy inside a sheet, which takes over from the main window's.
+    var inSheet = false
     @ObservedObject private var panel = MacOptionPanel.shared
     private let keyRouter = MacKeyRouter.shared
 
+    private var isActiveHost: Bool { inSheet || panel.sheetHosts == 0 }
+
     var body: some View {
         ZStack {
-            if panel.isPresented {
+            if panel.isPresented, isActiveHost {
                 Color.black.opacity(0.45)
                     .ignoresSafeArea()
                     .onTapGesture { panel.dismiss() }
@@ -994,8 +1005,80 @@ struct MacOptionPanelHost: View {
         }
         .animation(.easeOut(duration: 0.14), value: panel.isPresented)
         .onReceive(keyRouter.presses.map(Optional.some)) { press in
-            guard let press else { return }
+            guard let press, isActiveHost else { return }
             panel.handle(press.key)
+        }
+        .onAppear { if inSheet { panel.sheetHostAppeared() } }
+        .onDisappear { if inSheet { panel.sheetHostDisappeared() } }
+    }
+}
+
+/// The keyboard inside a Settings sheet on the Mac.
+///
+/// A sheet is its own window, but the key router serves the whole app, and
+/// Settings kept it while a Trakt or Simkl sheet was up: the arrows moved the
+/// caret through the page behind. This claims the router for the sheet's
+/// lifetime, walks the sheet's own rows (the same `macSettingsRow`s the page
+/// uses) with Up/Down and their buttons with Left/Right, runs Return on the
+/// highlighted one and closes on Escape, then hands the caret back. It also
+/// hosts the option panel, so a dropdown opened here shows in front.
+struct MacSheetKeyboardHost: ViewModifier {
+    @Environment(\.dismiss) private var dismiss
+    @State private var token: UUID?
+    @State private var rows: [String] = []
+    @State private var pageRow: String?
+    @State private var pageColumn = 0
+    private let keyRouter = MacKeyRouter.shared
+
+    func body(content: Content) -> some View {
+        content
+            .onPreferenceChange(MacSettingsRowsKey.self) { ids in
+                var seen = Set<String>()
+                rows = ids.filter { seen.insert($0).inserted }
+                let focus = MacSettingsRowFocus.shared
+                // Start on the first row; keep the caret on a row that is still here.
+                if !rows.contains(focus.focusedRowID ?? "") { focus.focusedRowID = rows.first }
+            }
+            .overlay { MacOptionPanelHost(inSheet: true) }
+            .onAppear {
+                let focus = MacSettingsRowFocus.shared
+                pageRow = focus.focusedRowID
+                pageColumn = focus.focusedColumn
+                focus.focusedRowID = rows.first
+                focus.focusedColumn = 0
+                if token == nil { token = keyRouter.claim() }
+            }
+            .onDisappear {
+                keyRouter.release(token)
+                token = nil
+                let focus = MacSettingsRowFocus.shared
+                focus.focusedRowID = pageRow
+                focus.focusedColumn = pageColumn
+            }
+            .onReceive(keyRouter.presses.map(Optional.some)) { press in
+                guard let press, keyRouter.isFront(token) else { return }
+                handle(press.key)
+            }
+    }
+
+    private func handle(_ key: MacKey) {
+        let focus = MacSettingsRowFocus.shared
+        let index = focus.focusedRowID.flatMap { rows.firstIndex(of: $0) }
+        switch key {
+        case .back:
+            dismiss()
+        case .up, .down:
+            guard !rows.isEmpty else { return }
+            let next = index.map { key == .up ? max(0, $0 - 1) : min(rows.count - 1, $0 + 1) } ?? 0
+            focus.focusedRowID = rows[next]
+            focus.focusedColumn = 0
+        case .left:
+            focus.focusedColumn = max(0, focus.focusedColumn - 1)
+        case .right:
+            focus.focusedColumn = min(focus.columnCount(for: focus.focusedRowID), focus.focusedColumn + 1)
+        case .activate:
+            guard let id = focus.focusedRowID else { return }
+            focus.activate(id, column: focus.focusedColumn)
         }
     }
 }

@@ -227,7 +227,8 @@ enum FixtureArtwork {
     /// Katie Boulter vs Viktorija Golubic" → the two teams, and the match's
     /// label from before or after them.
     static func teams(in title: String) -> (home: String, away: String, suffix: String?)? {
-        let versus = #"\s(vs\.?|v|@)\s"#
+        // "at" is how American leagues write it: "Dallas Cowboys at Philadelphia Eagles".
+        let versus = #"\s(vs\.?|v|@|at)\s"#
         // A live marker in front ("🔴 LIVE: ") is not part of the match.
         var text = title.replacingOccurrences(
             of: #"^[^\p{L}\p{N}]*(live\s*[:\-–]\s*)?"#,

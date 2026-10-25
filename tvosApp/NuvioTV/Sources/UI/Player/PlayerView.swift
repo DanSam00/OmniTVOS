@@ -1297,6 +1297,8 @@ struct PlayerView: View {
                         isStalled: viewModel.isStalledOnNetwork
                     )
                 }
+                // Upright, centred in the video below the status bar.
+                .padding(.top, loadingOverlayIsCompact ? loadingOverlayTopInset : 0)
             }
         case .playing, .paused:
             if viewModel.isSwitchingSource || viewModel.isReloadingStream || viewModel.didDetectReplacementStream || !didReportPlaybackStarted {

@@ -40,6 +40,10 @@ enum FavouriteTeamsStore {
         NotificationCenter.default.post(name: changedNotification, object: nil)
     }
 
+    /// Club initials a listing usually leaves out: "Liverpool FC" is listed
+    /// as "Liverpool vs Brighton".
+    private static let clubWords: Set<String> = ["fc", "afc", "cf", "sc", "ac", "bc", "fk", "sk", "cd", "club"]
+
     /// True when `title` ("Arsenal vs Chelsea") names `team` as whole words.
     static func title(_ title: String, names team: String) -> Bool {
         func words(_ text: String) -> [String] {
@@ -47,7 +51,9 @@ enum FavouriteTeamsStore {
                 .components(separatedBy: CharacterSet.alphanumerics.inverted)
                 .filter { !$0.isEmpty }
         }
-        let teamWords = words(team)
+        var teamWords = words(team)
+        let bare = teamWords.filter { !clubWords.contains($0) }
+        if !bare.isEmpty { teamWords = bare }
         let titleWords = words(title)
         guard !teamWords.isEmpty, titleWords.count >= teamWords.count else { return false }
         for start in 0...(titleWords.count - teamWords.count)
@@ -266,17 +272,32 @@ final class ContinueWatchingExtras {
         await withTaskGroup(of: [NuvioMeta].self) { group in
             for catalog in catalogs {
                 group.addTask { [repository] in
-                    (try? await repository.browseCatalog(
-                        addonId: catalog.addonId,
-                        contentType: catalog.type,
-                        catalogId: catalog.catalogId,
-                        skip: 0,
-                        genre: nil
-                    ))?.items ?? []
+                    // A page is about twenty matches and a busy sport lists
+                    // far more, so read on: on the first page alone Liverpool
+                    // v Brighton was never seen. Six pages at most.
+                    var items: [NuvioMeta] = []
+                    var skip = 0
+                    for _ in 0..<6 {
+                        guard let page = try? await repository.browseCatalog(
+                            addonId: catalog.addonId,
+                            contentType: catalog.type,
+                            catalogId: catalog.catalogId,
+                            skip: skip,
+                            genre: nil
+                        ) else { break }
+                        let fresh = page.items.filter { item in !items.contains { $0.id == item.id } }
+                        items += fresh
+                        guard page.hasMore, !fresh.isEmpty else { break }
+                        skip = page.nextSkip ?? (skip + page.items.count)
+                    }
+                    return items
                 }
             }
             for await items in group { listed += items }
         }
+        #if os(macOS)
+        MacDiagnostics.log("fixtures.load catalogs=\(catalogs.count) listed=\(listed.count)")
+        #endif
 
         var nextMatches: [ContinueWatchingItem] = []
         var used = Set<String>()
@@ -303,11 +324,17 @@ final class ContinueWatchingExtras {
                     )
                 }
                 .filter(Self.fixtureIsNotOver)
-                .sorted { ($0.kickoff ?? .distantPast) < ($1.kickoff ?? .distantPast) }
+                // By when each is on: a listing with only a date counts as
+                // that day, not as the earliest of all. Sorted first, a cup
+                // match next week hid the league match tomorrow.
+                .sorted { Self.whenOn($0) < Self.whenOn($1) }
             // The next one only: a live match, else the soonest.
             if let next = matches.first, used.insert(next.meta.id).inserted {
                 nextMatches.append(next)
             }
+            #if os(macOS)
+            MacDiagnostics.log("fixtures.team \(team) listed=\(matches.count) next=\(matches.first?.meta.name ?? "-")")
+            #endif
         }
         // Your teams' cards (and the widget) always get the app's art: there
         // are few of them, so it is drawn now rather than queued.
@@ -329,6 +356,15 @@ final class ContinueWatchingExtras {
         #endif
         // Continue Watching shows each from the day before.
         return nextMatches.filter(Self.fixtureIsCurrent)
+    }
+
+    /// When a fixture is on: its kick-off, or the start of its listed day.
+    private static func whenOn(_ item: ContinueWatchingItem) -> Date {
+        if let kickoff = item.kickoff { return kickoff }
+        if let day = item.released, let date = CalendarDayKey.date(fromDayKey: day) {
+            return Calendar.current.startOfDay(for: date)
+        }
+        return .distantFuture
     }
 
     /// Not yet finished: before the expected final whistle, or (with only a
@@ -414,11 +450,15 @@ final class ContinueWatchingExtras {
         return hours * 3600
     }
 
+    /// A time marked UTC is UTC; one with no zone is the viewer's own, which
+    /// is how the sports add-ons write it ("25 Oct 2026 · 13:00" for a 1 pm
+    /// tip-off in Sydney). Read as UTC it said "TOMORROW · 12:00 am" for a
+    /// game an hour away.
     private static let kickoffFormatters: [DateFormatter] = {
-        ["dd MMM yyyy · HH:mm 'UTC'", "dd MMM yyyy · HH:mm"].map { format in
+        [("dd MMM yyyy · HH:mm 'UTC'", TimeZone(identifier: "UTC")), ("dd MMM yyyy · HH:mm", nil)].map { format, zone in
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.timeZone = TimeZone(identifier: "UTC")
+            formatter.timeZone = zone ?? .current
             formatter.dateFormat = format
             return formatter
         }

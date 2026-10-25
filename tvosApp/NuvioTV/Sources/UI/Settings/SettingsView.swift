@@ -15084,6 +15084,7 @@ private struct MacSheetCloseButton: ViewModifier {
             .help("Close")
             .padding(24)
         }
+        .modifier(MacSheetKeyboardHost())
         #else
         content
         #endif

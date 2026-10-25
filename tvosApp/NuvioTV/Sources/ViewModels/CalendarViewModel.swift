@@ -716,11 +716,15 @@ enum CalendarDayKey {
         return nil
     }
 
+    /// UTC when the listing says so; otherwise the viewer's own zone, as the
+    /// sports add-ons write unmarked times.
     private static let fixtureFormatters: [DateFormatter] = {
-        ["dd MMM yyyy · HH:mm 'UTC'", "dd MMM yyyy · HH:mm", "dd MMM yyyy"].map { format in
+        [("dd MMM yyyy · HH:mm 'UTC'", TimeZone(identifier: "UTC")),
+         ("dd MMM yyyy · HH:mm", nil),
+         ("dd MMM yyyy", nil)].map { format, zone in
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.timeZone = TimeZone(identifier: "UTC")
+            formatter.timeZone = zone ?? .current
             formatter.dateFormat = format
             return formatter
         }

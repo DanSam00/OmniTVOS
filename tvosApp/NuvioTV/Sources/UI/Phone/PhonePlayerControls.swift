@@ -2038,7 +2038,11 @@ extension View {
     /// overlays are: it reaches out past it itself, rather than adding the
     /// inset a second time.
     func phonePortraitTopArea(_ portrait: Bool, topInset: CGFloat) -> some View {
-        PhonePortraitBoxLayout(portrait: portrait, topInset: topInset, extendsToTop: true) { self }
+        // Filling the box centres what it holds: a fixed-size view (the
+        // mid-playback spinner) was otherwise placed at its top-left corner.
+        PhonePortraitBoxLayout(portrait: portrait, topInset: topInset, extendsToTop: true) {
+            self.frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
             .ignoresSafeArea()
     }
 }

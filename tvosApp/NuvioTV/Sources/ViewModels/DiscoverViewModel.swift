@@ -57,6 +57,8 @@ struct DiscoverCatalog: Identifiable, Hashable {
     let type: String
     let catalogId: String
     let name: String
+    /// The catalog's own genres, from its add-on's manifest.
+    var genreOptions: [String] = []
 
     var id: String { "\(addonId ?? "cinemeta")_\(type)_\(catalogId)" }
 
@@ -82,6 +84,10 @@ final class DiscoverViewModel: ObservableObject {
 
     private let repository: CatalogRepository
     private var page = 1
+    /// Where the next page starts in the selected catalog. Add-ons page by
+    /// their own size (twenty is common); assuming a hundred skipped most of
+    /// a large catalog.
+    private var nextSkip = 0
     private var hasMore = true
     private var loadTask: Task<Void, Never>?
 
@@ -117,11 +123,13 @@ final class DiscoverViewModel: ObservableObject {
                     addonName: $0.addonName,
                     type: $0.type,
                     catalogId: $0.catalogId,
-                    name: $0.catalogName
+                    name: $0.catalogName,
+                    genreOptions: $0.genreOptions
                 )
             }
         if let current = catalog, catalogs.contains(current) { return }
         catalog = catalogs.first
+        loadGenres()
         if reloadItems, catalog != nil { reload() }
     }
 
@@ -139,6 +147,7 @@ final class DiscoverViewModel: ObservableObject {
         guard catalog != newCatalog else { return }
         catalog = newCatalog
         genre = nil
+        loadGenres()
         reload()
     }
 
@@ -151,6 +160,7 @@ final class DiscoverViewModel: ObservableObject {
     func reload() {
         loadTask?.cancel()
         page = 1
+        nextSkip = 0
         hasMore = true
         isLoading = true
         isLoadingMore = false
@@ -176,7 +186,7 @@ final class DiscoverViewModel: ObservableObject {
                     addonId: catalog.addonId,
                     contentType: catalog.type,
                     catalogId: catalog.catalogId,
-                    skip: (page - 1) * 100,
+                    skip: reset ? 0 : nextSkip,
                     genre: genre
                 )
             } else {
@@ -198,6 +208,8 @@ final class DiscoverViewModel: ObservableObject {
             }
             hasMore = result.hasMore
             page = result.page + 1
+            let start = reset ? 0 : nextSkip
+            nextSkip = result.nextSkip ?? (start + result.items.count)
             isLoading = false
             isLoadingMore = false
         } catch {
@@ -208,7 +220,14 @@ final class DiscoverViewModel: ObservableObject {
         }
     }
 
+    /// The selected catalog's own genres when its add-on declares them (an
+    /// adult add-on's categories, a sports add-on's leagues); otherwise the
+    /// general list for the type.
     private func loadGenres() {
+        if let declared = catalog?.genreOptions, !declared.isEmpty {
+            genres = declared
+            return
+        }
         Task {
             let loaded = (try? await repository.getGenres(contentType: type.rawValue)) ?? []
             if !Task.isCancelled { genres = loaded }
