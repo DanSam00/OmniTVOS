@@ -670,6 +670,8 @@ struct ContentView: View {
                 #if os(iOS) || os(macOS)
                 EpisodeReminders.installDelegate()
                 Task { await EpisodeReminders.refresh() }
+                // Reminders set on another device, the Apple TV's above all.
+                Task { await MatchReminders.shared.sync() }
                 #endif
                 #if os(iOS)
                 DownloadLiveActivity.shared.start()
@@ -825,6 +827,15 @@ struct ContentView: View {
     private var phoneMiniCloseOffset: CGFloat { phoneMiniClosing ? 160 : 0 }
     #endif
 
+    /// A page opened over the tabs, which keeps the menu (Apple TV, Mac) or
+    /// the folded tab bar (iPhone) over it; not the player.
+    private var isNestedPage: Bool {
+        switch activeScreen {
+        case .details, .cloudLibrary, .collectionFolder, .productionBrowse, .personBrowse: return true
+        default: return false
+        }
+    }
+
     private var fullScreenOverlayPresented: Bool {
         if isResolvingContinueWatchingStream { return true }
         switch activeScreen {
@@ -864,10 +875,29 @@ struct ContentView: View {
     /// would (Player returns to Details for series/trailers, otherwise Home).
     /// Used only by the root Menu-button safety net; changing `activeScreen`
     /// tears the overlay down, so Player's `onDisappear` cleanup still runs.
+    #if os(iOS)
+    /// Which nested page is up, so its bar starts folded.
+    private var nestedPageKey: String {
+        switch activeScreen {
+        case let .details(id, type): return "details|\(type)|\(id)"
+        default: return String(describing: activeScreen).prefix(80).description
+        }
+    }
+
+    private func chooseTabOverNestedPage(_ tab: TVTab) {
+        detailsBackStack.removeAll()
+        detailsReturnDestination = .main
+        withAnimation(.easeInOut(duration: 0.24)) {
+            activeScreen = .main
+        }
+        PhoneTabBarState.shared.tabRequests.send(tab)
+    }
+    #endif
+
     #if os(tvOS)
-    /// A tab chosen from the menu over Details: a jump, not a step back, so
-    /// the whole details chain goes, as on the Mac. Profile switches profiles
-    /// through the tab view's own handling instead.
+    /// A tab chosen from the menu over a nested page: a jump, not a step
+    /// back, so the whole chain goes, as on the Mac. Profile switches
+    /// profiles through the tab view's own handling instead.
     private func chooseTabOverDetails(_ tab: TVTab) {
         selectedTab = tab
         guard tab != .profile else { return }
@@ -1705,12 +1735,17 @@ struct ContentView: View {
                 #endif
 
             if case .details(let contentId, let contentType) = activeScreen {
+                #if os(iOS)
+                phoneDetailsStack(contentId: contentId, contentType: contentType)
+                    .transition(.opacity)
+                    .onDisappear {
+                        detailsDidDisappearGeneration &+= 1
+                    }
+                    .zIndex(1)
+                #else
                 platformDetailsScreen(contentId: contentId, contentType: contentType)
                     .id("\(contentType):\(contentId)")
                     .transition(.opacity)
-                    #if os(iOS)
-                    .phoneEdgeSwipeBack(dismissOverlay)
-                    #endif
                     #if os(tvOS)
                     // Left off the left edge of Details opens the menu drawn
                     // over it, as it does on the tabs.
@@ -1720,13 +1755,33 @@ struct ContentView: View {
                         detailsDidDisappearGeneration &+= 1
                     }
                     .zIndex(1)
+                #endif
             }
 
+            #if os(iOS)
+            // The tab bar over nested pages, folded until tapped open;
+            // choosing a section leaves them for it. A fresh one, folded
+            // again, for each page.
+            Color.clear
+                .frame(width: 0, height: 0)
+                .onChange(of: isNestedPage, initial: true) { _, nested in
+                    PhoneTabBarState.shared.nestedPageActive = nested
+                    if !nested { PhoneTabBarState.shared.nestedScrolledFar = false }
+                }
+            if isNestedPage {
+                PhoneNestedTabBar(onSelect: chooseTabOverNestedPage)
+                    .id(nestedPageKey)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .transition(.opacity)
+                    .zIndex(10)
+            }
+            #endif
+
             #if os(tvOS)
-            // The menu over Details, as the Mac has: a ☰ while closed, and
-            // choosing a tab abandons the details chain for that tab. The tabs'
-            // own menu is faded out with them under Details.
-            if case .details = activeScreen {
+            // The menu over Details and the other nested pages, as the Mac
+            // has: a ☰ while closed, and choosing a tab abandons the chain for
+            // that tab. The tabs' own menu is faded out with them beneath.
+            if isNestedPage {
                 TVSideMenu(
                     selectedTab: $selectedTab,
                     isParked: isDetailsMenuParked,
@@ -2228,8 +2283,41 @@ struct ContentView: View {
     }
     #endif
 
+    #if os(iOS)
+    private struct PhoneDetailsPage: Identifiable {
+        let id: String
+        let contentId: String
+        let contentType: String
+        let isTop: Bool
+    }
+
+    /// Details with the page it was opened from kept underneath, so the back
+    /// swipe slides the top one aside onto that page, already loaded, as a
+    /// navigation stack would. Only Home showed under the swipe, and the page
+    /// being returned to then loaded from scratch. Keyed by depth, so a page
+    /// keeps its identity — and its loaded state — as it moves between top
+    /// and underneath.
     @ViewBuilder
-    private func platformDetailsScreen(contentId: String, contentType: String) -> some View {
+    private func phoneDetailsStack(contentId: String, contentType: String) -> some View {
+        let depth = detailsBackStack.count
+        let below = detailsBackStack.last.map {
+            PhoneDetailsPage(id: "\(depth - 1)|\($0.type):\($0.id)", contentId: $0.id, contentType: $0.type, isTop: false)
+        }
+        let top = PhoneDetailsPage(id: "\(depth)|\(contentType):\(contentId)", contentId: contentId, contentType: contentType, isTop: true)
+        ZStack {
+            ForEach([below, top].compactMap { $0 }) { page in
+                platformDetailsScreen(contentId: page.contentId, contentType: page.contentType, isCovered: !page.isTop)
+                    .allowsHitTesting(page.isTop)
+                    .accessibilityHidden(!page.isTop)
+                    .transition(.opacity)
+                    .phoneEdgeSwipeBack(dismissOverlay, isEnabled: page.isTop)
+            }
+        }
+    }
+    #endif
+
+    @ViewBuilder
+    private func platformDetailsScreen(contentId: String, contentType: String, isCovered: Bool = false) -> some View {
         #if os(iOS)
         PhoneDetailsView(
             id: contentId,
@@ -2255,7 +2343,8 @@ struct ContentView: View {
                 withAnimation(.easeInOut(duration: 0.28)) {
                     activeScreen = .details(id: nextId, type: nextType)
                 }
-            }
+            },
+            isCovered: isCovered
         )
         #else
         detailsScreen(contentId: contentId, contentType: contentType)

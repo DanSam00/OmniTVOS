@@ -414,6 +414,7 @@ extension Array where Element == NuvioMeta {
 /// past a third of the width or flicked; otherwise it springs back.
 struct PhoneEdgeSwipeBack: ViewModifier {
     let action: () -> Void
+    var isEnabled = true
 
     @State private var offset: CGFloat = 0
     @State private var width: CGFloat = 400
@@ -428,6 +429,7 @@ struct PhoneEdgeSwipeBack: ViewModifier {
             .shadow(color: .black.opacity(offset > 0 ? 0.5 : 0), radius: 16)
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = max($0, 1) }
             .overlay(alignment: .leading) {
+                if isEnabled {
                 Color.clear
                     .frame(width: edgeWidth)
                     .frame(maxHeight: .infinity)
@@ -461,13 +463,51 @@ struct PhoneEdgeSwipeBack: ViewModifier {
                             }
                     )
                     .ignoresSafeArea()
+                }
             }
     }
 }
 
 extension View {
-    func phoneEdgeSwipeBack(_ action: @escaping () -> Void) -> some View {
-        modifier(PhoneEdgeSwipeBack(action: action))
+    /// `isEnabled` false for a page left underneath another, which keeps its
+    /// place without taking the swipe.
+    func phoneEdgeSwipeBack(_ action: @escaping () -> Void, isEnabled: Bool = true) -> some View {
+        modifier(PhoneEdgeSwipeBack(action: action, isEnabled: isEnabled))
+    }
+
+    /// A nested page's scroller (Details), moved by the tab bar's
+    /// back-to-top arrow drawn over it (`PhoneNestedTabBar`), which shows
+    /// once the page is a screen or more down. `isActive` false for a page
+    /// left underneath another.
+    func phoneNestedBackToTop(isActive: Bool) -> some View {
+        modifier(PhoneNestedBackToTop(isActive: isActive))
+    }
+}
+
+private struct PhoneNestedBackToTop: ViewModifier {
+    let isActive: Bool
+    @State private var position = ScrollPosition(edge: .top)
+    @State private var isFar = false
+
+    func body(content: Content) -> some View {
+        content
+            // Clear of the bar drawn over it.
+            .contentMargins(.bottom, 72, for: .scrollContent)
+            .scrollPosition($position)
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y + geometry.contentInsets.top > geometry.containerSize.height
+            } action: { _, far in
+                isFar = far
+                guard isActive else { return }
+                withAnimation(.spring(duration: 0.35)) { PhoneTabBarState.shared.nestedScrolledFar = far }
+            }
+            .onChange(of: isActive) { _, active in
+                if active { PhoneTabBarState.shared.nestedScrolledFar = isFar }
+            }
+            .onReceive(PhoneTabBarState.shared.$topRequest.dropFirst()) { _ in
+                guard isActive, PhoneTabBarState.shared.nestedPageActive else { return }
+                withAnimation(.smooth(duration: 0.45)) { position.scrollTo(edge: .top) }
+            }
     }
 }
 

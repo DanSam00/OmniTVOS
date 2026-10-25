@@ -2933,6 +2933,22 @@ struct TvDetailsContent: View {
     }
 
     @State private var focusedDetailsSection: TvDetailsFocusSection = .actions
+    @ObservedObject private var reminders = MatchReminders.shared
+
+    /// A live channel or match page: no Watched or Download.
+    private var isLivePage: Bool { uiState.meta.map(MatchReminders.isLivePage) ?? false }
+
+    /// An upcoming match, or one with a reminder already set.
+    private var offersReminder: Bool {
+        guard let meta = uiState.meta, isLivePage else { return false }
+        return MatchReminders.upcomingStart(of: meta) != nil || reminders.isSet(meta.id)
+    }
+
+    private func toggleReminder() {
+        guard let meta = uiState.meta else { return }
+        reminders.toggle(meta)
+    }
+
     #if os(macOS)
     /// macOS drives its own focus; see `MacDetailsFocus`.
     @ObservedObject private var macFocus = MacDetailsFocus.shared
@@ -3064,6 +3080,9 @@ struct TvDetailsContent: View {
                                     }(),
                                     onDownloadClick: macDownloadAction,
                                     downloadSymbol: macDownloadSymbol,
+                                    isLivePage: isLivePage,
+                                    onReminderClick: offersReminder ? toggleReminder : nil,
+                                    reminderIsSet: uiState.meta.map { reminders.isSet($0.id) } ?? false,
                                     focus: $actionFocus,
                                     entryLocked: focusedDetailsSection != .actions,
                                     playEntryLocked: focusedDetailsSection == .episodes,
@@ -3387,13 +3406,14 @@ struct TvDetailsContent: View {
                 DispatchQueue.main.async { actionFocus = .play }
                 #if os(macOS)
                 macFocus.begin(page: uiState.meta?.id ?? "")
-                macFocus.setCount(MacDetailsActionSlot.slots(hasEpisodes: macHasEpisodes).count, for: .actions)
+                macFocus.setCount(macActionSlots.count, for: .actions)
                 macFocus.register(.actions) { index in
-                    let slots = MacDetailsActionSlot.slots(hasEpisodes: macHasEpisodes)
+                    let slots = macActionSlots
                     switch slots.indices.contains(index) ? slots[index] : nil {
                     case .play: macHandlePlay()
                     case .episodes: macShowEpisodes()
                     case .watchlist: onWatchlistClick()
+                    case .reminder: toggleReminder()
                     case .watched: onWatchedClick()
                     case .download: macDownloadAction?()
                     case .trailer: onTrailerClick()
@@ -3960,6 +3980,11 @@ struct TvDetailsContent: View {
     }
 
     private var macHasEpisodes: Bool { !(uiState.meta?.videos ?? []).isEmpty }
+
+    /// The action row's buttons by position, as drawn.
+    private var macActionSlots: [MacDetailsActionSlot] {
+        MacDetailsActionSlot.slots(hasEpisodes: macHasEpisodes, isLive: isLivePage, hasReminder: offersReminder)
+    }
 
 
     /// The action row's Episodes button: nil on a movie, so it is not drawn.
@@ -4557,7 +4582,7 @@ private struct TvDetailsLogo: View {
 /// (tvOS doesn't auto-focus the primary button when the details content swaps in
 /// after the async load — see `TvDetailsContent`).
 private enum DetailsActionFocus: Hashable {
-    case play, episodes, watchlist, watched, download, trailer
+    case play, episodes, watchlist, reminder, watched, download, trailer
 }
 
 /// The action row's buttons by position, so the keyboard caret's index and the
@@ -4579,13 +4604,16 @@ private enum MacDownloadMenu {
 #endif
 
 enum MacDetailsActionSlot: Int, CaseIterable {
-    case play, episodes, watchlist, watched, download, trailer
+    case play, episodes, watchlist, reminder, watched, download, trailer
 
     /// The buttons the row actually shows, in order: Episodes only on a
-    /// series, Download only on the Mac.
-    static func slots(hasEpisodes: Bool) -> [MacDetailsActionSlot] {
+    /// series, Download only on the Mac. A live channel or match has no
+    /// Watched or Download, and an upcoming match has Reminder.
+    static func slots(hasEpisodes: Bool, isLive: Bool = false, hasReminder: Bool = false) -> [MacDetailsActionSlot] {
         allCases.filter { slot in
             if slot == .episodes { return hasEpisodes }
+            if slot == .reminder { return hasReminder }
+            if isLive, slot == .watched || slot == .download { return false }
             #if os(macOS)
             return true
             #else
@@ -4617,6 +4645,11 @@ private struct TvDetailsActionRow: View {
     var onDownloadClick: (() -> Void)? = nil
     /// The download button's symbol, for where the movie's download stands.
     var downloadSymbol = "arrow.down.to.line"
+    /// A live channel or match: no Watched or Download.
+    var isLivePage = false
+    /// An upcoming match's reminder, five minutes before; nil hides it.
+    var onReminderClick: (() -> Void)? = nil
+    var reminderIsSet = false
     var focus: FocusState<DetailsActionFocus?>.Binding
     let entryLocked: Bool
     let playEntryLocked: Bool
@@ -4630,7 +4663,11 @@ private struct TvDetailsActionRow: View {
     /// where the focus engine drives the same appearance.
     private func isMacFocused(_ slot: MacDetailsActionSlot) -> Bool {
         #if os(macOS)
-        let slots = MacDetailsActionSlot.slots(hasEpisodes: onEpisodesClick != nil)
+        let slots = MacDetailsActionSlot.slots(
+            hasEpisodes: onEpisodesClick != nil,
+            isLive: isLivePage,
+            hasReminder: onReminderClick != nil
+        )
         guard let index = slots.firstIndex(of: slot) else { return false }
         return macFocus.isFocused(.actions, index)
         #else
@@ -4689,6 +4726,30 @@ private struct TvDetailsActionRow: View {
             )
             .disabled(entryLocked)
 
+            if let onReminderClick {
+                TvDetailsActionButton(
+                    title: nil,
+                    systemName: reminderIsSet ? "bell.fill" : "bell",
+                    accessibilityLabel: reminderIsSet
+                        ? L10n.string("details_reminder_set", fallback: "Reminder set")
+                        : L10n.string("details_remind_me", fallback: "Remind me"),
+                    accessibilityHint: reminderIsSet
+                        ? L10n.string("details_reminder_cancel_hint", fallback: "Cancels the reminder")
+                        : L10n.string(
+                            "details_remind_me_hint",
+                            fallback: "Notifies your iPhone and Mac five minutes before it starts"
+                        ),
+                    isPrimary: false,
+                    focus: focus,
+                    tag: .reminder,
+                    macIsFocused: isMacFocused(.reminder),
+                    action: onReminderClick,
+                    onFocus: onFocus
+                )
+                .disabled(entryLocked)
+            }
+
+            if !isLivePage {
             TvDetailsActionButton(
                 title: nil,
                 systemName: isWatched ? "eye.fill" : "eye.slash.fill",
@@ -4706,8 +4767,9 @@ private struct TvDetailsActionRow: View {
                 onFocus: onFocus
             )
             .disabled(entryLocked)
+            }
 
-            if let onDownloadClick {
+            if let onDownloadClick, !isLivePage {
                 TvDetailsActionButton(
                     title: nil,
                     systemName: downloadSymbol,

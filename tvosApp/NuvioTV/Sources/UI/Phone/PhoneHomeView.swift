@@ -526,9 +526,11 @@ struct PhoneHomeView: View {
     /// edge and top to bottom, fixed behind the rows — and fades out as the
     /// page scrolls up. The carousel pages above it draw only their text and
     /// buttons. Portrait uses the poster, landscape the wide backdrop.
+    /// Grid View too, for the same paging and scroll parallax, but without
+    /// the frosted backdrop behind its rows (see `blurredBackdrop`).
     @ViewBuilder
     private var pageBackdrop: some View {
-        if !style.isGrid || isLandscape, let url = currentSlide?.artURL(portrait: !isLandscape) {
+        if let url = currentSlide?.artURL(portrait: !isLandscape) {
             ZStack {
                 blurredBackdrop(url: url)
                 if isLandscape {
@@ -602,7 +604,8 @@ struct PhoneHomeView: View {
     private func blurredBackdrop(url: String) -> some View {
         ZStack {
             Color.black
-            if fullscreenHeroBackdrop {
+            // Grid View's page is plain black below the hero, as on the TV.
+            if fullscreenHeroBackdrop, !style.isGrid {
                 // Sized by the screen, not the image: a fill image left to its
                 // own size widened the whole background past the screen edge.
                 Color.clear
@@ -654,7 +657,8 @@ struct PhoneHomeView: View {
                 PhoneHeroSlideView(
                     slide: entry.slide,
                     sideInset: sideInset,
-                    // The page backdrop draws the art, fixed, in both orientations.
+                    // The page backdrop draws the art, fixed, in both
+                    // orientations and every layout.
                     drawsArt: false,
                     isPortrait: !isLandscape,
                     onOpenDetails: { onOpenDetails(entry.slide.meta) },
@@ -799,7 +803,9 @@ struct PhoneHomeView: View {
                 LazyHStack(alignment: .top, spacing: style.cardSpacing) {
                     ForEach(section.collectionFolders) { folder in
                         Button { browsingFolder = PhoneFolderRoute(folder: folder) } label: {
-                            PhoneCollectionFolderCard(folder: folder, posterWidth: style.posterWidth)
+                            // Grid View's poster width is 0 (its grids size
+                            // their own cells), which drew every card empty.
+                            PhoneCollectionFolderCard(folder: folder, posterWidth: style.isGrid ? 128 : style.posterWidth)
                         }
                         .buttonStyle(.plain)
                     }
@@ -957,6 +963,14 @@ private struct PhoneHeroSlideView: View {
     var isPortrait = true
     let onOpenDetails: () -> Void
     let onResume: (ContinueWatchingItem) -> Void
+    @ObservedObject private var reminders = MatchReminders.shared
+
+    /// A match not yet under way: its main button already opens the page,
+    /// so the second one sets a reminder instead of repeating that.
+    private var upcomingMatch: ContinueWatchingItem? {
+        guard case .resume(let item) = slide, item.isFixture, !item.isFixtureLive else { return nil }
+        return item
+    }
 
 
     /// A poster usually carries the title in its own artwork, so the logo
@@ -1081,13 +1095,25 @@ private struct PhoneHeroSlideView: View {
                     .background(Color.white, in: Capsule())
                     .foregroundStyle(.black)
             }
-            Button(action: onOpenDetails) {
-                Image(systemName: "info.circle")
-                    .font(.title3)
-                    .frame(width: 40, height: 40)
-                    .background(.ultraThinMaterial, in: Circle())
+            if let match = upcomingMatch {
+                let isSet = reminders.isSet(match.meta.id)
+                Button { reminders.toggle(match.meta, start: match.kickoff) } label: {
+                    Image(systemName: isSet ? "bell.fill" : "bell")
+                        .font(.title3)
+                        .foregroundStyle(isSet ? Color.black : Color.white)
+                        .frame(width: 40, height: 40)
+                        .background(isSet ? AnyShapeStyle(Color.white) : AnyShapeStyle(.ultraThinMaterial), in: Circle())
+                }
+                .accessibilityLabel(isSet ? "Cancel Reminder" : "Remind Me 5 Minutes Before")
+            } else {
+                Button(action: onOpenDetails) {
+                    Image(systemName: "info.circle")
+                        .font(.title3)
+                        .frame(width: 40, height: 40)
+                        .background(.ultraThinMaterial, in: Circle())
+                }
+                .accessibilityLabel("Details")
             }
-            .accessibilityLabel("Details")
         }
         .buttonStyle(.plain)
         .padding(.top, 4)

@@ -1,5 +1,6 @@
 #if os(iOS)
 import SwiftUI
+import Combine
 
 /// The phone's main screen: a standard tab bar in place of the tvOS sidebar.
 /// Details and the player are still presented by `ContentView` above this, so
@@ -134,15 +135,23 @@ struct PhoneMainTabView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if !isKeyboardShown {
-                PhoneTabBar(tabs: barTabs, selection: $selection, isCollapsed: tabBar.isCollapsed) {
-                    tabBar.expand()
-                }
+                PhoneTabBar(
+                    tabs: barTabs,
+                    selection: $selection,
+                    isCollapsed: tabBar.isCollapsed,
+                    onExpand: { tabBar.expand() },
+                    onScrollToTop: { tabBar.scrollToTop() }
+                )
             }
         }
-        .onChange(of: selection) { _, tab in
+        .onChange(of: selection, initial: true) { _, tab in
             visited.insert(tab)
             tabBar.expand()
+            tabBar.currentTab = tab
         }
+        .onChange(of: barTabs, initial: true) { _, tabs in tabBar.tabs = tabs }
+        // A section chosen from the bar over a nested page.
+        .onReceive(tabBar.tabRequests) { tab in selection = tab }
         // No connection at launch and something downloaded: Home cannot
         // load, so open on the downloads instead. Only at launch — a
         // connection dropping later leaves the user where they are.
@@ -191,6 +200,7 @@ struct PhoneMainTabView: View {
         if visited.contains(tab) || selection == tab {
             let shown = selection == tab
             content()
+                .environment(\.phoneTabIsShown, shown)
                 .opacity(shown ? 1 : 0)
                 .allowsHitTesting(shown)
                 .accessibilityHidden(!shown)
@@ -207,6 +217,19 @@ struct PhoneMainTabView: View {
 final class PhoneTabBarState: ObservableObject {
     static let shared = PhoneTabBarState()
     @Published private(set) var isCollapsed = false
+    /// Bumped by the back-to-top button; the shown page's scroller answers.
+    @Published private(set) var topRequest = 0
+    /// The tab section on screen and the bar's sections, for the bar drawn
+    /// over nested pages (`PhoneNestedTabBar`).
+    @Published var currentTab: TVTab = .home
+    @Published var tabs: [TVTab] = [.home]
+    /// A page opened over the tabs (Details, a collection…) is up: the arrow
+    /// moves it, not the tab page beneath.
+    @Published var nestedPageActive = false
+    /// That page is scrolled far enough down for the arrow to show.
+    @Published var nestedScrolledFar = false
+    /// A section chosen from the bar over a nested page.
+    let tabRequests = PassthroughSubject<TVTab, Never>()
 
     /// The liquid fold and unfold: slower and softer than a tap's spring,
     /// with a little give at the end, as the system tab bar folds.
@@ -215,6 +238,11 @@ final class PhoneTabBarState: ObservableObject {
     func expand() {
         guard isCollapsed else { return }
         withAnimation(Self.motion) { isCollapsed = false }
+    }
+
+    func scrollToTop() {
+        topRequest += 1
+        expand()
     }
 
     /// A page's scroll offset moved from `old` to `new` (0 at the top).
@@ -232,13 +260,44 @@ extension View {
     /// out back at the top. For each tab page's main vertical scroller. Also
     /// leaves room at the end of the content, so the last row can be
     /// scrolled clear of the bar rather than finishing under it.
+    /// It also goes back to the top when the folded bar's arrow is tapped,
+    /// if it is the page on screen.
     func phoneTabBarFoldsOnScroll() -> some View {
-        contentMargins(.bottom, 72, for: .scrollContent)
-        .onScrollGeometryChange(for: CGFloat.self) { geometry in
-            geometry.contentOffset.y + geometry.contentInsets.top
-        } action: { old, new in
-            PhoneTabBarState.shared.scrolled(from: old, to: new)
-        }
+        modifier(PhoneTabBarFold())
+    }
+}
+
+private struct PhoneTabBarFold: ViewModifier {
+    @Environment(\.phoneTabIsShown) private var isShown
+    @State private var position = ScrollPosition(edge: .top)
+
+    func body(content: Content) -> some View {
+        content
+            .contentMargins(.bottom, 72, for: .scrollContent)
+            .scrollPosition($position)
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.contentOffset.y + geometry.contentInsets.top
+            } action: { old, new in
+                PhoneTabBarState.shared.scrolled(from: old, to: new)
+            }
+            .onReceive(PhoneTabBarState.shared.$topRequest.dropFirst()) { _ in
+                // Every tab stays mounted; only the one on screen moves, and
+                // not while a nested page is over it.
+                guard isShown, !PhoneTabBarState.shared.nestedPageActive else { return }
+                withAnimation(.smooth(duration: 0.45)) { position.scrollTo(edge: .top) }
+            }
+    }
+}
+
+private struct PhoneTabIsShownKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// False on the tab pages kept mounted behind the current one.
+    var phoneTabIsShown: Bool {
+        get { self[PhoneTabIsShownKey.self] }
+        set { self[PhoneTabIsShownKey.self] = newValue }
     }
 }
 
@@ -250,6 +309,12 @@ struct PhoneTabBar: View {
     @Binding var selection: TVTab
     var isCollapsed = false
     var onExpand: () -> Void = {}
+    /// Folded means scrolled down: the gap between the two ends then holds
+    /// a back-to-top arrow.
+    var onScrollToTop: () -> Void = {}
+    /// Over a nested page the bar stays folded, so the arrow follows that
+    /// page's own scroll instead.
+    var showsScrollToTop: Bool? = nil
     @Namespace private var pill
     @Namespace private var glass
     /// The last section other than Search, which the folded circle shows
@@ -286,6 +351,20 @@ struct PhoneTabBar: View {
                 .phoneBarGlass(Circle(), id: "search", in: glass)
                 .accessibilityLabel(TVTab.search.title)
                 .accessibilityAddTraits(selection == .search ? .isSelected : [])
+            }
+            .overlay {
+                if showsScrollToTop ?? isCollapsed {
+                    Button(action: onScrollToTop) {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 22, weight: .semibold))
+                            .frame(width: 56, height: 56)
+                            .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
+                    .phoneBarGlass(Circle(), id: "top", in: glass)
+                    .accessibilityLabel("Back to Top")
+                    .transition(.scale(scale: 0.6).combined(with: .opacity))
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -718,3 +797,30 @@ struct PhoneLibraryView: View {
 }
 
 #endif
+
+/// The tab bar over a page opened from the tabs (Details, a collection, a
+/// studio…), folded to the current section and Search until tapped open, so
+/// any section is a tap or two away however deep the pages go. Choosing one
+/// leaves those pages for it.
+struct PhoneNestedTabBar: View {
+    let onSelect: (TVTab) -> Void
+    @ObservedObject private var state = PhoneTabBarState.shared
+    @State private var isExpanded = false
+
+    var body: some View {
+        PhoneTabBar(
+            tabs: state.tabs,
+            selection: Binding(
+                get: { state.currentTab },
+                set: { tab in
+                    isExpanded = false
+                    onSelect(tab)
+                }
+            ),
+            isCollapsed: !isExpanded,
+            onExpand: { withAnimation(PhoneTabBarState.motion) { isExpanded = true } },
+            onScrollToTop: { state.scrollToTop() },
+            showsScrollToTop: !isExpanded && state.nestedScrolledFar
+        )
+    }
+}

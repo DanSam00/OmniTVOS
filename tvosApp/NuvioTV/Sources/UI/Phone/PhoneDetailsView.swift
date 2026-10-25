@@ -11,8 +11,12 @@ struct PhoneDetailsView: View {
     let onPlayClick: (String, [String: String], NuvioMeta, String, [NuvioSubtitle], NuvioVideo?, [NuvioVideo], ExternalPlayer?) -> Void
     let onBack: () -> Void
     let onOpenTitle: (String, String) -> Void
+    /// Left underneath the page opened from it, so the back swipe shows it:
+    /// its trailer holds still meanwhile.
+    var isCovered = false
 
     @StateObject private var viewModel = DetailsViewModel(repository: CinemetaCatalogRepository())
+    @ObservedObject private var reminders = MatchReminders.shared
     @State private var selectedSeason: Int?
     @State private var pickerEpisode: NuvioVideo?
     @State private var isSourcesPresented = false
@@ -208,6 +212,7 @@ struct PhoneDetailsView: View {
         .onScrollGeometryChange(for: CGFloat.self) { geometry in
             geometry.contentOffset.y + geometry.contentInsets.top
         } action: { _, offset in scrollOffset = offset }
+        .phoneNestedBackToTop(isActive: !isCovered)
         .background { pageBackdrop(meta) }
     }
 
@@ -301,6 +306,7 @@ struct PhoneDetailsView: View {
                 PhoneTrailerView(
                     meta: meta,
                     isActive: trailerShownID == meta.id
+                        && !isCovered
                         && artFade > 0.05
                         && !playerPresence.isVisible
                         && !isSourcesPresented
@@ -381,7 +387,10 @@ struct PhoneDetailsView: View {
                 }
             }
 
-            if !meta.isSeries, !Self.isLiveChannel(meta) {
+            // Live channels and matches: nothing to download or mark
+            // watched; an upcoming match can have a reminder instead.
+            let isLivePage = MatchReminders.isLivePage(meta)
+            if !meta.isSeries, !isLivePage {
                 downloadControl(meta: meta, episode: nil)
                     .frame(width: 48, height: 46)
                     .background(Color.white.opacity(0.15), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -395,19 +404,35 @@ struct PhoneDetailsView: View {
             }
             .accessibilityLabel(viewModel.uiState.isInWatchlist ? "Remove from Library" : "Add to Library")
 
-            Button { viewModel.toggleWatched() } label: {
-                // Light when watched, dark when not: an outline-vs-filled eye
-                // on the same dark button was too close to tell apart.
-                let watched = viewModel.uiState.isWatched
-                Image(systemName: watched ? "eye.fill" : "eye")
-                    .font(.headline)
-                    .foregroundStyle(watched ? Color.black : Color.white)
-                    .frame(width: 48, height: 46)
-                    .background(watched ? Color.white : Color.white.opacity(0.15),
-                                in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .animation(.easeOut(duration: 0.15), value: watched)
+            if isLivePage {
+                if MatchReminders.upcomingStart(of: meta) != nil || reminders.isSet(meta.id) {
+                    Button { reminders.toggle(meta) } label: {
+                        let isSet = reminders.isSet(meta.id)
+                        Image(systemName: isSet ? "bell.fill" : "bell")
+                            .font(.headline)
+                            .foregroundStyle(isSet ? Color.black : Color.white)
+                            .frame(width: 48, height: 46)
+                            .background(isSet ? Color.white : Color.white.opacity(0.15),
+                                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .animation(.easeOut(duration: 0.15), value: isSet)
+                    }
+                    .accessibilityLabel(reminders.isSet(meta.id) ? "Cancel Reminder" : "Remind Me 5 Minutes Before")
+                }
+            } else {
+                Button { viewModel.toggleWatched() } label: {
+                    // Light when watched, dark when not: an outline-vs-filled eye
+                    // on the same dark button was too close to tell apart.
+                    let watched = viewModel.uiState.isWatched
+                    Image(systemName: watched ? "eye.fill" : "eye")
+                        .font(.headline)
+                        .foregroundStyle(watched ? Color.black : Color.white)
+                        .frame(width: 48, height: 46)
+                        .background(watched ? Color.white : Color.white.opacity(0.15),
+                                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .animation(.easeOut(duration: 0.15), value: watched)
+                }
+                .accessibilityLabel(viewModel.uiState.isWatched ? "Mark Unwatched" : "Mark Watched")
             }
-            .accessibilityLabel(viewModel.uiState.isWatched ? "Mark Unwatched" : "Mark Watched")
         }
     }
 

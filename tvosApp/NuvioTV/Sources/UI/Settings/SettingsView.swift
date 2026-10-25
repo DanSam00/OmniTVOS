@@ -251,6 +251,9 @@ enum SettingsKey {
     /// Teams whose next match joins Continue Watching (`FavouriteTeamsStore`),
     /// one per line; synced with the account.
     static let favouriteTeams = "omni.settings.favouriteTeams"
+    /// Upcoming matches to be reminded of (`MatchReminders`), as JSON; synced
+    /// so a reminder set on the Apple TV alerts on the iPhone and Mac.
+    static let matchReminders = "omni.settings.matchReminders"
     static let cardCornerRadius = "nuvio.tv.settings.layout.cardCornerRadius"
     static let cardSize = "nuvio.tv.settings.layout.cardSize"
     static let liquidGlassCards = "nuvio.tv.settings.layout.liquidGlassCards"
@@ -405,7 +408,7 @@ enum SettingsKey {
     ]
 
     static let all = [
-        favouriteTeams,
+        favouriteTeams, matchReminders,
         profileName, profilePinEnabled, profileAutoSelectLast, profileRequireSelectionAfterBackground, kidsProfile,
         customAvatarPhoto,
         accountSyncWatchState,
@@ -9522,6 +9525,8 @@ private struct AddonsSettingsSection: View {
     @State private var addonURLInput = ""
     @State private var addons: [AddonItem] = AddonItem.defaults
     @State private var syncedAddons: [SyncedAddon] = []
+    /// The add-on whose configure page is up as a QR code (Apple TV).
+    @State private var configuringAddon: SyncedAddon?
     @Environment(\.openURL) private var openURL
 
     #if os(iOS) || os(macOS)
@@ -9596,6 +9601,7 @@ private struct AddonsSettingsSection: View {
                                 saveAddonEdit(addon, name: name, urlText: urlText)
                             }
                         },
+                        onConfigure: addon.isConfigurable ? { configure(addon) } : nil,
                         onMove: { up in moveAddon(at: index, up: up) }
                     )
                 }
@@ -9642,6 +9648,23 @@ private struct AddonsSettingsSection: View {
         .task(id: streamAddonManifestURL + "\n" + streamAddonManifestURLs + "\n" + streamAddonManifestStates) {
             await loadSyncedAddons()
         }
+        .sheet(item: $configuringAddon) { addon in
+            AddonConfigureQRSheet(addon: addon)
+                .modifier(ClearPresentationBackgroundIfAvailable())
+        }
+    }
+
+    /// Opens the add-on's configure page. The link it then installs replaces
+    /// this add-on in place (see `CommunityAddonCatalog.install`) rather than
+    /// adding a second copy. The Apple TV has no browser, so it shows the
+    /// page as a QR code for the phone.
+    private func configure(_ addon: SyncedAddon) {
+        CommunityAddonCatalog.expectReconfigured(addon.url.absoluteString)
+        #if os(tvOS)
+        configuringAddon = addon
+        #else
+        openURL(addon.configureURL)
+        #endif
     }
 
     /// Applies an edit to one add-on.
@@ -10034,6 +10057,39 @@ private final class AddonEditorPresenter: ObservableObject {
 }
 
 /// Editing one add-on: the name shown for it, and the manifest it points at.
+/// An add-on's configure page as a QR code, for the Apple TV, which has no
+/// browser to open it in.
+private struct AddonConfigureQRSheet: View {
+    let addon: SyncedAddon
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 28) {
+            Text(L10n.format("settings_addon_configure_title", fallback: "Configure %@", addon.name))
+                .font(.system(size: 36, weight: .bold))
+                .foregroundColor(.white)
+            Text(L10n.string(
+                "settings_addon_configure_qr",
+                fallback: "Scan with your phone and change the settings there. Install from Omni on your iPhone and the new settings replace this add-on, then sync here."
+            ))
+            .font(.system(size: 23, weight: .medium))
+            .foregroundColor(.white.opacity(0.68))
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: 820)
+            if let image = QRCode.image(from: addon.configureURL.absoluteString, scale: 10) {
+                Image(uiImage: image)
+                    .interpolation(.none)
+                    .resizable()
+                    .frame(width: 320, height: 320)
+                    .padding(16)
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            }
+            Button(L10n.string("tvos_settings_done", fallback: "Done")) { dismiss() }
+        }
+        .padding(60)
+    }
+}
+
 private struct AddonEditorSheet: View {
     let original: SyncedAddon
     let accentColor: Color
@@ -10205,8 +10261,16 @@ private struct SyncedAddon: Identifiable {
     /// logo nor an icon.
     var logoURL: URL?
     var isEnabled: Bool
+    /// The manifest offers a configure page (`behaviorHints.configurable`).
+    var isConfigurable = false
 
     var id: String { url.absoluteString }
+
+    /// Its configure page, beside the manifest as Stremio opens it, so a
+    /// link carrying the viewer's settings opens with them filled in.
+    var configureURL: URL {
+        url.deletingLastPathComponent().appendingPathComponent("configure")
+    }
 
     init(url: URL, isEnabled: Bool = true) {
         self.url = url
@@ -10228,6 +10292,8 @@ private struct SyncedAddon: Identifiable {
         version = manifest.version
         description = manifest.description
         logoURL = manifest.artworkURL(relativeTo: url)
+        isConfigurable = manifest.behaviorHints?.configurable == true
+            || manifest.behaviorHints?.configurationRequired == true
     }
 
     var subtitle: String {
@@ -10237,11 +10303,17 @@ private struct SyncedAddon: Identifiable {
 }
 
 struct StremioManifest: Decodable {
+    struct BehaviorHints: Decodable {
+        let configurable: Bool?
+        let configurationRequired: Bool?
+    }
+
     let id: String?
     let name: String?
     let version: String?
     let description: String?
     let catalogs: [StremioManifestCatalog]?
+    let behaviorHints: BehaviorHints?
     /// Stremio manifests carry `logo` (wide/wordmark) and/or `icon` (square).
     let logo: String?
     let icon: String?
@@ -10328,6 +10400,8 @@ private struct SyncedAddonSettingsRow: View {
     var onEnabledChange: ((Bool) -> Void)? = nil
     var onDelete: (() -> Void)? = nil
     var onEdit: (() -> Void)? = nil
+    /// Opens the add-on's configure page; nil when it has none.
+    var onConfigure: (() -> Void)? = nil
     /// Called with `true` for up, `false` for down. nil hides the arrows.
     var onMove: ((Bool) -> Void)? = nil
 
@@ -10349,25 +10423,30 @@ private struct SyncedAddonSettingsRow: View {
 
             // The row itself toggles active/inactive, so a power button beside it
             // did the same job twice. Uninstall is what the row could not offer.
+            if let onConfigure {
+                AddonReorderButton(systemImage: "slider.horizontal.3", disabled: false, action: onConfigure)
+                    .macSettingsRowAction(1, action: onConfigure)
+            }
+
             if let onEdit {
                 AddonReorderButton(systemImage: "pencil", disabled: false, action: onEdit)
-                    .macSettingsRowAction(1, action: onEdit)
+                    .macSettingsRowAction(2, action: onEdit)
             }
 
             if let onDelete {
                 AddonReorderButton(systemImage: "trash", disabled: false, action: onDelete)
-                    .macSettingsRowAction(2, action: onDelete)
+                    .macSettingsRowAction(3, action: onDelete)
             }
 
             if let onMove {
                 AddonReorderButton(systemImage: "chevron.up", disabled: !canMoveUp) {
                     onMove(true)
                 }
-                .macSettingsRowAction(3) { if canMoveUp { onMove(true) } }
+                .macSettingsRowAction(4) { if canMoveUp { onMove(true) } }
                 AddonReorderButton(systemImage: "chevron.down", disabled: !canMoveDown) {
                     onMove(false)
                 }
-                .macSettingsRowAction(4) { if canMoveDown { onMove(false) } }
+                .macSettingsRowAction(5) { if canMoveDown { onMove(false) } }
             }
         }
     }

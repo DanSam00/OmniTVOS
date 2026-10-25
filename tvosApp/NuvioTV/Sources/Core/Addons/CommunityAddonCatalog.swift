@@ -87,6 +87,15 @@ enum CommunityAddonCatalog {
         return curated
     }
 
+    /// The add-on whose configure page was just opened, and when.
+    private static var reconfiguring: (url: String, at: Date)?
+
+    /// The next install from the same host within half an hour is that
+    /// add-on with new settings, so it takes the old one's place.
+    static func expectReconfigured(_ manifestURL: String) {
+        reconfiguring = (manifestURL, Date())
+    }
+
     /// Installs (or re-enables) a community add-on and notifies account sync.
     @discardableResult
     static func install(manifestURL raw: String) -> Bool {
@@ -94,8 +103,17 @@ enum CommunityAddonCatalog {
             return false
         }
         var preferences = CinemetaCatalogRepository.configuredStreamAddonPreferences
+        let replacing = reconfiguring.flatMap { pending -> Int? in
+            guard Date().timeIntervalSince(pending.at) < 30 * 60,
+                  URL(string: pending.url)?.host == url.host else { return nil }
+            return preferences.firstIndex { $0.url == pending.url }
+        }
+        reconfiguring = nil
         if let index = preferences.firstIndex(where: { $0.url == url.absoluteString }) {
             preferences[index].enabled = true
+        } else if let replacing {
+            // Same place and on/off state, new settings.
+            preferences[replacing] = StreamAddonPreference(url: url.absoluteString, enabled: preferences[replacing].enabled)
         } else {
             preferences.append(StreamAddonPreference(url: url.absoluteString, enabled: true))
         }
