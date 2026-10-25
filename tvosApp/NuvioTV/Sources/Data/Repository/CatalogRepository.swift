@@ -1962,7 +1962,7 @@ struct CinemetaMeta: Decodable {
             year: parsedYear,
             genres: genres ?? genre,
             rating: parsedImdbRating,
-            releaseInfo: releaseInfo ?? year,
+            releaseInfo: FixtureTime.localised(releaseInfo: releaseInfo, released: released) ?? year,
             runtime: runtime,
             cast: cast?.values,
             director: director?.values,

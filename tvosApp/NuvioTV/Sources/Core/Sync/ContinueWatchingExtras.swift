@@ -451,24 +451,12 @@ final class ContinueWatchingExtras {
     }
 
     /// A time marked UTC is UTC; one with no zone is the viewer's own, which
-    /// is how the sports add-ons write it ("25 Oct 2026 · 13:00" for a 1 pm
-    /// tip-off in Sydney). Read as UTC it said "TOMORROW · 12:00 am" for a
-    /// game an hour away.
-    private static let kickoffFormatters: [DateFormatter] = {
-        [("dd MMM yyyy · HH:mm 'UTC'", TimeZone(identifier: "UTC")), ("dd MMM yyyy · HH:mm", nil)].map { format, zone in
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.timeZone = zone ?? .current
-            formatter.dateFormat = format
-            return formatter
-        }
-    }()
-
-    /// A sports add-on's `07 Sep 2026 · 00:00 UTC`, as a moment.
+    /// is how the sports add-ons write it ("25 Oct 2026 · 13:00", or on the
+    /// next request "25 Oct 2026 · 1:00 PM", for a 1 pm tip-off in Sydney).
+    /// Decided by whether the text says UTC: the formatter's literal does not
+    /// decide it, since DateFormatter accepted "13:00" for "HH:mm 'UTC'" and
+    /// read every unmarked time as UTC, a game an hour away as tomorrow.
     static func kickoff(fromFixtureInfo info: String) -> Date? {
-        for formatter in kickoffFormatters {
-            if let date = formatter.date(from: info) { return date }
-        }
-        return nil
+        FixtureTime.parse(info)
     }
 }

@@ -523,9 +523,10 @@ final class CalendarViewModel: ObservableObject {
 
     /// Maps one fixture to a dated entry.
     ///
-    /// Sports add-ons put the kick-off in `releaseInfo` as `07 Sep 2026 · 00:00
-    /// UTC`, or the literal `LIVE` for something already in progress — there is
-    /// no `released` field to read, so this is the only date source.
+    /// Sports add-ons put the kick-off in `releaseInfo`: `25 Oct 2026 · 1:00 PM`
+    /// in local time, `07 Sep 2026 · 00:00 UTC`, or the literal `LIVE` for
+    /// something already in progress. A bare UTC clock time has already been
+    /// made local from `released` (`FixtureTime.localised`).
     nonisolated private static func sportEntry(
         from meta: NuvioMeta,
         catalog: AddonCatalogOption
@@ -708,27 +709,8 @@ enum CalendarDayKey {
     /// Converted into the viewer's local day, since a UTC kick-off can land on
     /// the neighbouring date locally.
     static func dayKey(fromFixtureInfo info: String) -> String? {
-        let trimmed = info.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        for formatter in fixtureFormatters {
-            if let date = formatter.date(from: trimmed) { return dayKey(from: date) }
-        }
-        return nil
+        FixtureTime.parse(info, allowDateOnly: true).map { dayKey(from: $0) }
     }
-
-    /// UTC when the listing says so; otherwise the viewer's own zone, as the
-    /// sports add-ons write unmarked times.
-    private static let fixtureFormatters: [DateFormatter] = {
-        [("dd MMM yyyy · HH:mm 'UTC'", TimeZone(identifier: "UTC")),
-         ("dd MMM yyyy · HH:mm", nil),
-         ("dd MMM yyyy", nil)].map { format, zone in
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.timeZone = zone ?? .current
-            formatter.dateFormat = format
-            return formatter
-        }
-    }()
 
     /// `yyyy-MM` prefix, for "does this month hold anything" checks.
     static func monthPrefix(year: Int, month: Int) -> String {
@@ -750,5 +732,60 @@ enum CalendarDayKey {
         components.day = parts[2]
         components.hour = 12
         return Calendar.current.date(from: components)
+    }
+}
+
+/// A sports add-on's kick-off text as a moment. "UTC" in the text means UTC;
+/// anything else is the viewer's local time. Strict: a lenient formatter
+/// matched unmarked times against the UTC pattern.
+enum FixtureTime {
+    private static func formatter(_ format: String, utc: Bool) -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = utc ? TimeZone(identifier: "UTC") : .current
+        formatter.isLenient = false
+        formatter.dateFormat = format
+        return formatter
+    }
+
+    private static let timeFormats = ["dd MMM yyyy · HH:mm", "dd MMM yyyy · h:mm a", "d MMM yyyy · HH:mm", "d MMM yyyy · h:mm a"]
+    private static let utcFormatters = timeFormats.map { formatter($0, utc: true) }
+    private static let localFormatters = timeFormats.map { formatter($0, utc: false) }
+    private static let dayFormatters = ["dd MMM yyyy", "d MMM yyyy"].map { formatter($0, utc: false) }
+
+    private static let clockFormatters = ["h:mm a", "HH:mm"].map { formatter($0, utc: true) }
+    private static let timestampFormatters: [ISO8601DateFormatter] = {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return [fractional, ISO8601DateFormatter()]
+    }()
+
+    /// A listing's time as local kick-off text. Nuvio Live Sports gives only a
+    /// UTC clock time ("2:00 AM", 1 pm in Sydney) with the exact start in
+    /// `released`; that is restated in Highfly's local form ("25 Oct 2026 ·
+    /// 1:00 PM"), which every screen already reads. Anything else is kept.
+    static func localised(releaseInfo: String?, released: String?) -> String? {
+        guard let info = releaseInfo?.trimmingCharacters(in: .whitespacesAndNewlines),
+              clockFormatters.contains(where: { $0.date(from: info) != nil }),
+              let released,
+              let start = timestampFormatters.lazy.compactMap({ $0.date(from: released) }).first
+        else { return releaseInfo }
+        return localFormatters[1].string(from: start)
+    }
+
+    static func parse(_ text: String, allowDateOnly: Bool = false) -> Date? {
+        var trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isUTC = trimmed.uppercased().hasSuffix("UTC")
+        if isUTC {
+            trimmed = String(trimmed.dropLast(3)).trimmingCharacters(in: .whitespaces)
+        }
+        for formatter in (isUTC ? utcFormatters : localFormatters) {
+            if let date = formatter.date(from: trimmed) { return date }
+        }
+        guard allowDateOnly else { return nil }
+        for formatter in dayFormatters {
+            if let date = formatter.date(from: trimmed) { return date }
+        }
+        return nil
     }
 }
