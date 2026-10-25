@@ -57,6 +57,7 @@ private enum NetflixKeyboardMode {
 
 struct NetflixSearchView: View {
     @StateObject private var viewModel: NetflixSearchViewModel
+    @ObservedObject private var nsfw = NSFWVisibility.shared
     let showDiscover: Bool
     let onContentClick: (String, String) -> Void
     var onLongPress: ((NuvioMeta) -> Void)? = nil
@@ -509,7 +510,7 @@ struct NetflixSearchView: View {
 
     private var typeFilterRow: some View {
         HStack(spacing: 16) {
-            ForEach(SearchContentType.allCases) { type in
+            ForEach(SearchContentType.visibleCases) { type in
                 GlassChip(
                     title: type.title,
                     isSelected: viewModel.selectedType == type,
@@ -517,6 +518,19 @@ struct NetflixSearchView: View {
                     focusValue: "type:\(type.rawValue)"
                 ) {
                     viewModel.setType(type)
+                }
+            }
+
+            // 18+ results only while this is on; off at every launch.
+            if AdultContent.shared.hasAdultSources {
+                GlassChip(
+                    title: "18+",
+                    isSelected: nsfw.showsInSearch,
+                    leadingSystemImage: nsfw.showsInSearch ? "eye" : "eye.slash",
+                    externalFocus: $focusedTypeFilterID,
+                    focusValue: "type:nsfw"
+                ) {
+                    nsfw.showsInSearch.toggle()
                 }
             }
 

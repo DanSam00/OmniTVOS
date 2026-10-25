@@ -199,7 +199,10 @@ actor StremioManifestDataCache {
         inFlight[url] = task
         let data = await task.value
         inFlight[url] = nil
-        if let data { cachedData[url] = data }
+        if let data {
+            cachedData[url] = data
+            AdultContent.shared.learn(manifest: data, from: url)
+        }
         return data
     }
 }
@@ -215,6 +218,8 @@ struct AddonCatalogOption: Identifiable {
     /// The genres the catalog's manifest offers, in its order; empty when it
     /// declares none.
     var genreOptions: [String] = []
+    /// The catalog answers only with a genre chosen (TPB's "theStashDB").
+    var genreRequired = false
     var id: String { "\(addonId)_\(type)_\(catalogId)" }
 }
 
@@ -565,6 +570,7 @@ final class CinemetaCatalogRepository: CatalogRepository {
                         url
                     )
                     let items = response.metas.map { $0.toMeta(fallbackType: catalog.type) }
+                    AdultContent.shared.note(items, base: base, type: catalog.type, catalogId: catalog.id)
                     guard !items.isEmpty else { return nil }
                     cacheMetadata(items)
                     let catalogName = TVHomeCatalogOrder.catalogDisplayTitle(
@@ -1246,13 +1252,16 @@ final class CinemetaCatalogRepository: CatalogRepository {
         #if os(macOS)
         MacDiagnostics.log("search.results cinemeta=\(localized.count) live+addons=\(channels.count) people=\(byPeople.count)")
         #endif
-        // The add-on matched these itself, often on a performer its titles
-        // do not name, so they rank like a person's titles: after those
-        // naming the query, before Cinemeta's loose matches.
+        // An 18+ add-on matched these itself, often on a performer its
+        // titles do not name, so they rank like a person's titles: after
+        // those naming the query, before Cinemeta's loose matches. Other
+        // add-ons' answers (Anime Kitsu's) rank by their titles like the rest,
+        // or their loose matches crowd out the ones that fit.
+        let performerMatches = addonFound.filter { AdultContent.shared.isAdult($0) }
         return SearchRanking.rank(
             localized + channels + byPeople,
             query: query,
-            peopleTitleIDs: Set(byPeople.map(\.id)).union(addonFound.map(\.id))
+            peopleTitleIDs: Set(byPeople.map(\.id)).union(performerMatches.map(\.id))
         )
     }
 
@@ -1343,7 +1352,12 @@ final class CinemetaCatalogRepository: CatalogRepository {
             let base = manifestURL.deletingLastPathComponent()
             let searchable = (manifest.catalogs ?? []).filter { catalog in
                 let type = catalog.type.lowercased()
-                return catalog.declaresSearch && !["movie", "series"].contains(type) && !Self.isLiveSearchType(type)
+                guard catalog.declaresSearch, !Self.isLiveSearchType(type) else { return false }
+                // Films and series are Cinemeta's, except an 18+ add-on's:
+                // Porn Tube lists its scenes as films, so its search was
+                // never asked and only Stremio showed its rows.
+                return !["movie", "series"].contains(type)
+                    || AdultContent.shared.isAdultCatalog(addonId: manifest.id, type: catalog.type, catalogId: catalog.id)
             }
             let searchOnly = searchable.filter(\.requiresSearch)
             for catalog in (searchOnly.isEmpty ? searchable : searchOnly).prefix(4) {
@@ -1499,7 +1513,8 @@ final class CinemetaCatalogRepository: CatalogRepository {
                         type: catalog.type,
                         catalogId: catalog.id,
                         catalogName: catalog.name ?? catalog.id,
-                        genreOptions: catalog.genreOptions
+                        genreOptions: catalog.genreOptions,
+                        genreRequired: catalog.requiresGenre
                     )
                 )
             }
@@ -1686,7 +1701,9 @@ final class CinemetaCatalogRepository: CatalogRepository {
             genre: genre
         )
         let response: CinemetaCatalogResponse = try await fetch(url)
-        return response.metas.map { $0.toMeta(fallbackType: type) }
+        let metas = response.metas.map { $0.toMeta(fallbackType: type) }
+        AdultContent.shared.note(metas, base: sourceBaseURL ?? baseURL, type: type, catalogId: catalogId)
+        return metas
     }
 
     private func fetch<T: Decodable>(_ url: URL) async throws -> T {

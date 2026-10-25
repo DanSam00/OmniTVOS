@@ -143,8 +143,11 @@ final class ContinueWatchingExtras {
         }.prefix(Self.recommendationCount)
         StreamAvailability.shared.ensureChecked(requests)
 
-        return (shown + liveFixtures + extraRecommendations)
-            .filter { !ContinueWatchingDismissStore.isDismissed($0) }
+        // 18+ titles only while the row's NSFW toggle is on (this session).
+        return NSFWVisibility.shared.continueWatchingFiltered(
+            (shown + liveFixtures + extraRecommendations)
+                .filter { !ContinueWatchingDismissStore.isDismissed($0) }
+        )
     }
 
     /// An aired next episode, which only shows once it has a real source.

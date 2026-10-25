@@ -345,6 +345,47 @@ struct PhoneContinueCard: View {
     }
 }
 
+/// A filter in a row of them: white when chosen, or `onColor` for a switch.
+struct PhoneFilterChip: View {
+    let title: String
+    let isOn: Bool
+    var onColor: Color = .white
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(isOn ? onColor : Color.white.opacity(0.12), in: Capsule())
+                .foregroundStyle(isOn && onColor == .white ? .black : .white)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Shows or hides 18+ titles for this session: off at every launch.
+struct PhoneNSFWToggle: View {
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button {
+            isOn.toggle()
+        } label: {
+            Label("18+", systemImage: isOn ? "eye" : "eye.slash")
+                .font(.caption.weight(.bold))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(isOn ? AnyShapeStyle(Color.red.opacity(0.85)) : AnyShapeStyle(.ultraThinMaterial), in: Capsule())
+                .foregroundStyle(.white)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isOn ? "Hide 18+ titles" : "Show 18+ titles")
+    }
+}
+
 struct PhoneSectionHeader: View {
     let title: String
 

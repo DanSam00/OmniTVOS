@@ -539,6 +539,7 @@ struct PhoneSearchView: View {
 
     /// Held here so its filters and loaded pages survive leaving the tab.
     @StateObject private var discover = DiscoverViewModel()
+    @ObservedObject private var nsfw = NSFWVisibility.shared
     @FocusState private var isSearchFocused: Bool
 
     static let debugFocusNotification = Notification.Name("omni.debug.focusSearch")
@@ -547,17 +548,24 @@ struct PhoneSearchView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 // Only with results to narrow: Discover has its own filters.
+                // One row, as Discover's: the kinds, then the 18+ switch
+                // (off at every launch), which adds Adult to the kinds.
                 if !viewModel.searchText.isEmpty {
-                    Picker("Type", selection: Binding(
-                        get: { viewModel.selectedType },
-                        set: { viewModel.setType($0) }
-                    )) {
-                        ForEach(SearchContentType.allCases, id: \.self) { type in
-                            Text(type.title).tag(type)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(SearchContentType.visibleCases) { type in
+                                PhoneFilterChip(title: type.title, isOn: viewModel.selectedType == type) {
+                                    viewModel.setType(type)
+                                }
+                            }
+                            if AdultContent.shared.hasAdultSources {
+                                PhoneFilterChip(title: "18+", isOn: nsfw.showsInSearch, onColor: .red) {
+                                    nsfw.showsInSearch.toggle()
+                                }
+                            }
                         }
+                        .padding(.horizontal, PhoneLayout.gutter)
                     }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal, PhoneLayout.gutter)
                 }
 
                 if viewModel.searchText.isEmpty {

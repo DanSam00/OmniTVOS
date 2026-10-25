@@ -3,8 +3,52 @@ import Combine
 
 /// Content-type filter for the search screen.
 enum SearchContentType: String, CaseIterable, Identifiable {
-    case all, movie, series, live
+    case all, movie, series, live, adult
     var id: String { rawValue }
+
+    /// The filters on offer: Adult only while Search's 18+ toggle is on.
+    @MainActor
+    static var visibleCases: [SearchContentType] {
+        NSFWVisibility.shared.showsInSearch ? allCases : allCases.filter { $0 != .adult }
+    }
+
+    /// Where a search starts: within the Discover type the viewer chose, so
+    /// picking Tube and typing searches Tube's kind of thing. Types with no
+    /// filter of their own (Anime, Other) and no choice at all start on All.
+    @MainActor
+    static func scope(forDiscoverType raw: String?) -> SearchContentType {
+        guard let raw = raw?.lowercased() else { return .all }
+        switch raw {
+        case "movie": return .movie
+        case "series": return .series
+        default:
+            if isLiveFilterType(raw) { return .live }
+            if AdultContent.shared.isAdult(id: "", type: raw) {
+                return NSFWVisibility.shared.showsInSearch ? .adult : .all
+            }
+            return .all
+        }
+    }
+
+    /// Live TV: channels (IPTV and add-on TV) and sports add-ons' matches.
+    static func isLiveFilterType(_ type: String) -> Bool {
+        let lowered = type.lowercased()
+        return CinemetaCatalogRepository.isLiveSearchType(lowered) || lowered == "sport" || lowered == "sports"
+    }
+
+    /// Whether a result belongs under this filter. 18+ results sit under
+    /// Adult only, not also under Movies (Porn Tube's scenes are "movie").
+    @MainActor
+    func includes(_ meta: NuvioMeta) -> Bool {
+        let adult = AdultContent.shared.isAdult(meta)
+        switch self {
+        case .all: return true
+        case .movie: return !adult && meta.type == "movie"
+        case .series: return !adult && meta.type == "series"
+        case .live: return !adult && Self.isLiveFilterType(meta.type)
+        case .adult: return adult
+        }
+    }
 
     var title: String {
         switch self {
@@ -16,6 +60,8 @@ enum SearchContentType: String, CaseIterable, Identifiable {
             return L10n.string("type_series_plural", fallback: L10n.string("type_series", fallback: "Series"))
         case .live:
             return L10n.string("search_type_live_tv", fallback: "Live TV")
+        case .adult:
+            return L10n.string("search_type_adult", fallback: "Adult")
         }
     }
 }
@@ -36,6 +82,7 @@ class SearchViewModel: ObservableObject {
     private let repository: CatalogRepository
     private var allResults: [NuvioMeta] = []
     private var cancellables = Set<AnyCancellable>()
+    private var hadQuery = false
     private var searchTask: Task<Void, Never>?
     /// Runs after the raw search grid is visible: refreshes the top results'
     /// full `/meta` records so artwork and watched state match Discovery.
@@ -67,6 +114,16 @@ class SearchViewModel: ObservableObject {
                 self?.performSearch(query: text)
             }
             .store(in: &cancellables)
+
+        NSFWVisibility.shared.$showsInSearch
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] shown in
+                guard let self else { return }
+                if !shown, self.selectedType == .adult { self.selectedType = .all }
+                self.applyFilter()
+            }
+            .store(in: &cancellables)
     }
 
     var hasQuery: Bool {
@@ -75,6 +132,11 @@ class SearchViewModel: ObservableObject {
 
     private func handleQueryChange(_ query: String) {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A new search starts within the Discover type the viewer chose.
+        if !trimmed.isEmpty, !hadQuery {
+            selectedType = SearchContentType.scope(forDiscoverType: DiscoverViewModel.chosenType)
+        }
+        hadQuery = !trimmed.isEmpty
         guard !trimmed.isEmpty else {
             searchTask?.cancel()
             enrichmentTask?.cancel()
@@ -184,12 +246,10 @@ class SearchViewModel: ObservableObject {
     }
 
     private func applyFilter() {
-        switch selectedType {
-        case .all: results = allResults
-        case .movie: results = allResults.filter { $0.type == "movie" }
-        case .series: results = allResults.filter { $0.type == "series" }
-        case .live: results = allResults.filter { CinemetaCatalogRepository.isLiveSearchType($0.type) }
-        }
+        // 18+ titles only while Search's NSFW toggle is on (this session).
+        let allowed = NSFWVisibility.shared.searchFiltered(allResults)
+        let filter = selectedType
+        results = allowed.filter { filter.includes($0) }
     }
 
     /// Past searches containing what is typed so far, best first: this

@@ -35,7 +35,11 @@ final class PhoneHomeLoader: ObservableObject {
         }
         // A next episode's source turning up, a fixture or new recommendations:
         // the same progress, composed again.
-        for name in [StreamAvailability.changedNotification, ContinueWatchingExtras.changedNotification] {
+        for name in [
+            StreamAvailability.changedNotification,
+            ContinueWatchingExtras.changedNotification,
+            NSFWVisibility.continueWatchingChanged
+        ] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in
                     guard let self else { return }
@@ -305,6 +309,7 @@ private enum PhoneHeroSlide: Identifiable {
 
 struct PhoneHomeView: View {
     @ObservedObject var loader: PhoneHomeLoader
+    @ObservedObject private var nsfw = NSFWVisibility.shared
     let onOpenDetails: (NuvioMeta) -> Void
     let onResume: (ContinueWatchingItem) -> Void
     let onStartOver: (ContinueWatchingItem) -> Void
@@ -697,6 +702,15 @@ struct PhoneHomeView: View {
             parallax.isPaging = phase != .idle
         }
         // These dots count real slides, not the two wrap-around copies.
+        // Continue Watching's 18+ switch: the carousel is where Continue
+        // Watching shows, and the row is hidden while it does.
+        .overlay(alignment: .bottomTrailing) {
+            if nsfw.continueWatchingAdultCount > 0 {
+                PhoneNSFWToggle(isOn: $nsfw.showsInContinueWatching)
+                    .padding(sideInset, plus: PhoneLayout.gutter)
+                    .padding(.bottom, 40)
+            }
+        }
         .overlay(alignment: .bottom) {
             if slides.count > 1 {
                 HStack(spacing: 8) {
@@ -722,7 +736,13 @@ struct PhoneHomeView: View {
 
     private var continueWatchingRow: some View {
         VStack(alignment: .leading, spacing: 10) {
-            PhoneSectionHeader(title: L10n.string("continue_watching", fallback: "Continue Watching"))
+            HStack {
+                PhoneSectionHeader(title: L10n.string("continue_watching", fallback: "Continue Watching"))
+                if nsfw.continueWatchingAdultCount > 0 {
+                    PhoneNSFWToggle(isOn: $nsfw.showsInContinueWatching)
+                        .padding(.trailing, PhoneLayout.gutter)
+                }
+            }
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: style.cardSpacing) {
                     ForEach(loader.continueWatching, id: \.meta.id) { item in

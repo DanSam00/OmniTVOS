@@ -32,6 +32,7 @@ struct DiscoverSection: View {
     var onFilterFocus: (() -> Void)? = nil
     var onFocusExit: (() -> Void)? = nil
     @StateObject private var viewModel = DiscoverViewModel()
+    @ObservedObject private var nsfw = NSFWVisibility.shared
     @FocusState private var focusedCardID: String?
     @State private var focusedElementID: String?
     /// Cards can briefly blur while a rapid remote swipe realizes the next
@@ -100,7 +101,8 @@ struct DiscoverSection: View {
     private var macFilterItems: [String] {
         var items = ["type"]
         if !viewModel.catalogs.isEmpty { items.append("catalog") }
-        items.append("genre")
+        if !viewModel.genres.isEmpty { items.append("genre") }
+        if AdultContent.shared.hasAdultSources { items.append("nsfw") }
         return items
     }
 
@@ -123,6 +125,7 @@ struct DiscoverSection: View {
             switch item {
             case "type": macOpenType = true
             case "catalog": macOpenCatalog = true
+            case "nsfw": nsfw.showsInSearch.toggle()
             default: macOpenGenre = true
             }
             return
@@ -212,6 +215,7 @@ struct DiscoverSection: View {
         .onAppear { macPublish() }
         .onChange(of: visibleItems.map(\.id)) { _, _ in macPublish() }
         .onChange(of: viewModel.catalogs.count) { _, _ in macPublish() }
+        .onChange(of: viewModel.genres.isEmpty) { _, _ in macPublish() }
         #endif
     }
 
@@ -266,7 +270,7 @@ struct DiscoverSection: View {
                 FilterMenu(
                     label: viewModel.catalog?.name ?? L10n.string("tvos_discover_popular", fallback: "Popular"),
                     options: viewModel.catalogs.map { catalog in
-                        FilterOption(catalog.title, isSelected: viewModel.catalog == catalog) {
+                        FilterOption(viewModel.title(of: catalog), isSelected: viewModel.catalog == catalog) {
                             viewModel.setCatalog(catalog)
                         }
                     },
@@ -276,13 +280,30 @@ struct DiscoverSection: View {
                 )
             }
 
-            FilterMenu(
-                label: viewModel.genre ?? L10n.string("tvos_discover_all_genres", fallback: "All Genres"),
-                options: genreOptions,
-                onFocusChange: { updateDiscoverFocus("filter:genre", isFocused: $0) },
-                macIsFocused: macIsFocused(DiscoverFocusBand.filters, "genre"),
-                macOpen: macOpen(.genre)
-            )
+            // Only when the catalog has genres: its own, or Cinemeta's for
+            // Cinemeta's rows.
+            if !viewModel.genres.isEmpty {
+                FilterMenu(
+                    label: viewModel.genre ?? L10n.string("tvos_discover_all_genres", fallback: "All Genres"),
+                    options: genreOptions,
+                    onFocusChange: { updateDiscoverFocus("filter:genre", isFocused: $0) },
+                    macIsFocused: macIsFocused(DiscoverFocusBand.filters, "genre"),
+                    macOpen: macOpen(.genre)
+                )
+            }
+
+            // Search's NSFW toggle, which Discover follows: 18+ add-ons'
+            // catalogs only while it is on, and off at every launch.
+            if AdultContent.shared.hasAdultSources {
+                GlassChip(
+                    title: "18+",
+                    isSelected: nsfw.showsInSearch,
+                    leadingSystemImage: nsfw.showsInSearch ? "eye" : "eye.slash",
+                    macIsFocused: macIsFocused(DiscoverFocusBand.filters, "nsfw")
+                ) {
+                    nsfw.showsInSearch.toggle()
+                }
+            }
         }
     }
 
@@ -293,7 +314,7 @@ struct DiscoverSection: View {
         ) {
             viewModel.setGenre(nil)
         }
-        return [all] + viewModel.genres.map { genre in
+        return (viewModel.allowsAllGenres ? [all] : []) + viewModel.genres.map { genre in
             FilterOption(genre, isSelected: viewModel.genre == genre) {
                 viewModel.setGenre(genre)
             }

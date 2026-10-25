@@ -2556,7 +2556,9 @@ enum ContinueWatchingStore {
     }
 
     private static func writeTopShelfFeed(from source: [ContinueWatchingItem]) {
-        let entries = source.prefix(10).map { item -> TopShelfEntry in
+        // Never 18+ titles, whatever the row's toggle says: the Top Shelf and
+        // widgets show outside Omni.
+        let entries = source.filter { !AdultContent.shared.isAdult($0.meta) }.prefix(10).map { item -> TopShelfEntry in
             let fraction = item.duration > 0 ? min(max(item.position / item.duration, 0), 1) : nil
             var subtitleParts: [String] = []
             if let season = item.season, let episode = item.episode {

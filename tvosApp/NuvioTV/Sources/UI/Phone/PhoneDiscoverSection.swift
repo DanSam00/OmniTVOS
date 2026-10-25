@@ -6,6 +6,7 @@ import SwiftUI
 /// every type they declare, every catalog of that type, and its genres.
 struct PhoneDiscoverSection: View {
     @ObservedObject var viewModel: DiscoverViewModel
+    @ObservedObject private var nsfw = NSFWVisibility.shared
     let onSelect: (NuvioMeta) -> Void
 
     private let columns = [GridItem(.adaptive(minimum: 104), spacing: 12, alignment: .top)]
@@ -47,42 +48,51 @@ struct PhoneDiscoverSection: View {
 
     // MARK: Filters
 
+    /// One scrolling row: Type, Catalog, Genre, then 18+. Each narrows the
+    /// next, so they read left to right; the type chips took a row of their
+    /// own above the menus.
     private var filters: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // Type: one chip per type the add-ons offer.
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                Menu {
                     ForEach(viewModel.availableTypes) { type in
-                        chip(type.title, isOn: viewModel.type == type) { viewModel.setType(type) }
+                        Button { viewModel.setType(type) } label: {
+                            if type == viewModel.type {
+                                Label(type.title, systemImage: "checkmark")
+                            } else {
+                                Text(type.title)
+                            }
+                        }
                     }
+                } label: {
+                    menuLabel(viewModel.type.title)
                 }
-                .padding(.horizontal, PhoneLayout.gutter)
-            }
 
-            HStack(spacing: 8) {
                 if !viewModel.catalogs.isEmpty {
                     Menu {
                         ForEach(viewModel.catalogs) { catalog in
                             Button { viewModel.setCatalog(catalog) } label: {
                                 if catalog == viewModel.catalog {
-                                    Label(catalog.title, systemImage: "checkmark")
+                                    Label(viewModel.title(of: catalog), systemImage: "checkmark")
                                 } else {
-                                    Text(catalog.title)
+                                    Text(viewModel.title(of: catalog))
                                 }
                             }
                         }
                     } label: {
-                        menuLabel(viewModel.catalog?.title ?? "Catalog", systemImage: "square.stack")
+                        menuLabel(viewModel.catalog.map { viewModel.title(of: $0) } ?? "Catalog")
                     }
                 }
 
                 if !viewModel.genres.isEmpty {
                     Menu {
-                        Button { viewModel.setGenre(nil) } label: {
-                            if viewModel.genre == nil {
-                                Label("All Genres", systemImage: "checkmark")
-                            } else {
-                                Text("All Genres")
+                        if viewModel.allowsAllGenres {
+                            Button { viewModel.setGenre(nil) } label: {
+                                if viewModel.genre == nil {
+                                    Label("All Genres", systemImage: "checkmark")
+                                } else {
+                                    Text("All Genres")
+                                }
                             }
                         }
                         ForEach(viewModel.genres, id: \.self) { genre in
@@ -95,36 +105,44 @@ struct PhoneDiscoverSection: View {
                             }
                         }
                     } label: {
-                        menuLabel(viewModel.genre ?? "All Genres", systemImage: "theatermasks")
+                        menuLabel(viewModel.genre ?? "All Genres")
                     }
                 }
-                Spacer(minLength: 0)
+
+                // Search's NSFW toggle, which Discover follows.
+                if AdultContent.shared.hasAdultSources {
+                    chip("18+", isOn: nsfw.showsInSearch, onColor: .red) { nsfw.showsInSearch.toggle() }
+                }
             }
             .padding(.horizontal, PhoneLayout.gutter)
         }
     }
 
-    private func chip(_ title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+    private func chip(
+        _ title: String,
+        isOn: Bool,
+        onColor: Color = .white,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
             Text(title)
                 .font(.subheadline.weight(.semibold))
-                .padding(.horizontal, 14)
+                .padding(.horizontal, 12)
                 .padding(.vertical, 7)
-                .background(isOn ? Color.white : Color.white.opacity(0.12), in: Capsule())
-                .foregroundStyle(isOn ? .black : .white)
+                .background(isOn ? onColor : Color.white.opacity(0.12), in: Capsule())
+                .foregroundStyle(isOn && onColor == .white ? .black : .white)
         }
         .buttonStyle(.plain)
     }
 
-    private func menuLabel(_ title: String, systemImage: String) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: systemImage).font(.caption)
+    private func menuLabel(_ title: String) -> some View {
+        HStack(spacing: 4) {
             Text(title).lineLimit(1)
             Image(systemName: "chevron.down").font(.caption2)
         }
         .font(.subheadline.weight(.semibold))
         .foregroundStyle(.white)
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 10)
         .padding(.vertical, 7)
         .background(Color.white.opacity(0.12), in: Capsule())
     }

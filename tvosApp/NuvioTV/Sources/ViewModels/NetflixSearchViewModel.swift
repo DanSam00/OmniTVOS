@@ -19,6 +19,7 @@ class NetflixSearchViewModel: ObservableObject {
     private let repository: CatalogRepository
     private var allResults: [NuvioMeta] = []
     private var cancellables = Set<AnyCancellable>()
+    private var hadQuery = false
     private var searchTask: Task<Void, Never>?
     /// Runs after the raw search grid is visible: refreshes the top results'
     /// full `/meta` records so artwork and watched state match Discovery.
@@ -52,6 +53,16 @@ class NetflixSearchViewModel: ObservableObject {
                 self?.performSearch(query: text)
             }
             .store(in: &cancellables)
+
+        NSFWVisibility.shared.$showsInSearch
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] shown in
+                guard let self else { return }
+                if !shown, self.selectedType == .adult { self.selectedType = .all }
+                self.applyFilter()
+            }
+            .store(in: &cancellables)
     }
 
     var hasQuery: Bool {
@@ -60,6 +71,11 @@ class NetflixSearchViewModel: ObservableObject {
 
     private func handleQueryChange(_ query: String) {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A new search starts within the Discover type the viewer chose.
+        if !trimmed.isEmpty, !hadQuery {
+            selectedType = SearchContentType.scope(forDiscoverType: DiscoverViewModel.chosenType)
+        }
+        hadQuery = !trimmed.isEmpty
         guard !trimmed.isEmpty else {
             searchTask?.cancel()
             enrichmentTask?.cancel()
@@ -169,12 +185,10 @@ class NetflixSearchViewModel: ObservableObject {
     }
 
     private func applyFilter() {
-        switch selectedType {
-        case .all: results = allResults
-        case .movie: results = allResults.filter { $0.type == "movie" }
-        case .series: results = allResults.filter { $0.type == "series" }
-        case .live: results = allResults.filter { CinemetaCatalogRepository.isLiveSearchType($0.type) }
-        }
+        // 18+ titles only while Search's NSFW toggle is on (this session).
+        let allowed = NSFWVisibility.shared.searchFiltered(allResults)
+        let filter = selectedType
+        results = allowed.filter { filter.includes($0) }
     }
 
     func applyRecent(_ term: String) {

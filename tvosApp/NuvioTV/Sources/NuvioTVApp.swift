@@ -5031,7 +5031,7 @@ struct TVHomeView: View {
                         gridPosition: backdropGridPosition,
                         parallax: true,
                         pagedRow: -1,
-                        pageCount: featureItems.count
+                        pageCount: featureSlides.count
                     )
                     .equatable()
                     // The slides either side, so paging starts its slide at once.
@@ -5067,7 +5067,7 @@ struct TVHomeView: View {
                             gridPosition: backdropGridPosition,
                             parallax: true,
                             pagedRow: -1,
-                            pageCount: featureItems.count
+                            pageCount: featureSlides.count
                         )
                         .equatable()
                         // The slides either side, so paging starts its slide at once.
@@ -5232,7 +5232,7 @@ struct TVHomeView: View {
                                 ? nil
                                 : (visibleFocusedMeta ?? visibleHero)
                             TVFeatureHeroView(
-                                items: featureItems,
+                                items: featureSlides,
                                 selectedIndex: $featureIndex,
                                 overrideMeta: metaOverride,
                                 overrideContinueItem: metaOverride.flatMap { heroContinueItem(for: $0) },
@@ -5268,7 +5268,11 @@ struct TVHomeView: View {
                                 shouldRequestInitialFocus: featureRequestsInitialFocus,
                                 onInitialFocusRequested: markInitialCardFocusRequested,
                                 onSelect: { item in
-                                    onResumePlayback(item)
+                                    if item.cardKind == NSFWVisibility.toggleCardID {
+                                        NSFWVisibility.shared.showsInContinueWatching.toggle()
+                                    } else {
+                                        onResumePlayback(item)
+                                    }
                                 },
                                 onSelectOverride: { meta in
                                     navigateToDetailsFromHome(id: meta.id, type: meta.type)
@@ -5287,7 +5291,7 @@ struct TVHomeView: View {
                             .offset(y: liquidGlassRowsDrop)
                             #if os(macOS)
                             .modifier(MacRowSwipe(label: "feature", onePerSwipe: true) { delta in
-                                macSwipeSlides(&featureIndex, count: featureItems.count, by: delta)
+                                macSwipeSlides(&featureIndex, count: featureSlides.count, by: delta)
                             })
                             #endif
                         } else if let folder = focusedCollectionFolder {
@@ -5615,7 +5619,9 @@ struct TVHomeView: View {
                                                         sectionId: section.id, currentItem: meta)
                                                 },
                                                 onSelect: { meta in
-                                                    if (section.id == TVHomeSection.continueWatchingId || section.id == TVHomeSection.upcomingId),
+                                                    if meta.id == NSFWVisibility.toggleCardID {
+                                                        NSFWVisibility.shared.showsInContinueWatching.toggle()
+                                                    } else if (section.id == TVHomeSection.continueWatchingId || section.id == TVHomeSection.upcomingId),
                                                         let item = continueWatchingByMetaId[meta.id]
                                                     {
                                                         if item.isUpNextEntry && !item.hasAired && !item.isAiringToday {
@@ -5995,6 +6001,7 @@ struct TVHomeView: View {
         .onReceive(
             NotificationCenter.default.publisher(for: StreamAvailability.changedNotification)
                 .merge(with: NotificationCenter.default.publisher(for: ContinueWatchingExtras.changedNotification))
+                .merge(with: NotificationCenter.default.publisher(for: NSFWVisibility.continueWatchingChanged))
                 .receive(on: RunLoop.main)
         ) { _ in
             setContinueWatching(rawContinueWatchingItems)
@@ -6367,7 +6374,9 @@ struct TVHomeView: View {
                             onBlur: { _ in },
                             onApproachEnd: { _ in },
                             onSelect: { meta in
-                                if let item = continueWatchingByMetaId[meta.id] {
+                                if meta.id == NSFWVisibility.toggleCardID {
+                                    NSFWVisibility.shared.showsInContinueWatching.toggle()
+                                } else if let item = continueWatchingByMetaId[meta.id] {
                                     if item.isUpNextEntry && !item.hasAired && !item.isAiringToday {
                                         let cardKey = "\(section.id)\u{1}\(meta.id)"
                                         navigateToDetailsFromHome(
@@ -6988,7 +6997,7 @@ struct TVHomeView: View {
             title: L10n.string("tvos_home_upcoming", fallback: "Upcoming"),
             items: upcomingMetas
         )
-        let pinnedSections = (continueWatching.isEmpty ? [] : [resumeSection])
+        let pinnedSections = (continueWatchingMetas.isEmpty ? [] : [resumeSection])
             + (upcomingMetas.isEmpty ? [] : [upcomingSection])
             + [localTitlesSection, jellyfinSection].compactMap { $0 }
         let allSections = pinnedSections + store.sections
@@ -7030,6 +7039,7 @@ struct TVHomeView: View {
             return onLongPressCard
         }
         return { meta in
+            if meta.id == NSFWVisibility.toggleCardID { return }
             if let item = continueWatchingByMetaId[meta.id] {
                 onLongPressContinueWatching(item)
             } else {
@@ -7050,6 +7060,15 @@ struct TVHomeView: View {
     /// Titles the featured carousel cycles.
     private var featureItems: [ContinueWatchingItem] {
         Array(continueWatching.prefix(20))
+    }
+
+    /// What the carousel pages through: its titles, then the NSFW toggle
+    /// while Continue Watching holds 18+ titles. The row is hidden while the
+    /// carousel shows Continue Watching, so the toggle has to be here.
+    private var featureSlides: [ContinueWatchingItem] {
+        NSFWVisibility.shared.continueWatchingAdultCount > 0
+            ? featureItems + [NSFWVisibility.shared.toggleSlide]
+            : featureItems
     }
 
     /// The feature only stands in for the hero when it has something to show —
@@ -7564,10 +7583,14 @@ struct TVHomeView: View {
         if MacMenuState.shared.handleReturn() { return }
         guard let cardKey = macFocusedCardID else { return }
         if cardKey == MacHomeFocus.featureCardKey {
-            let slides = featureItems
+            let slides = featureSlides
             guard slides.indices.contains(featureIndex) else { return }
             let item = slides[featureIndex]
             MacDiagnostics.log("homeFocus.activate feature slide=\(featureIndex)")
+            if item.cardKind == NSFWVisibility.toggleCardID {
+                NSFWVisibility.shared.showsInContinueWatching.toggle()
+                return
+            }
             if item.isUpNextEntry && !item.hasAired && !item.isAiringToday {
                 navigateToDetailsFromHome(id: item.meta.id, type: item.meta.type)
             } else {
@@ -7600,6 +7623,10 @@ struct TVHomeView: View {
 
         guard let meta = section.items.first(where: { $0.id == itemId }) else { return }
         MacDiagnostics.log("homeFocus.activate " + cardKey)
+        if meta.id == NSFWVisibility.toggleCardID {
+            NSFWVisibility.shared.showsInContinueWatching.toggle()
+            return
+        }
 
         let isResumeRow = sectionId == TVHomeSection.continueWatchingId
             || sectionId == TVHomeSection.upcomingId
@@ -7802,7 +7829,7 @@ struct TVHomeView: View {
     }
 
     private func macPageFeature(_ direction: MoveCommandDirection) {
-        let count = featureItems.count
+        let count = featureSlides.count
         let slide = min(max(featureIndex, 0), max(count - 1, 0))
         MacDiagnostics.log("homeFocus.feature dir=\(direction) slide=\(slide) of=\(count)")
         guard count > 1 else {
@@ -8498,7 +8525,9 @@ struct TVHomeView: View {
         // episode lookup, and playback. The row cards only need presentation
         // metadata; keeping hundreds of `videos` entries in every SwiftUI card
         // value makes repeated focus/layout passes carry unnecessary payload.
+        // The NSFW toggle ends the row while it holds 18+ titles, shown or not.
         continueWatchingMetas = items.map { $0.meta.persistenceSnapshot }
+            + (NSFWVisibility.shared.continueWatchingAdultCount > 0 ? [NSFWVisibility.shared.toggleCardMeta] : [])
         upcomingItems = upcoming
         upcomingMetas = upcoming.map { $0.meta.persistenceSnapshot }
         continueWatchingByMetaId = byMetaId
@@ -10047,7 +10076,7 @@ private struct TVFeatureHeroView: View {
         }
         .overlay(alignment: .leading) { leftPagingGuard }
         .contextMenu {
-            if isCarouselMode, let activeItem {
+            if isCarouselMode, let activeItem, activeItem.cardKind != NSFWVisibility.toggleCardID {
                 Button {
                     onSelect(activeItem)
                 } label: {
@@ -10184,6 +10213,61 @@ private struct TVFeatureHeroView: View {
 
     @ViewBuilder
     private func content(_ item: ContinueWatchingItem) -> some View {
+        if item.cardKind == NSFWVisibility.toggleCardID {
+            nsfwToggleContent(item)
+        } else {
+            titleContent(item)
+        }
+    }
+
+    /// The last slide: shows or hides Continue Watching's 18+ titles.
+    private func nsfwToggleContent(_ item: ContinueWatchingItem) -> some View {
+        let showing = NSFWVisibility.shared.showsInContinueWatching
+        let accent = SettingsAccent.color(for: theme)
+        return VStack(alignment: .leading, spacing: 14) {
+            Text(L10n.string("nsfw_cw_title", fallback: "18+ titles"))
+                .font(.custom("Inter-Bold", size: 52))
+                .foregroundColor(.white)
+            Text(
+                showing
+                    ? L10n.string("nsfw_cw_showing", fallback: "Shown until you hide them or quit Omni.")
+                    : L10n.format(
+                        "nsfw_cw_hidden",
+                        fallback: "%d hidden from Continue Watching. They stay hidden each time Omni opens.",
+                        NSFWVisibility.shared.continueWatchingAdultCount
+                    )
+            )
+            .font(.custom("Inter-Regular", size: 22))
+            .foregroundColor(.white.opacity(0.80))
+            .frame(maxWidth: 860, alignment: .leading)
+            HStack(spacing: 12) {
+                Image(systemName: showing ? "eye.slash" : "eye")
+                    .font(.system(size: 21, weight: .bold))
+                Text(item.meta.name)
+                    .font(.system(size: 23, weight: .semibold))
+            }
+            .foregroundColor(isHighlighted ? .black : .white)
+            .padding(.horizontal, 30)
+            .frame(height: 58)
+            .background(Capsule().fill(isHighlighted ? Color.white : Color.white.opacity(0.16)))
+            .overlay(
+                Capsule().strokeBorder(
+                    isHighlighted ? accent : .clear,
+                    lineWidth: isHighlighted ? AppFocusOutline.width : 0
+                )
+            )
+            .scaleEffect(isHighlighted ? 1.04 : 1)
+            .animation(.easeOut(duration: 0.16), value: isHighlighted)
+            .padding(.top, 6)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+        .padding(.leading, TVLayout.rowLeading)
+        .padding(.trailing, TVLayout.rowLeading)
+        .padding(.bottom, items.count > 1 ? 54 : 28)
+    }
+
+    @ViewBuilder
+    private func titleContent(_ item: ContinueWatchingItem) -> some View {
         let meta = item.meta
         VStack(alignment: .leading, spacing: 14) {
             if let logoUrl = meta.logoUrl, !logoUrl.isEmpty {

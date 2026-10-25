@@ -59,6 +59,13 @@ struct DiscoverCatalog: Identifiable, Hashable {
     let name: String
     /// The catalog's own genres, from its add-on's manifest.
     var genreOptions: [String] = []
+    /// It answers only with one of them chosen, so there is no "All".
+    var genreRequired = false
+
+    /// Cinemeta's own rows, whose genres are Cinemeta's list.
+    var isCinemeta: Bool {
+        addonId == nil || addonId == CinemetaCatalogRepository.cinemetaAddonId
+    }
 
     var id: String { "\(addonId ?? "cinemeta")_\(type)_\(catalogId)" }
 
@@ -94,11 +101,18 @@ final class DiscoverViewModel: ObservableObject {
     /// Every catalog across every installed add-on, loaded once.
     private var allCatalogs: [AddonCatalogOption] = []
 
+    private var nsfwObserver: AnyCancellable?
+
     init(repository: CatalogRepository = CinemetaCatalogRepository()) {
         self.repository = repository
         loadGenres()
         reload()
         Task { await discoverAvailableTypes() }
+        // Search's NSFW toggle covers the Discover section inside it too.
+        nsfwObserver = NSFWVisibility.shared.$showsInSearch
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.applyCatalogs() }
     }
 
     /// Builds the type and catalog lists from the installed add-ons' manifests.
@@ -106,16 +120,34 @@ final class DiscoverViewModel: ObservableObject {
         let options = await repository.availableAddonCatalogs()
         guard !options.isEmpty else { return }
         allCatalogs = options
-        availableTypes = DiscoverType.ordered(options.map(\.type))
+        applyCatalogs()
+    }
+
+    /// The catalogs on offer: without 18+ add-ons' and catalogs while
+    /// Search's NSFW toggle is off.
+    private var visibleCatalogs: [AddonCatalogOption] {
+        guard !NSFWVisibility.shared.showsInSearch else { return allCatalogs }
+        return allCatalogs.filter {
+            !AdultContent.shared.isAdultCatalog(addonId: $0.addonId, type: $0.type, catalogId: $0.catalogId)
+        }
+    }
+
+    private func applyCatalogs() {
+        guard !allCatalogs.isEmpty else { return }
+        availableTypes = DiscoverType.ordered(visibleCatalogs.map(\.type))
         if !availableTypes.contains(type), let first = availableTypes.first {
             type = first
+            genre = nil
+            catalog = nil
             loadGenres()
+            refreshCatalogsForType(reloadItems: true)
+            return
         }
         refreshCatalogsForType(reloadItems: catalog == nil)
     }
 
     private func refreshCatalogsForType(reloadItems: Bool) {
-        catalogs = allCatalogs
+        catalogs = visibleCatalogs
             .filter { $0.type == type.rawValue }
             .map {
                 DiscoverCatalog(
@@ -124,7 +156,8 @@ final class DiscoverViewModel: ObservableObject {
                     type: $0.type,
                     catalogId: $0.catalogId,
                     name: $0.catalogName,
-                    genreOptions: $0.genreOptions
+                    genreOptions: $0.genreOptions,
+                    genreRequired: $0.genreRequired
                 )
             }
         if let current = catalog, catalogs.contains(current) { return }
@@ -133,7 +166,12 @@ final class DiscoverViewModel: ObservableObject {
         if reloadItems, catalog != nil { reload() }
     }
 
+    /// The type last picked by hand, which a search then starts within.
+    /// Nil until one is: the default Movies must not narrow every search.
+    static var chosenType: String?
+
     func setType(_ newType: DiscoverType) {
+        Self.chosenType = newType.rawValue
         guard type != newType else { return }
         type = newType
         genre = nil
@@ -151,7 +189,18 @@ final class DiscoverViewModel: ObservableObject {
         reload()
     }
 
+    /// "All Genres" is offered unless the catalog needs one chosen.
+    var allowsAllGenres: Bool { !(catalog?.genreRequired ?? false) }
+
+    /// A catalog's name, with its add-on's only when another catalog of the
+    /// type has the same name: "Theme", not "Theme · TPB 4K Porn - TorBox…".
+    func title(of catalog: DiscoverCatalog) -> String {
+        let shared = catalogs.filter { $0.name == catalog.name }.count > 1
+        return shared ? catalog.title : catalog.name
+    }
+
     func setGenre(_ newGenre: String?) {
+        guard newGenre != nil || allowsAllGenres else { return }
         guard genre != newGenre else { return }
         genre = newGenre
         reload()
@@ -223,14 +272,31 @@ final class DiscoverViewModel: ObservableObject {
     /// The selected catalog's own genres when its add-on declares them (an
     /// adult add-on's categories, a sports add-on's leagues); otherwise the
     /// general list for the type.
+    /// The genres follow the catalog: its own, from its add-on's manifest;
+    /// Cinemeta's list only for Cinemeta's catalogs; otherwise none, and the
+    /// Genre filter goes. Film genres used to show for Porn, Tube and Live
+    /// catalogs, where they matched nothing. A catalog that needs a genre
+    /// starts on its first.
     private func loadGenres() {
         if let declared = catalog?.genreOptions, !declared.isEmpty {
             genres = declared
+            if catalog?.genreRequired == true, genre == nil || !declared.contains(genre!) {
+                genre = declared.first
+            }
             return
         }
+        guard catalog?.isCinemeta ?? true else {
+            genres = []
+            return
+        }
+        let forType = type
+        let forCatalog = catalog
         Task {
-            let loaded = (try? await repository.getGenres(contentType: type.rawValue)) ?? []
-            if !Task.isCancelled { genres = loaded }
+            let loaded = (try? await repository.getGenres(contentType: forType.rawValue)) ?? []
+            // Only if the selection is still the one asked about: switching
+            // to an add-on's catalog meanwhile must not get Cinemeta's list.
+            guard !Task.isCancelled, type == forType, catalog == forCatalog else { return }
+            genres = loaded
         }
     }
 }

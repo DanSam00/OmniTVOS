@@ -15,6 +15,8 @@ enum SearchFocusBand {
     /// Cached searches matching what is being typed, under the field.
     static let suggestions = "suggestions"
     static let field = "field"
+    /// The 18+ chip in the filters band.
+    static let nsfw = "nsfw"
     static let filters = "filters"
     static let results = "results"
 }
@@ -67,6 +69,10 @@ struct SearchView: View {
     @State private var discoverOverlayTransitionActive = false
     @Environment(\.isEnabled) private var isEnabled
     @State private var searchTextInputActive = false
+    @ObservedObject private var nsfw = NSFWVisibility.shared
+    /// Bumped to make the hidden field take the caret again even when
+    /// `searchTextInputActive` is already true (see `macActivate`).
+    @State private var caretRequest = 0
     #if os(macOS)
     /// Discover's own rows, handed up by the section — see
     /// `MacFocusContribution`.
@@ -117,7 +123,8 @@ struct SearchView: View {
         }
         bands.append(MacFocusBand(
             id: SearchFocusBand.filters,
-            items: SearchContentType.allCases.map(\.rawValue)
+            items: SearchContentType.visibleCases.map(\.rawValue)
+                + (AdultContent.shared.hasAdultSources ? [SearchFocusBand.nsfw] : [])
         ))
         bands.append(MacFocusBand(
             id: SearchFocusBand.results,
@@ -137,8 +144,17 @@ struct SearchView: View {
             // very thing the caret sync above documents avoiding. So pressing
             // Return on the field was the one action that stopped it accepting
             // typing: the log shows three activates on band=field and no text.
+            //
+            // The field can also lose the caret while this stays true (after
+            // a Discover filter panel, say), and setting true again changed
+            // nothing, so Return did nothing. The request makes it ask again.
             searchTextInputActive = true
+            caretRequest += 1
         case SearchFocusBand.filters:
+            if item == SearchFocusBand.nsfw {
+                nsfw.showsInSearch.toggle()
+                return
+            }
             guard let type = SearchContentType(rawValue: item) else { return }
             viewModel.setType(type)
         case SearchFocusBand.suggestions:
@@ -242,6 +258,8 @@ struct SearchView: View {
         }
         .onChange(of: visibleResults.map(\.id)) { _, _ in macFocus.update(macBands) }
         .onChange(of: viewModel.hasQuery) { _, _ in macFocus.update(macBands) }
+        // 18+ adds or drops the Adult filter.
+        .onChange(of: nsfw.showsInSearch) { _, _ in macFocus.update(macBands) }
         .onChange(of: viewModel.recentSearches) { _, _ in macFocus.update(macBands) }
         .onReceive(keyRouter.presses.map(Optional.some)) { press in
             guard let press else { return }
@@ -412,14 +430,22 @@ struct SearchView: View {
             HiddenSearchTextField(
                 text: $viewModel.searchText,
                 isEditing: $searchTextInputActive,
+                caretRequest: caretRequest
             )
             .frame(width: 1, height: 1)
             .offset(x: -4_000)
             .allowsHitTesting(false)
 
             Button {
+                #if os(macOS)
+                // Not `searchBarFocused`: on the Mac that hands the caret to
+                // the capsule's hidden proxy, so a click left the field dead.
+                searchTextInputActive = true
+                caretRequest += 1
+                #else
                 searchBarFocused = true
                 searchTextInputActive = true
+                #endif
             } label: {
                 Color.clear
                     .frame(maxWidth: .infinity, minHeight: 72)
@@ -480,13 +506,25 @@ struct SearchView: View {
 
     private var typeFilter: some View {
         HStack(spacing: 16) {
-            ForEach(SearchContentType.allCases) { type in
+            ForEach(SearchContentType.visibleCases) { type in
                 GlassChip(
                     title: type.title,
                     isSelected: viewModel.selectedType == type,
                     macIsFocused: macIsFocused(SearchFocusBand.filters, type.rawValue)
                 ) {
                     viewModel.setType(type)
+                }
+            }
+
+            // 18+ results only while this is on; off at every launch.
+            if AdultContent.shared.hasAdultSources {
+                GlassChip(
+                    title: "18+",
+                    isSelected: nsfw.showsInSearch,
+                    leadingSystemImage: nsfw.showsInSearch ? "eye" : "eye.slash",
+                    macIsFocused: macIsFocused(SearchFocusBand.filters, SearchFocusBand.nsfw)
+                ) {
+                    nsfw.showsInSearch.toggle()
                 }
             }
 
@@ -707,6 +745,8 @@ struct SearchView: View {
 struct HiddenSearchTextField: NSViewRepresentable {
     @Binding var text: String
     @Binding var isEditing: Bool
+    /// A new value re-asks for the caret while `isEditing` is already true.
+    var caretRequest = 0
 
     func makeNSView(context: Context) -> NSTextField {
         let textField = NSTextField(frame: .zero)
@@ -723,7 +763,8 @@ struct HiddenSearchTextField: NSViewRepresentable {
         if nsView.stringValue != text {
             nsView.stringValue = text
         }
-        context.coordinator.apply(isEditing: isEditing, to: nsView)
+        let requested = context.coordinator.takeRequest(caretRequest)
+        context.coordinator.apply(isEditing: isEditing, to: nsView, log: requested)
     }
 
     func makeCoordinator() -> Coordinator {
@@ -740,6 +781,15 @@ struct HiddenSearchTextField: NSViewRepresentable {
             self.isEditing = isEditing
         }
 
+        private var lastRequest = 0
+
+        /// Whether `request` is new since the last update.
+        func takeRequest(_ request: Int) -> Bool {
+            guard request != lastRequest else { return false }
+            lastRequest = request
+            return true
+        }
+
         private func holdsCaret(_ field: NSTextField) -> Bool {
             guard let responder = field.window?.firstResponder else { return false }
             return responder === field || responder === field.currentEditor()
@@ -752,22 +802,33 @@ struct HiddenSearchTextField: NSViewRepresentable {
         /// the floor, and nothing calls back to try again because `isEditing`
         /// has not changed. So keep asking until it takes.
         @MainActor
-        func apply(isEditing: Bool, to field: NSTextField) {
+        func apply(isEditing: Bool, to field: NSTextField, log: Bool = false) {
             caretTask?.cancel()
             caretTask = nil
             guard isEditing else {
                 if holdsCaret(field) { field.window?.makeFirstResponder(nil) }
                 return
             }
-            guard !holdsCaret(field) else { return }
+            guard !holdsCaret(field) else {
+                if log { MacDiagnostics.log("search.caret held") }
+                return
+            }
+            let before = field.window?.firstResponder.map { String(describing: type(of: $0)) } ?? "none"
             caretTask = Task { @MainActor [weak field] in
                 for _ in 0..<30 {
                     guard let field, !Task.isCancelled else { return }
                     if let window = field.window {
                         window.makeFirstResponder(field)
-                        if self.holdsCaret(field) { return }
+                        if self.holdsCaret(field) {
+                            if log { MacDiagnostics.log("search.caret taken from=\(before)") }
+                            return
+                        }
                     }
                     try? await Task.sleep(nanoseconds: 50_000_000)
+                }
+                if log {
+                    let now = field?.window?.firstResponder.map { String(describing: type(of: $0)) } ?? "none"
+                    MacDiagnostics.log("search.caret failed responder=\(now) inWindow=\(field?.window != nil)")
                 }
             }
         }
@@ -793,6 +854,8 @@ struct HiddenSearchTextField: NSViewRepresentable {
 struct HiddenSearchTextField: UIViewRepresentable {
     @Binding var text: String
     @Binding var isEditing: Bool
+    /// The Mac's caret re-request; the focus engine needs none here.
+    var caretRequest = 0
 
     func makeUIView(context: Context) -> HiddenSearchUITextField {
         let textField = HiddenSearchUITextField(frame: .zero)
