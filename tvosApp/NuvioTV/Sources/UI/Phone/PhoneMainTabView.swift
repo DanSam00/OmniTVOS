@@ -819,8 +819,14 @@ struct PhoneNestedTabBar: View {
             ),
             isCollapsed: !isExpanded,
             onExpand: { withAnimation(PhoneTabBarState.motion) { isExpanded = true } },
-            onScrollToTop: { state.scrollToTop() },
+            onScrollToTop: {
+                guard state.nestedPageActive else { return }
+                state.scrollToTop()
+            },
             showsScrollToTop: !isExpanded && state.nestedScrolledFar
         )
+        // Only while a nested page is up: on the way back this bar is still
+        // drawn for a moment over the tab's own, and must not take its taps.
+        .allowsHitTesting(state.nestedPageActive)
     }
 }

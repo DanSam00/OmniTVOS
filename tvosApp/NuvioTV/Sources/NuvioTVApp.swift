@@ -953,6 +953,14 @@ struct ContentView: View {
     /// Backs out of Details to the title it was opened from (a "More like this"
     /// chain), or to the screen that opened the root Details.
     private func leaveDetails() {
+        #if os(iOS)
+        // Clear now rather than once the page has faded: the tab's own bar
+        // and its back-to-top arrow are live again from this moment.
+        if detailsBackStack.isEmpty, case .main = detailsReturnDestination {
+            PhoneTabBarState.shared.nestedPageActive = false
+            PhoneTabBarState.shared.nestedScrolledFar = false
+        }
+        #endif
         TVHomeDebugTrace.log(
             "details.leave backStackRemaining=\(detailsBackStack.count) returnDest=\(detailsReturnDestination)"
         )
@@ -1772,7 +1780,10 @@ struct ContentView: View {
                 PhoneNestedTabBar(onSelect: chooseTabOverNestedPage)
                     .id(nestedPageKey)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                    .transition(.opacity)
+                    // Gone at once on the way back, not faded: it sat over the
+                    // tab's own bar for the fade, so a tap on that bar's
+                    // back-to-top arrow reached this one instead.
+                    .transition(.asymmetric(insertion: .opacity, removal: .identity))
                     .zIndex(10)
             }
             #endif
