@@ -1234,7 +1234,8 @@ final class CinemetaCatalogRepository: CatalogRepository {
         async let people = TmdbDetailsService.searchPeopleTitles(query: query)
         let results = try await movies + series
         let localized = await TmdbDetailsService.localizedMetadata(for: results)
-        let channels = await live + addonTypes
+        let addonFound = await addonTypes
+        let channels = await live + addonFound
         // A person's title Cinemeta already found stays as Cinemeta's entry.
         let known = Set(localized.map { "\(SearchRanking.normalized($0.name))|\($0.year ?? 0)" })
         let byPeople = await people.filter {
@@ -1242,10 +1243,16 @@ final class CinemetaCatalogRepository: CatalogRepository {
         }
         cacheMetadata(localized)
         cacheMetadata(channels)
+        #if os(macOS)
+        MacDiagnostics.log("search.results cinemeta=\(localized.count) live+addons=\(channels.count) people=\(byPeople.count)")
+        #endif
+        // The add-on matched these itself, often on a performer its titles
+        // do not name, so they rank like a person's titles: after those
+        // naming the query, before Cinemeta's loose matches.
         return SearchRanking.rank(
             localized + channels + byPeople,
             query: query,
-            peopleTitleIDs: Set(byPeople.map(\.id))
+            peopleTitleIDs: Set(byPeople.map(\.id)).union(addonFound.map(\.id))
         )
     }
 
@@ -1319,6 +1326,11 @@ final class CinemetaCatalogRepository: CatalogRepository {
     /// a type of its own (not films, series or live TV, which have their own
     /// paths above). The add-on decides what matches: a performer, a title, a
     /// tag.
+    ///
+    /// Each add-on gets its own share: its search-only catalog when it has one
+    /// (TPB's "Search" covers every performer, listed as a category or not),
+    /// else up to four of its searchable ones. A cap on the total let the
+    /// sports add-on's dozen catalogs crowd out every add-on after it.
     private func searchAddonCatalogs(query: String) async -> [NuvioMeta] {
         struct Target { let base: URL; let type: String; let id: String }
         var targets: [Target] = []
@@ -1329,20 +1341,27 @@ final class CinemetaCatalogRepository: CatalogRepository {
                   manifest.id != Self.cinemetaAddonId,
                   seenAddonIds.insert(manifest.id).inserted else { continue }
             let base = manifestURL.deletingLastPathComponent()
-            for catalog in manifest.catalogs ?? [] where catalog.declaresSearch {
+            let searchable = (manifest.catalogs ?? []).filter { catalog in
                 let type = catalog.type.lowercased()
-                guard !["movie", "series"].contains(type), !Self.isLiveSearchType(type) else { continue }
+                return catalog.declaresSearch && !["movie", "series"].contains(type) && !Self.isLiveSearchType(type)
+            }
+            let searchOnly = searchable.filter(\.requiresSearch)
+            for catalog in (searchOnly.isEmpty ? searchable : searchOnly).prefix(4) {
                 targets.append(Target(base: base, type: catalog.type, id: catalog.id))
             }
         }
         guard !targets.isEmpty else { return [] }
         let found: [[NuvioMeta]] = await withTaskGroup(of: [NuvioMeta].self) { group in
-            for target in targets.prefix(12) {
+            for target in targets.prefix(24) {
                 group.addTask {
-                    (try? await self.fetchCatalog(
+                    let found = (try? await self.fetchCatalog(
                         sourceBaseURL: target.base, type: target.type, catalogId: target.id,
                         skip: nil, search: query, genre: nil
                     )) ?? []
+                    #if os(macOS)
+                    MacDiagnostics.log("search.addon \(target.type)/\(target.id) found=\(found.count)")
+                    #endif
+                    return found
                 }
             }
             var all: [[NuvioMeta]] = []
@@ -1811,6 +1830,9 @@ private struct AddonManifestCatalog: Decodable {
     var genreOptions: [String] {
         extra?.first { $0.name.lowercased() == "genre" }?.options ?? []
     }
+
+    /// A catalog that only answers searches.
+    var requiresSearch: Bool { requiredExtraNames.contains("search") }
 
     /// First declared genre option, used to satisfy a required-genre catalog.
     var firstGenreOption: String? {

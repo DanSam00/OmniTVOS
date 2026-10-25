@@ -922,6 +922,9 @@ private final class IPTVChunkedDownload: NSObject, URLSessionDataDelegate, @unch
     private var lastReport = Date.distantPast
     private var continuation: CheckedContinuation<Data, Error>?
     private var failure: Error?
+    /// Guards `cancelled` between the cancel handler and the task's start.
+    private let lock = NSLock()
+    private var cancelled = false
 
     init(stage: String, progress: @escaping IPTVProgressHandler) {
         self.stage = stage
@@ -934,14 +937,28 @@ private final class IPTVChunkedDownload: NSObject, URLSessionDataDelegate, @unch
         configuration.timeoutIntervalForRequest = 60
         configuration.timeoutIntervalForResource = 15 * 60
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        try Task.checkCancellation()
         let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
+        // A search typed on cancels the last one at once, so the cancel
+        // handler can run before the task starts. It used to invalidate the
+        // session first, and starting a task on it then threw
+        // ("Task created in a session that has been invalidated").
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
+                lock.lock()
+                defer { lock.unlock() }
+                guard !cancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
                 self.continuation = continuation
                 session.dataTask(with: request).resume()
             }
         } onCancel: {
+            lock.lock()
+            cancelled = true
+            lock.unlock()
             session.invalidateAndCancel()
         }
     }
