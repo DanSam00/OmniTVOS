@@ -878,8 +878,7 @@ final class CinemetaCatalogRepository: CatalogRepository {
     /// Best-effort TMDB external_ids lookup so More Like This / production
     /// browse cards that only have `tmdb:` ids can still open in Cinemeta.
     private static func resolveImdbFromTmdb(tmdbId: Int, type: String) async -> String? {
-        let apiKey = ProfileSettings.current.string(forKey: SettingsKey.tmdbApiKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let apiKey = TmdbAccountKey.key() ?? ""
         // A TMDB-backed collection is an explicit source choice, independent
         // of whether optional Details enrichment is enabled.
         guard !apiKey.isEmpty else { return nil }

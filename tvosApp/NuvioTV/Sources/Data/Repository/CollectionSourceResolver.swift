@@ -120,6 +120,9 @@ struct CollectionSourceResolver {
     var folderTitle: String? = nil
     var session: URLSession = .shared
     var settings: UserDefaults = ProfileSettings.current
+    /// The TMDB key the last request used, so a rejected one is not retried.
+    private let lastTmdbKey = Box()
+    private final class Box: @unchecked Sendable { var value: String? }
 
     func browse(_ source: NuvioCollectionSource, cursor: Int = 0) async throws -> CatalogPage {
         do {
@@ -164,7 +167,14 @@ struct CollectionSourceResolver {
                 return AIOMetadataFallback.filtered(page, for: source)
             }
         case "tmdb":
-            return try await browseTmdb(source, page: max(cursor, 1))
+            do {
+                return try await browseTmdb(source, page: max(cursor, 1))
+            } catch CollectionSourceError.tmdbKeyRejected {
+                // That key is now known bad; another profile's may work.
+                let next = TmdbAccountKey.key(in: settings)
+                guard next != nil, next != lastTmdbKey.value else { throw CollectionSourceError.tmdbKeyRejected }
+                return try await browseTmdb(source, page: max(cursor, 1))
+            }
         case "trakt":
             return try await browseTrakt(source, page: max(cursor, 1))
         case "mdblist":
@@ -198,9 +208,10 @@ struct CollectionSourceResolver {
     // MARK: - TMDB
 
     private func browseTmdb(_ source: NuvioCollectionSource, page: Int) async throws -> CatalogPage {
-        guard let apiKey = nonEmpty(settings.string(forKey: SettingsKey.tmdbApiKey)) else {
+        guard let apiKey = TmdbAccountKey.key(in: settings) else {
             throw CollectionSourceError.missingTmdbAPIKey
         }
+        lastTmdbKey.value = apiKey
 
         let sourceType = (nonEmpty(source.tmdbSourceType) ?? "DISCOVER").uppercased()
         let language = TmdbDetailsService.preferredLanguage
@@ -613,7 +624,7 @@ struct CollectionSourceResolver {
         let response: MdbListItemsResponse = try await request(url, provider: "MDBList", headers: ["User-Agent": "Omni"])
         let entries = ((response.movies ?? []) + (response.shows ?? [])).sorted { ($0.rank ?? .max) < ($1.rank ?? .max) }
 
-        let tmdbKey = nonEmpty(settings.string(forKey: SettingsKey.tmdbApiKey))
+        let tmdbKey = TmdbAccountKey.key(in: settings)
         let language = TmdbDetailsService.preferredLanguage
         var details = [Int: TmdbCollectionItem]()
         if let tmdbKey {
@@ -707,6 +718,7 @@ struct CollectionSourceResolver {
         }
         guard 200..<300 ~= http.statusCode else {
             if provider == "TMDB", http.statusCode == 401 {
+                if let key = TmdbAccountKey.key(in: url) { TmdbAccountKey.markRejected(key) }
                 throw CollectionSourceError.tmdbKeyRejected
             }
             throw CollectionSourceError.requestFailed(provider, http.statusCode)

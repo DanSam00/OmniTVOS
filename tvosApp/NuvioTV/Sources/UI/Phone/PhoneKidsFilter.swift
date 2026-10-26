@@ -126,8 +126,7 @@ actor KidsRatingCache {
     /// The US certification; `unratedForKids` or "" for a title without
     /// one, by its genres; nil when TMDB couldn't be asked (no key, offline).
     private static func fetchRating(for meta: NuvioMeta) async -> String? {
-        let key = ProfileSettings.current.string(forKey: SettingsKey.tmdbApiKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let key = TmdbAccountKey.key() ?? ""
         guard !key.isEmpty, let resolved = await TmdbDetailsService.resolveTmdbId(for: meta) else { return nil }
         let isTV = resolved.mediaType == "tv"
         let path = isTV
@@ -182,18 +181,36 @@ extension RelatedTitle {
 }
 
 /// Hands `content` the list a Kids profile may see (the list itself
-/// otherwise), filtering in the background as the list changes.
+/// otherwise), filtering in the background as the list changes. While a
+/// longer list (another page) is checked, the titles already allowed stay.
 struct PhoneKidsFiltered<Content: View>: View {
     let items: [NuvioMeta]
-    @ViewBuilder let content: ([NuvioMeta]) -> Content
+    /// The allowed titles, and whether some are still being checked.
+    let content: ([NuvioMeta], Bool) -> Content
 
     @State private var filtered: [NuvioMeta]?
     @State private var filteredIDs: [String] = []
 
+    init(items: [NuvioMeta], @ViewBuilder content: @escaping ([NuvioMeta]) -> Content) {
+        self.items = items
+        self.content = { visible, _ in content(visible) }
+    }
+
+    init(items: [NuvioMeta], @ViewBuilder checking content: @escaping ([NuvioMeta], Bool) -> Content) {
+        self.items = items
+        self.content = content
+    }
+
     var body: some View {
         let ids = items.map(\.id)
         let isKids = PhoneKidsMode.isActive
-        content(isKids ? (filteredIDs == ids ? filtered ?? [] : []) : items)
+        let isDone = filteredIDs == ids
+        let kept: [NuvioMeta] = {
+            guard !isDone else { return filtered ?? [] }
+            let current = Set(ids)
+            return (filtered ?? []).filter { current.contains($0.id) }
+        }()
+        content(isKids ? kept : items, isKids && !isDone)
             .task(id: isKids ? ids : []) {
                 guard isKids else { return }
                 let result = await KidsContentFilter.filterIfNeeded(items)

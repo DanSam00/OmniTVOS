@@ -28,16 +28,45 @@ struct PhoneDiscoverSection: View {
                     .frame(maxWidth: .infinity)
                     .padding(.top, 40)
             } else {
-                LazyVGrid(columns: columns, spacing: 16) {
-                    ForEach(viewModel.items.uniquedByID(), id: \.id) { meta in
-                        Button { onSelect(meta) } label: {
-                            PhoneFlexiblePoster(meta: meta)
+                // A kids profile sees only what the kids filter allows; when
+                // that leaves a page short, the next one is fetched.
+                PhoneKidsFiltered(items: viewModel.items) { visible, checking in
+                    let shown = visible.uniquedByID()
+                    if shown.isEmpty {
+                        VStack(spacing: 10) {
+                            if checking || viewModel.isLoadingMore {
+                                ProgressView()
+                            } else {
+                                Text("Nothing for a kids profile in this catalog.")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
-                        .buttonStyle(.plain)
-                        .onAppear { viewModel.loadMoreIfNeeded(currentItem: meta) }
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 40)
+                        .task(id: "\(viewModel.items.count)-\(checking)") {
+                            guard !checking, let last = viewModel.items.last else { return }
+                            viewModel.loadMoreIfNeeded(currentItem: last)
+                        }
+                    } else {
+                        LazyVGrid(columns: columns, spacing: 16) {
+                            ForEach(shown, id: \.id) { meta in
+                                Button { onSelect(meta) } label: {
+                                    PhoneFlexiblePoster(meta: meta)
+                                }
+                                .buttonStyle(.plain)
+                                .onAppear {
+                                    if shown.suffix(4).contains(where: { $0.id == meta.id }), let last = viewModel.items.last {
+                                        viewModel.loadMoreIfNeeded(currentItem: last)
+                                    } else {
+                                        viewModel.loadMoreIfNeeded(currentItem: meta)
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.horizontal, PhoneLayout.gutter)
                     }
                 }
-                .padding(.horizontal, PhoneLayout.gutter)
 
                 if viewModel.isLoadingMore {
                     ProgressView().frame(maxWidth: .infinity).padding()
@@ -109,8 +138,9 @@ struct PhoneDiscoverSection: View {
                     }
                 }
 
-                // Search's NSFW toggle, which Discover follows.
-                if AdultContent.shared.hasAdultSources {
+                // Search's NSFW toggle, which Discover follows; never on a
+                // kids profile.
+                if AdultContent.shared.hasAdultSources, !PhoneKidsMode.isActive {
                     chip("18+", isOn: nsfw.showsInSearch, onColor: .red) { nsfw.showsInSearch.toggle() }
                 }
             }

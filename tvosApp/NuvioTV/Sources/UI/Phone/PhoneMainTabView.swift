@@ -92,7 +92,9 @@ struct PhoneMainTabView: View {
             Color.clear
                 .frame(width: 0, height: 0)
                 .task(id: activeProfile?.id) {
-                    // Picked in Add Profile, else a kids profile's starter pair.
+                    // Picked in Add Profile, else a kids profile's starter set.
+                    // A kids profile never starts with 18+ switched on.
+                    if PhoneKidsMode.isActive { NSFWVisibility.shared.showsInSearch = false }
                     await CommunityCollections.installPendingIfNeeded()
                     guard PhoneKidsMode.isActive else { return }
                     await CommunityCollections.seedKidsProfileIfNeeded()
@@ -658,7 +660,7 @@ struct PhoneSearchView: View {
                                     viewModel.setType(type)
                                 }
                             }
-                            if AdultContent.shared.hasAdultSources {
+                            if AdultContent.shared.hasAdultSources, !PhoneKidsMode.isActive {
                                 PhoneFilterChip(title: "18+", isOn: nsfw.showsInSearch, onColor: .red) {
                                     nsfw.showsInSearch.toggle()
                                 }

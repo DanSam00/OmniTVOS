@@ -139,8 +139,14 @@ struct PhoneCommunityCollectionsSheet: View {
         defer { adding = nil }
         do {
             var rows = try await CommunityCollections.collections(for: item)
-            // A kids profile gets only the children's part of a big library.
-            if forKids { rows = CommunityCollections.forKids(rows) }
+            // A kids profile gets all of an entry made for children (less
+            // anything never for them), and only the children's part of a
+            // big library.
+            if forKids {
+                rows = CommunityCollections.forKids(
+                    rows, madeForKids: CommunityCollections.entryIsMadeForKids(title: item.title, tags: item.tags)
+                )
+            }
             onAdd(rows, item.title)
             added.insert(item.id)
             await CommunityCollections.recordInstall(item)

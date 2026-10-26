@@ -187,12 +187,15 @@ enum CommunityCollections {
     /// TMDB networks: Nickelodeon, Nick Jr., Nicktoons, Disney Channel,
     /// Disney Junior, Disney XD, Cartoon Network, Boomerang.
     private static let kidNetworkIDs: Set<String> = ["13", "35", "224", "54", "281", "44", "56", "523"]
-    /// A folder named for any of these is never a children's one, whatever
-    /// else it matches ("Child's Play" is a Chucky film).
+    /// A row or folder named for any of these is never a children's one,
+    /// whatever else it matches ("Child's Play" is a Chucky film). Anime,
+    /// awards and grown-up moods are general libraries, not children's.
     static let kidBlockedWords = adultWords + [
         "reality", "dating", "chucky", "child s play", "thriller", "thrillers", "crime", "killer", "killers",
         "murder", "murders", "war", "zombie", "zombies", "romance", "romantic", "drama", "dramas",
         "tearjerkers", "noir", "gangster", "gangsters", "mafia",
+        "anime", "shonen", "seinen", "isekai", "award", "awards", "oscar", "oscars", "golden globes",
+        "feel good",
     ]
     /// TMDB genres no children's folder is built from: Horror, Thriller,
     /// Crime, War, Reality, Romance, Talk, War & Politics.
@@ -285,6 +288,7 @@ enum CommunityCollections {
         collections.compactMap { collection in
             let folders = collection["folders"] as? [[String: Any]] ?? []
             let name = [collection["title"] as? String, collection["name"] as? String].compactMap { $0 }.joined(separator: " ")
+            guard !mentions(kidBlockedWords, in: name) else { return nil }
             let madeForKids = entryForKids || (mentions(kidWords, in: name) && !mentions(adultWords, in: name))
             let kept = madeForKids
                 ? folders.filter { !folderIsBlockedForKids(title: $0["title"] as? String ?? "", sources: rawSources($0)) }
@@ -300,6 +304,7 @@ enum CommunityCollections {
     /// added before these rules, less the folders never for children.
     static func forKidsDisplay(_ collections: [NuvioCollection]) -> [NuvioCollection] {
         collections.compactMap { collection in
+            guard !mentions(kidBlockedWords, in: collection.title) else { return nil }
             var trimmed = collection
             trimmed.folders = collection.folders.filter {
                 !folderIsBlockedForKids(title: $0.title, sources: $0.sources.map(traits(of:)))
@@ -317,13 +322,21 @@ enum CommunityCollections {
         var rows = try await collections(for: item)
         if forKids { rows = Self.forKids(rows, madeForKids: entryIsMadeForKids(title: item.title, tags: item.tags)) }
         guard !rows.isEmpty else { return 0 }
+        // Adding an entry again brings its rows up to date in place, rather
+        // than keeping copies saved before.
         var current = CollectionsStore.rawCollections()
-        let existing = Set(current.compactMap { $0["id"] as? String })
-        let fresh = rows.filter { ($0["id"] as? String).map { !existing.contains($0) } ?? true }
+        var fresh: [[String: Any]] = []
+        for row in rows {
+            if let id = row["id"] as? String, let index = current.firstIndex(where: { ($0["id"] as? String) == id }) {
+                current[index] = row
+            } else {
+                fresh.append(row)
+            }
+        }
         current += fresh
         CollectionsStore.saveLocalEdit(current)
         await recordInstall(item)
-        return fresh.count
+        return rows.count
     }
 
     // MARK: Chosen at profile creation
@@ -420,9 +433,12 @@ enum CommunityCollections {
         store.set(false, forKey: kidsSeedPendingKey)
         guard !added.isEmpty else { return 0 }
         var current = CollectionsStore.rawCollections()
-        let existing = Set(current.compactMap { $0["id"] as? String })
-        current += added.filter { ($0["id"] as? String).map { !existing.contains($0) } ?? true }
+        // Entries can share a row id; the first one's row is kept, as two
+        // rows with one id break Home.
+        var seen = Set(current.compactMap { $0["id"] as? String })
+        let fresh = added.filter { ($0["id"] as? String).map { seen.insert($0).inserted } ?? true }
+        current += fresh
         CollectionsStore.saveLocalEdit(current)
-        return added.count
+        return fresh.count
     }
 }

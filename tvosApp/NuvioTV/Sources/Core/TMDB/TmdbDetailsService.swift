@@ -1,4 +1,55 @@
 import Foundation
+import CryptoKit
+
+/// The TMDB key to use, treated as the account's rather than one profile's:
+/// this profile's own key, unless it is missing or TMDB has turned it down,
+/// then a working key from another profile on this account. A new profile
+/// copies the primary's keys once; when that one has gone stale, the
+/// profile still loads instead of asking for a key the account already has.
+enum TmdbAccountKey {
+    /// Keys TMDB answered 401 for, kept only as short hashes.
+    private static let rejectedKey = "omni.tmdb.rejectedKeyHashes"
+    private static let lock = NSLock()
+
+    static func key(in store: UserDefaults = ProfileSettings.current) -> String? {
+        let own = clean(store.string(forKey: SettingsKey.tmdbApiKey))
+        if let own, !isRejected(own) { return own }
+        let others = ((1...12).map(String.init) + ["default"])
+            .map { ProfileSettings.store(for: $0) }
+            .filter { $0 !== store }
+            .compactMap { clean($0.string(forKey: SettingsKey.tmdbApiKey)) }
+        return others.first { !isRejected($0) } ?? own
+    }
+
+    /// Called when TMDB answers 401 for this key.
+    static func markRejected(_ key: String) {
+        guard let key = clean(key) else { return }
+        lock.lock(); defer { lock.unlock() }
+        var hashes = Set(UserDefaults.standard.stringArray(forKey: rejectedKey) ?? [])
+        guard hashes.insert(hash(key)).inserted else { return }
+        UserDefaults.standard.set(Array(hashes), forKey: rejectedKey)
+    }
+
+    /// The api_key a TMDB request was made with, for `markRejected`.
+    static func key(in url: URL?) -> String? {
+        url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?
+            .queryItems?.first { $0.name == "api_key" }?.value
+    }
+
+    private static func isRejected(_ key: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return (UserDefaults.standard.stringArray(forKey: rejectedKey) ?? []).contains(hash(key))
+    }
+
+    private static func hash(_ key: String) -> String {
+        SHA256.hash(data: Data(key.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func clean(_ value: String?) -> String? {
+        let value = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? nil : value
+    }
+}
 
 /// Production company / network shown on the details Production row.
 struct MetaCompany: Identifiable, Equatable, Hashable {
@@ -171,14 +222,14 @@ enum TmdbDetailsService {
     private static func data(for url: URL, timeout: TimeInterval = 10) async throws -> (Data, URLResponse) {
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
-        return try await URLSession.shared.data(for: request)
+        let result = try await URLSession.shared.data(for: request)
+        if (result.1 as? HTTPURLResponse)?.statusCode == 401, let key = TmdbAccountKey.key(in: url) {
+            TmdbAccountKey.markRejected(key)
+        }
+        return result
     }
 
-    private static var apiKey: String? {
-        let key = ProfileSettings.current.string(forKey: SettingsKey.tmdbApiKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return key.isEmpty ? nil : key
-    }
+    private static var apiKey: String? { TmdbAccountKey.key() }
 
     private static var isEnabled: Bool {
         (ProfileSettings.current.object(forKey: SettingsKey.tmdbEnabled) as? Bool) ?? false
