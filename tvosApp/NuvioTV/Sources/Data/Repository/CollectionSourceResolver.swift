@@ -10,6 +10,8 @@ enum CollectionSourceError: LocalizedError {
     case unsupportedProvider(String)
     case requestFailed(String, Int)
     case invalidResponse(String)
+    /// The folder names an add-on this profile does not have installed.
+    case addonNotInstalled(addonId: String)
 
     var errorDescription: String? {
         switch self {
@@ -31,7 +33,60 @@ enum CollectionSourceError: LocalizedError {
             return ServiceErrorText.describe(status: status, service: provider)
         case .invalidResponse(let provider):
             return "\(provider) returned data the app could not read."
+        case .addonNotInstalled(let addonId):
+            return "This row comes from the add-on “\(addonId)”, which isn't installed on this profile. Install it in Settings → Integrations → Add-ons to see it."
         }
+    }
+}
+
+extension CollectionSourceError {
+    /// A button that fixes this in Settings, for errors that are a missing or
+    /// rejected key or a missing add-on; nil for anything else.
+    var settingsFixTitle: String? {
+        switch self {
+        case .missingTmdbAPIKey: return "Add a TMDB Key"
+        case .tmdbKeyRejected: return "Update the TMDB Key"
+        case .missingTraktClientID: return "Set Up Trakt"
+        case .addonNotInstalled: return "Install the Add-on"
+        default: return nil
+        }
+    }
+
+    /// Where in Settings → Integrations that fix is.
+    var settingsAnchor: SettingsDeepLink.Anchor? {
+        switch self {
+        case .missingTmdbAPIKey, .tmdbKeyRejected: return .tmdb
+        case .missingTraktClientID: return .trakt
+        case .addonNotInstalled: return .addons
+        default: return nil
+        }
+    }
+}
+
+/// Opens a Settings page from elsewhere in the app (iPhone): the Settings tab,
+/// pushed to that category. Kept until Settings is there to take it, since
+/// it is built the first time its tab is shown.
+@MainActor
+enum SettingsDeepLink {
+    /// A place on the Integrations page to land on.
+    enum Anchor: String {
+        case addons, simkl, trakt, aiSubtitles, tmdb, mdblist, debrid
+
+        var id: String { "settings.anchor.\(rawValue)" }
+    }
+
+    static let notification = Notification.Name("omni.settings.deepLink")
+    /// Posted once the page has scrolled to an anchor, with it as the
+    /// object, so that section can open its own setup (TMDB's key sheet).
+    static let revealNotification = Notification.Name("omni.settings.deepLink.reveal")
+    /// A `SettingsCategory` raw value.
+    static var pendingCategory: String?
+    static var pendingAnchor: Anchor?
+
+    static func openIntegrations(at anchor: Anchor? = nil) {
+        pendingCategory = "Integrations"
+        pendingAnchor = anchor
+        NotificationCenter.default.post(name: notification, object: nil)
     }
 }
 

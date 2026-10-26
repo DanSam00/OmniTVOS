@@ -58,6 +58,8 @@ final class NuvioSyncManager: ObservableObject {
     private var observers: [NSObjectProtocol] = []
     private var pullTask: Task<Void, Never>?
     private var pushTask: Task<Void, Never>?
+    private var isPushingSnapshots = false
+    private var pushRequestedDuringPush = false
     private var homeCatalogPushTask: Task<Void, Never>?
     private var profileSelectionRefreshTask: Task<Void, Never>?
     private var completedInitialPullKeys: Set<String> = []
@@ -145,6 +147,15 @@ final class NuvioSyncManager: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.schedulePush() }
+        })
+        // The passphrase step opened: fetch the account's box now, so one
+        // made on another device minutes ago is there to unlock.
+        observers.append(center.addObserver(
+            forName: CredentialVault.refreshRequestNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refreshVault() }
         })
         // The encrypted sign-ins changed, or a passphrase was just set.
         observers.append(center.addObserver(
@@ -323,6 +334,9 @@ final class NuvioSyncManager: ObservableObject {
     func authStateChanged(_ state: AuthState) {
         switch state {
         case let .fullAccount(userId, _):
+            // The sync passphrase belongs to this account, known from here on,
+            // not only once a settings pull has run.
+            CredentialVault.shared.setAccount(userId)
             // `AuthManager` republishes the same account after refreshing its
             // token. Treating that as a new login force-cancelled the bootstrap
             // request which caused the refresh. Only a genuinely different
@@ -409,6 +423,26 @@ final class NuvioSyncManager: ObservableObject {
     /// again, which is seconds of work for data that had not changed. Inside the
     /// window the row keeps rendering from the local ledger, which a local edit
     /// updates immediately anyway.
+    /// Fetches the active profile's encrypted sign-ins from the account and
+    /// hands them to `CredentialVault`, outside the full account pull.
+    func refreshVault() {
+        guard let session = authManager?.currentSessionForSync(),
+              let profileViewModel,
+              let active = profileViewModel.activeProfile else {
+            CredentialVault.shared.received(nil, profileScope: ProfileSettings.activeProfileScope)
+            return
+        }
+        let remoteProfileId = ProfileSyncIndexStore.remoteId(for: active, in: profileViewModel.profiles)
+        CredentialVault.shared.setAccount(session.userId)
+        Task { @MainActor [client] in
+            let data = try? await client.pullVaultJSON(session: session, remoteProfileId: remoteProfileId)
+            CredentialVault.shared.received(
+                data.flatMap { try? JSONSerialization.jsonObject(with: $0) },
+                profileScope: active.id
+            )
+        }
+    }
+
     func refreshAccountIfIdle() {
         guard let key = currentSyncKey(), completedInitialPullKeys.contains(key) else { return }
         guard pullTask == nil else { return }
@@ -882,6 +916,13 @@ final class NuvioSyncManager: ObservableObject {
         guard authManager?.isAuthenticated == true else { return }
         guard let key = currentSyncKey(), completedInitialPullKeys.contains(key) else { return }
 
+        // An upload under way finishes; this change goes in the next one.
+        // Cancelling it for every later change meant a device saving
+        // settings every few seconds never completed an upload at all.
+        if isPushingSnapshots {
+            pushRequestedDuringPush = true
+            return
+        }
         pushTask?.cancel()
         pushTask = Task(priority: .utility) { @MainActor [weak self] in
             do {
@@ -893,7 +934,15 @@ final class NuvioSyncManager: ObservableObject {
                   !Task.isCancelled,
                   let key = self.currentSyncKey(),
                   self.completedInitialPullKeys.contains(key) else { return }
+            self.isPushingSnapshots = true
             await self.pushLocalSnapshots()
+            self.isPushingSnapshots = false
+            // Cancelled for a sign-out or profile switch: nothing to follow up.
+            if Task.isCancelled { self.pushRequestedDuringPush = false }
+            if self.pushRequestedDuringPush {
+                self.pushRequestedDuringPush = false
+                self.schedulePush()
+            }
         }
     }
 
@@ -2716,6 +2765,17 @@ fileprivate final class NuvioAPIClient {
         importMdbListSettings(mdbListFeature, localProfileId: localProfileId)
         ThemeSettingsSyncMapper.importPayload(themeFeature, localProfileId: localProfileId)
         return true
+    }
+
+    /// The encrypted sign-ins in the profile's settings blob, as JSON data.
+    func pullVaultJSON(session: AuthSession, remoteProfileId: Int) async throws -> Data? {
+        let settings = try await pullProfileSettingsJSON(
+            session: session,
+            remoteProfileId: remoteProfileId,
+            platform: Self.settingsPlatform
+        )
+        guard let vault = (settings?["features"] as? [String: Any])?[CredentialVault.feature] else { return nil }
+        return try? JSONSerialization.data(withJSONObject: vault)
     }
 
     private func pullProfileSettingsJSON(

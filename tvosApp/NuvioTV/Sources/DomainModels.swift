@@ -514,6 +514,11 @@ public struct NewProfileSetup {
     /// With the settings: API keys and signed-in services (Trakt, Simkl,
     /// TMDB, MDBList, debrid).
     public var copiesCredentials = true
+    /// Favourite teams chosen while creating it.
+    public var favouriteTeams: [String] = []
+    /// Community collections chosen while creating it, id → title; added the
+    /// first time the profile is used.
+    public var communityPicks: [String: String] = [:]
     public init() {}
 }
 
@@ -797,8 +802,15 @@ public class ProfileViewModel: ObservableObject {
                 ProfileSettings.store(for: newProfile.id).set(isKids, forKey: SettingsKey.kidsProfile)
                 // A new kids profile starts with a couple of the community's
                 // collections for children, added the first time it is used.
-                if isKids {
-                    ProfileSettings.store(for: newProfile.id).set(true, forKey: CommunityCollections.kidsSeedPendingKey)
+                let newStore = ProfileSettings.store(for: newProfile.id)
+                if !setup.favouriteTeams.isEmpty {
+                    newStore.set(setup.favouriteTeams.joined(separator: "\n"), forKey: SettingsKey.favouriteTeams)
+                }
+                if !setup.communityPicks.isEmpty {
+                    // Chosen by hand: these instead of the automatic starter pair.
+                    CommunityCollections.setPendingInstall(setup.communityPicks, in: newStore)
+                } else if isKids {
+                    newStore.set(true, forKey: CommunityCollections.kidsSeedPendingKey)
                 }
                 if let customAvatarPhoto {
                     OmniCustomAvatar.set(customAvatarPhoto, forProfile: newProfile.id)

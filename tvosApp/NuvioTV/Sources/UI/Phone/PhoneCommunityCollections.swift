@@ -138,7 +138,9 @@ struct PhoneCommunityCollectionsSheet: View {
         adding = item.id
         defer { adding = nil }
         do {
-            let rows = try await CommunityCollections.collections(for: item)
+            var rows = try await CommunityCollections.collections(for: item)
+            // A kids profile gets only the children's part of a big library.
+            if forKids { rows = CommunityCollections.forKids(rows) }
             onAdd(rows, item.title)
             added.insert(item.id)
             await CommunityCollections.recordInstall(item)

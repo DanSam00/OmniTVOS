@@ -54,13 +54,32 @@ struct PhoneMainTabView: View {
         ZStack {
             page(.home) {
                 NavigationStack {
-                    PhoneHomeView(
-                        loader: homeLoader,
-                        onOpenDetails: { onOpenDetails($0.id, $0.type) },
-                        onResume: onResume,
-                        onStartOver: onStartOver,
-                        onRemoveContinueWatching: onRemoveContinueWatching
-                    )
+                    ZStack(alignment: .topTrailing) {
+                        PhoneHomeView(
+                            loader: homeLoader,
+                            onOpenDetails: { onOpenDetails($0.id, $0.type) },
+                            onResume: onResume,
+                            onStartOver: onStartOver,
+                            onRemoveContinueWatching: onRemoveContinueWatching
+                        )
+                        // Who's watching, as Settings has it; out of the way
+                        // once the page is scrolled down.
+                        Button(action: onSwitchProfile) {
+                            ProfileAvatarView(
+                                avatarId: activeProfile?.avatarId ?? ProfileAvatarCatalog.defaultId,
+                                size: 36,
+                                profileId: activeProfile?.id
+                            )
+                            .padding(3)
+                            .background(.ultraThinMaterial, in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Switch Profile")
+                        .padding(.trailing, 16)
+                        .padding(.top, 4)
+                        .opacity(tabBar.isCollapsed ? 0 : 1)
+                        .animation(.easeInOut(duration: 0.2), value: tabBar.isCollapsed)
+                    }
                 }
             }
             page(.search) {
@@ -73,6 +92,8 @@ struct PhoneMainTabView: View {
             Color.clear
                 .frame(width: 0, height: 0)
                 .task(id: activeProfile?.id) {
+                    // Picked in Add Profile, else a kids profile's starter pair.
+                    await CommunityCollections.installPendingIfNeeded()
                     guard PhoneKidsMode.isActive else { return }
                     await CommunityCollections.seedKidsProfileIfNeeded()
                 }

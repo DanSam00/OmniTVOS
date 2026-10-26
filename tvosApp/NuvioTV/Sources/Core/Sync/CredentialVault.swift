@@ -36,6 +36,9 @@ final class CredentialVault: ObservableObject {
     }
 
     @Published private(set) var status: Status = .unavailable
+    /// Asking the account for its box; the passphrase step waits on it.
+    @Published private(set) var isChecking = false
+    private var checkTimeout: Task<Void, Never>?
     /// What the last unlock or restore brought over, for onboarding's summary.
     @Published private(set) var lastRestore: Summary?
 
@@ -57,6 +60,16 @@ final class CredentialVault: ObservableObject {
 
     private init() {
         accountID = UserDefaults.standard.string(forKey: Self.accountKey)
+        // Moved out of UserDefaults (see `state`): carry any old entries over.
+        let defaults = UserDefaults.standard
+        let old = defaults.dictionaryRepresentation().filter {
+            $0.key.hasPrefix("omni.vault.") && $0.key != Self.accountKey
+        }
+        if !old.isEmpty {
+            for (key, value) in old where state[key] == nil { state[key] = value }
+            saveState()
+            old.keys.forEach(defaults.removeObject(forKey:))
+        }
         let center = NotificationCenter.default
         for name in [
             IPTVSourceStore.changedNotification,
@@ -85,13 +98,32 @@ final class CredentialVault: ObservableObject {
 
     var hasPassphrase: Bool { passphrase != nil }
 
+    /// Posted for the sync service to fetch the account's box.
+    static let refreshRequestNotification = Notification.Name("omni.vault.refreshRequested")
+
+    /// Fetches the account's box now (the passphrase step calls this).
+    func refreshFromAccount() {
+        isChecking = true
+        NotificationCenter.default.post(name: Self.refreshRequestNotification, object: nil)
+        checkTimeout?.cancel()
+        checkTimeout = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 12_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.isChecking = false
+        }
+    }
+
     /// Takes a passphrase for an account that already has a vault: true when
     /// it opens the box, which is then applied to this device.
     @discardableResult
-    func unlock(with candidate: String, profileScope: String = ProfileSettings.activeProfileScope) -> Bool {
-        guard let envelope = cachedEnvelope(profileScope) ?? anyCachedEnvelope(),
-              let key = derive(candidate, salt: envelope.salt, iterations: envelope.iterations),
-              (try? open(envelope, key: key)) != nil else { return false }
+    func unlock(with typed: String, profileScope: String = ProfileSettings.activeProfileScope) -> Bool {
+        guard let envelope = cachedEnvelope(profileScope) ?? anyCachedEnvelope() else { return false }
+        // As typed, then without a stray space a phone keyboard can add.
+        let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let candidate = [typed, trimmed].first(where: { attempt in
+            guard let key = derive(attempt, salt: envelope.salt, iterations: envelope.iterations) else { return false }
+            return (try? open(envelope, key: key)) != nil
+        }) else { return false }
         storePassphrase(candidate)
         if let own = cachedEnvelope(profileScope) {
             applyIfNewer(own, profileScope: profileScope, force: true)
@@ -127,8 +159,17 @@ final class CredentialVault: ObservableObject {
         guard let passphrase else { return existing }
         let remote = (existing as? [String: Any]).flatMap(Envelope.init(json:))
         let localModified = localModified(profileScope)
-        if let remote, let localModified, remote.updatedAt >= localModified { return existing }
+        // The account's box is as new as this device's sign-ins (its time is
+        // stored to the millisecond, so allow for the rounding).
+        if let remote, let localModified, remote.updatedAt.timeIntervalSince(localModified) > -0.002 { return existing }
         if remote != nil, localModified == nil { return existing }
+        // Already sealed for this change: the same box again. Sealing anew
+        // gives a different box every time (a fresh nonce), and an upload
+        // retried before the last one landed must not count as a new change.
+        if let localModified, let sealed = cachedEnvelope(profileScope),
+           abs(sealed.updatedAt.timeIntervalSince(localModified)) < 0.002 {
+            return sealed.json
+        }
         let salt = remote?.salt ?? anyCachedEnvelope()?.salt ?? Self.randomSalt()
         guard let key = derive(passphrase, salt: salt, iterations: Self.iterations),
               let contents = try? JSONEncoder().encode(Contents.export(profileScope: profileScope)),
@@ -147,6 +188,8 @@ final class CredentialVault: ObservableObject {
     /// A pulled blob's box: kept for unlocking later, and applied now when
     /// this device can open it and it is newer than what is here.
     func received(_ json: Any?, profileScope: String) {
+        isChecking = false
+        checkTimeout?.cancel()
         guard let envelope = (json as? [String: Any]).flatMap(Envelope.init(json:)) else {
             refreshStatus()
             return
@@ -294,14 +337,46 @@ final class CredentialVault: ObservableObject {
         "omni.vault.\(name).\(accountID ?? "-").\(profileScope)"
     }
 
+    // The boxes and change times live in a file of their own, not in
+    // UserDefaults: every UserDefaults write starts an account upload, and
+    // the upload itself writing here cancelled itself in a loop, so no
+    // setting from that device reached the account.
+    private lazy var state: [String: Any] = Self.loadState()
+
+    private static var stateFile: URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("omni-vault-state.plist")
+    }
+
+    private static func loadState() -> [String: Any] {
+        guard let file = stateFile, let data = try? Data(contentsOf: file),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        else { return [:] }
+        return plist
+    }
+
+    private func store(_ value: Any?, forKey key: String) {
+        state[key] = value
+        saveState()
+    }
+
+    private func saveState() {
+        guard let file = Self.stateFile,
+              let data = try? PropertyListSerialization.data(fromPropertyList: state, format: .binary, options: 0) else { return }
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: file, options: .atomic)
+    }
+
     private func cache(_ envelope: Envelope, profileScope: String) {
         guard let data = try? JSONSerialization.data(withJSONObject: envelope.json) else { return }
-        UserDefaults.standard.set(data, forKey: scopedKey("box", profileScope))
-        UserDefaults.standard.set(data, forKey: scopedKey("box", "any"))
+        if (state[scopedKey("box", profileScope)] as? Data) == data { return }
+        state[scopedKey("box", profileScope)] = data
+        state[scopedKey("box", "any")] = data
+        saveState()
     }
 
     private func cachedEnvelope(_ profileScope: String) -> Envelope? {
-        UserDefaults.standard.data(forKey: scopedKey("box", profileScope))
+        (state[scopedKey("box", profileScope)] as? Data)
             .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             .flatMap(Envelope.init(json:))
     }
@@ -311,19 +386,20 @@ final class CredentialVault: ObservableObject {
     private func anyCachedEnvelope() -> Envelope? { cachedEnvelope("any") }
 
     private func localModified(_ profileScope: String) -> Date? {
-        UserDefaults.standard.object(forKey: scopedKey("modified", profileScope)) as? Date
+        state[scopedKey("modified", profileScope)] as? Date
     }
 
     private func setLocalModified(_ profileScope: String, _ date: Date?) {
-        UserDefaults.standard.set(date, forKey: scopedKey("modified", profileScope))
+        store(date, forKey: scopedKey("modified", profileScope))
     }
 
     private func lastApplied(_ profileScope: String) -> Date? {
-        UserDefaults.standard.object(forKey: scopedKey("applied", profileScope)) as? Date
+        state[scopedKey("applied", profileScope)] as? Date
     }
 
     private func setLastApplied(_ profileScope: String, _ date: Date) {
-        UserDefaults.standard.set(date, forKey: scopedKey("applied", profileScope))
+        guard lastApplied(profileScope) != date else { return }
+        store(date, forKey: scopedKey("applied", profileScope))
     }
 }
 

@@ -1156,6 +1156,8 @@ struct SettingsView: View {
     }
 
     @State private var selectedCategory: SettingsCategory = .account
+    /// iPhone: a category opened from elsewhere (`SettingsDeepLink`).
+    @State private var phoneLinkedCategory: SettingsCategory?
     @ObservedObject private var addonEditor = AddonEditorPresenter.shared
     @State private var presentedLanguagePicker: LanguagePickerKind?
     @State private var presentedProfilePinMode: ProfilePinSheetMode?
@@ -4087,6 +4089,7 @@ private struct IntegrationSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             AddonsSettingsSection(accentColor: accentColor)
+                .id(SettingsDeepLink.Anchor.addons.id)
 
             SettingsGroup(
                 title: L10n.string("settings_stremio_title", fallback: "Stremio"),
@@ -4197,6 +4200,7 @@ private struct IntegrationSettingsView: View {
                     onOpenSettings: { showingSimklSettings = true }
                 )
             }
+            .id(SettingsDeepLink.Anchor.simkl.id)
 
             SettingsGroup(
                 title: L10n.string("mdblist_trakt_title", fallback: "Trakt"),
@@ -4215,6 +4219,7 @@ private struct IntegrationSettingsView: View {
                     onOpenSettings: { showingTraktSettings = true }
                 )
             }
+            .id(SettingsDeepLink.Anchor.trakt.id)
 
             SettingsGroup(
                 title: L10n.string("settings_ai_subtitles_title", fallback: "AI Subtitles"),
@@ -4229,6 +4234,7 @@ private struct IntegrationSettingsView: View {
                     showingAISubtitleOptions = true
                 }
             }
+            .id(SettingsDeepLink.Anchor.aiSubtitles.id)
 
             SettingsGroup(
                 title: L10n.string("tvos_integrations_metadata", fallback: "Metadata Providers"),
@@ -4255,6 +4261,7 @@ private struct IntegrationSettingsView: View {
                     showingMdbListOptions = true
                 }
             }
+            .id(SettingsDeepLink.Anchor.tmdb.id)
 
             SettingsGroup(
                 title: L10n.string("tvos_integrations_debrid", fallback: "Debrid"),
@@ -4358,6 +4365,16 @@ private struct IntegrationSettingsView: View {
         .sheet(isPresented: $showingSimklSettings) {
             SimklConnectedSettingsSheet(viewModel: simklViewModel, accentColor: accentColor)
                 .modifier(ClearPresentationBackgroundIfAvailable())
+        }
+        // Opened from a collection's "Add a TMDB Key" and the like: the
+        // section's own setup, once the page has scrolled to it.
+        .onReceive(NotificationCenter.default.publisher(for: SettingsDeepLink.revealNotification)) { note in
+            switch (note.object as? String).flatMap(SettingsDeepLink.Anchor.init(rawValue:)) {
+            case .tmdb: showingTmdbOptions = true
+            case .mdblist: showingMdbListOptions = true
+            case .aiSubtitles: showingAISubtitleOptions = true
+            default: break
+            }
         }
         .sheet(isPresented: $showingTmdbOptions) {
             TmdbOptionsSheet(accentColor: accentColor)
@@ -15273,6 +15290,17 @@ extension SettingsView {
         .navigationDestination(for: SettingsCategory.self) { category in
             phoneCategoryPage(category)
         }
+        .navigationDestination(item: $phoneLinkedCategory) { category in
+            phoneCategoryPage(category)
+        }
+        .onAppear(perform: takeDeepLink)
+        .onReceive(NotificationCenter.default.publisher(for: SettingsDeepLink.notification)) { _ in takeDeepLink() }
+    }
+
+    private func takeDeepLink() {
+        guard let raw = SettingsDeepLink.pendingCategory, let category = SettingsCategory(rawValue: raw) else { return }
+        SettingsDeepLink.pendingCategory = nil
+        phoneLinkedCategory = category
     }
 
     private func phoneCategoryPage(_ category: SettingsCategory) -> some View {
@@ -15288,6 +15316,7 @@ extension SettingsView {
                     }
                 } else {
                     GeometryReader { proxy in
+                        ScrollViewReader { reader in
                         ScrollView {
                             VStack(alignment: .leading, spacing: 36) {
                                 categoryContent(category)
@@ -15301,6 +15330,17 @@ extension SettingsView {
                             .padding(.bottom, 32)
                         }
                         .phoneTabBarFoldsOnScroll()
+                        // Opened at a section (a collection's "Add a TMDB Key"):
+                        // scroll to it once laid out, then let it open itself.
+                        .task {
+                            guard let anchor = SettingsDeepLink.pendingAnchor else { return }
+                            SettingsDeepLink.pendingAnchor = nil
+                            try? await Task.sleep(nanoseconds: 350_000_000)
+                            withAnimation(.easeInOut(duration: 0.35)) { reader.scrollTo(anchor.id, anchor: .top) }
+                            try? await Task.sleep(nanoseconds: 400_000_000)
+                            NotificationCenter.default.post(name: SettingsDeepLink.revealNotification, object: anchor.rawValue)
+                        }
+                        }
                     }
                 }
             }

@@ -1327,6 +1327,9 @@ struct PhoneCollectionFolderView: View {
     @State private var errorMessage: String?
     /// Why some sources failed while others loaded.
     @State private var sourceNotice: String?
+    /// The Settings fix for the failure shown, when it is a key or add-on.
+    @State private var fixTitle: String?
+    @State private var fixAnchor: SettingsDeepLink.Anchor?
     private let repository: CatalogRepository = CinemetaCatalogRepository()
     private static let pageSize = 40
 
@@ -1370,18 +1373,26 @@ struct PhoneCollectionFolderView: View {
                     }
                 }
                 if !isLoading, !shownItems.isEmpty, let sourceNotice {
-                    Label(sourceNotice, systemImage: "exclamationmark.triangle.fill")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, PhoneLayout.gutter)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(sourceNotice, systemImage: "exclamationmark.triangle.fill")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        fixButton
+                    }
+                    .padding(.horizontal, PhoneLayout.gutter)
                 }
                 if isLoading {
                     ProgressView().frame(maxWidth: .infinity).padding(.top, 60)
                 } else if shownItems.isEmpty {
-                    Text(errorMessage ?? "Nothing in this folder yet.")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 60)
+                    VStack(spacing: 16) {
+                        Text(errorMessage ?? "Nothing in this folder yet.")
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                        fixButton
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, PhoneLayout.gutter)
+                    .padding(.top, 60)
                 } else {
                     PhonePosterGrid(items: shownItems, onSelect: onOpenDetails)
                 }
@@ -1393,10 +1404,30 @@ struct PhoneCollectionFolderView: View {
         .task(id: folder.id) { await load() }
     }
 
+    /// Straight to Settings → Integrations, where the key or add-on goes.
+    @ViewBuilder
+    private var fixButton: some View {
+        if let fixTitle {
+            Button {
+                SettingsDeepLink.openIntegrations(at: fixAnchor)
+            } label: {
+                Label(fixTitle, systemImage: "gearshape")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 9)
+                    .background(Color.white, in: Capsule())
+                    .foregroundStyle(.black)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
     private func load() async {
         isLoading = true
         errorMessage = nil
         sourceNotice = nil
+        fixTitle = nil
+        fixAnchor = nil
         let sources = folder.sources
         guard !sources.isEmpty else {
             rows = []
@@ -1405,7 +1436,8 @@ struct PhoneCollectionFolderView: View {
             return
         }
         let repository = self.repository
-        let loaded = await withTaskGroup(of: (Int, SourceRow?, String?).self) { group in
+        var fixes: [CollectionSourceError] = []
+        let loaded = await withTaskGroup(of: (Int, SourceRow?, String?, CollectionSourceError?).self) { group in
             for (index, source) in sources.enumerated() {
                 group.addTask { @MainActor in
                     do {
@@ -1417,17 +1449,21 @@ struct PhoneCollectionFolderView: View {
                         return (index, SourceRow(
                             label: CollectionSourceResolver.label(for: source),
                             items: items.filter { seen.insert($0.id).inserted }
-                        ), nil)
+                        ), nil, nil)
                     } catch {
-                        return (index, nil, error.localizedDescription)
+                        let fixable = (error as? CollectionSourceError).flatMap { $0.settingsFixTitle == nil ? nil : $0 }
+                        return (index, nil, error.localizedDescription, fixable)
                     }
                 }
             }
-            var results: [(Int, SourceRow?, String?)] = []
+            var results: [(Int, SourceRow?, String?, CollectionSourceError?)] = []
             for await result in group { results.append(result) }
             return results.sorted { $0.0 < $1.0 }
         }
         guard !Task.isCancelled else { return }
+        fixes = loaded.compactMap(\.3)
+        fixTitle = fixes.first?.settingsFixTitle
+        fixAnchor = fixes.first?.settingsAnchor
         rows = loaded.compactMap(\.1)
         if rows.allSatisfy({ $0.items.isEmpty }) {
             errorMessage = loaded.compactMap(\.2).first

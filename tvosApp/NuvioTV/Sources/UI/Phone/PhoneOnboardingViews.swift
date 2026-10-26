@@ -166,7 +166,9 @@ struct PhoneProfilePickerView: View {
     /// The account allows six profiles, as on the TV.
     private static let maxProfiles = 6
 
-    private let columns = [GridItem(.adaptive(minimum: 120), spacing: 20)]
+    /// Top-aligned: a kids profile's badge makes its cell taller, and centred
+    /// cells left the avatars at different heights.
+    private let columns = [GridItem(.adaptive(minimum: 120), spacing: 20, alignment: .top)]
 
     var body: some View {
         ScrollView {
@@ -300,6 +302,10 @@ private struct PhoneAddProfileSheet: View {
     @State private var pin = ""
     @State private var setup = NewProfileSetup()
     @FocusState private var nameFocused: Bool
+    @State private var newTeam = ""
+    @State private var community: [CommunityCollections.Item] = []
+    @State private var communityLoading = false
+    @State private var communityError: String?
 
     private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var canSave: Bool {
@@ -368,6 +374,59 @@ private struct PhoneAddProfileSheet: View {
                             .foregroundStyle(.secondary)
                     }
 
+                    VStack(alignment: .leading, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Favourite Teams").font(.headline)
+                            Text("Their next match joins Continue Watching.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        HStack(spacing: 8) {
+                            TextField("Team, e.g. Liverpool", text: $newTeam)
+                                .textInputAutocapitalization(.words)
+                                .autocorrectionDisabled()
+                                .submitLabel(.done)
+                                .onSubmit(addTeam)
+                                .padding(14)
+                                .background(Color.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            Button("Add", action: addTeam)
+                                .disabled(newTeam.trimmingCharacters(in: .whitespaces).isEmpty)
+                        }
+                        ForEach(setup.favouriteTeams, id: \.self) { team in
+                            HStack {
+                                Text(team)
+                                Spacer()
+                                Button {
+                                    setup.favouriteTeams.removeAll { $0 == team }
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                                }
+                                .accessibilityLabel("Remove \(team)")
+                            }
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Collections").font(.headline)
+                            Text(isKids
+                                ? "Kids and family collections shared on nuvio.tv. From a big library only its children's sections are added."
+                                : "Popular collections shared on nuvio.tv, added when this profile is first opened.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        if communityLoading && community.isEmpty {
+                            ProgressView().frame(maxWidth: .infinity)
+                        } else if let communityError, community.isEmpty {
+                            Text(communityError).font(.footnote).foregroundStyle(.secondary)
+                        } else {
+                            ForEach(community.prefix(12)) { item in
+                                communityRow(item)
+                            }
+                        }
+                    }
+                    .task(id: isKids) { await loadCommunity() }
+
                     if let error = viewModel.profileCreationError {
                         Text(error)
                             .font(.footnote)
@@ -394,6 +453,67 @@ private struct PhoneAddProfileSheet: View {
         .onAppear {
             viewModel.profileCreationError = nil
             nameFocused = true
+        }
+    }
+
+    private func addTeam() {
+        let team = newTeam.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !team.isEmpty, !setup.favouriteTeams.contains(team) else { return }
+        setup.favouriteTeams.append(team)
+        newTeam = ""
+    }
+
+    private func communityRow(_ item: CommunityCollections.Item) -> some View {
+        let picked = setup.communityPicks[item.id] != nil
+        return Button {
+            if picked { setup.communityPicks[item.id] = nil } else { setup.communityPicks[item.id] = item.title }
+        } label: {
+            HStack(spacing: 12) {
+                AsyncImage(url: item.imageURL) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    Color.white.opacity(0.08)
+                }
+                .frame(width: 64, height: 40)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(item.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                    if !item.description.isEmpty {
+                        Text(item.description).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                }
+                Spacer(minLength: 8)
+                Image(systemName: picked ? "checkmark.circle.fill" : "plus.circle")
+                    .font(.title3)
+                    .foregroundStyle(picked ? Color.green : Color.white.opacity(0.7))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(picked ? "Remove \(item.title)" : "Add \(item.title)")
+    }
+
+    /// Kids profiles: the site searched for kids, family and children; others
+    /// the most popular.
+    private func loadCommunity() async {
+        communityLoading = true
+        communityError = nil
+        defer { communityLoading = false }
+        do {
+            if isKids {
+                community = try await CommunityCollections.kidsAndFamily()
+                // A pick no longer listed is no longer offered for a kids profile.
+                let ids = Set(community.map(\.id))
+                setup.communityPicks = setup.communityPicks.filter { ids.contains($0.key) }
+            } else {
+                community = try await CommunityCollections.list(sort: .popular, limit: 24).items
+            }
+            if community.isEmpty {
+                communityError = isKids ? "No kids or family collections are shared right now." : "No collections are shared right now."
+            }
+        } catch {
+            community = []
+            communityError = error.localizedDescription
         }
     }
 

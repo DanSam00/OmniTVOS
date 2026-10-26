@@ -477,6 +477,16 @@ struct ContentView: View {
             guard onMain, onboardingMode == nil, !OnboardingState.isDone else { return }
             withAnimation(.easeInOut(duration: 0.28)) { onboardingMode = .full }
         }
+        #if os(iOS)
+        // A collection's "Add a TMDB Key" and the like: the Settings tab.
+        .onReceive(NotificationCenter.default.publisher(for: SettingsDeepLink.notification)) { _ in
+            if isNestedPage {
+                chooseTabOverNestedPage(.settings)
+            } else {
+                PhoneTabBarState.shared.tabRequests.send(.settings)
+            }
+        }
+        #endif
         .onReceive(NotificationCenter.default.publisher(for: OnboardingState.openVaultNotification)) { _ in
             withAnimation(.easeInOut(duration: 0.28)) { onboardingMode = .vault }
         }
@@ -10546,6 +10556,12 @@ private struct TVFeatureHeroView: View {
 }
 
 private struct TVGridHeroSlideshowView: View {
+    /// Where the bottom fade starts, reaches half and nearly full.
+    #if os(macOS)
+    static let bottomFade: [CGFloat] = [0.80, 0.90, 0.96]
+    #else
+    static let bottomFade: [CGFloat] = [0.30, 0.60, 0.80]
+    #endif
     let items: [NuvioMeta]
     @Binding var selectedIndex: Int
     let shouldRequestInitialFocus: Bool
@@ -10628,9 +10644,12 @@ private struct TVGridHeroSlideshowView: View {
 
             LinearGradient(
                 stops: [
-                    .init(color: .clear, location: 0.30),
-                    .init(color: background.opacity(0.50), location: 0.60),
-                    .init(color: background.opacity(0.85), location: 0.80),
+                    // Mac: low, as Modern's, so the art and trailer show
+                    // down to the text; it began a third of the way down and
+                    // darkened the lower half.
+                    .init(color: .clear, location: Self.bottomFade[0]),
+                    .init(color: background.opacity(0.50), location: Self.bottomFade[1]),
+                    .init(color: background.opacity(0.85), location: Self.bottomFade[2]),
                     .init(color: background, location: 1)
                 ],
                 startPoint: .top,

@@ -23,20 +23,15 @@ enum CommunityCollections {
         let installs: Int
         let isPack: Bool
 
-        /// Looks made for children, from its words alone (kids profiles list
-        /// these first).
+        /// Categorised for children: kids, child or family in its tags or
+        /// title, or plainly said in its description; never one marked for
+        /// adults. Kids profiles are shown only these.
         var isKidFriendly: Bool {
-            let titleText = title.lowercased()
-            let text = ([title, description] + tags).joined(separator: " ").lowercased()
-            // Made for children, wherever it is said.
-            let strong = ["kids", "kid-friendly", "kid friendly", "children", "childrens", "toddler",
-                          "preschool", "cartoon", "disney junior", "nick jr", "for kids"]
-            // Words a general collection uses for one of its folders ("Family",
-            // "Animation"): they only count in the title.
-            let titleOnly = ["family", "animated", "animation", "pixar", "disney"]
-            let adult = ["horror", "adult", "18+", "nsfw", "thriller", "gore", "erotic", "mature", "anime"]
-            guard !adult.contains(where: { text.contains($0) }) else { return false }
-            return strong.contains { text.contains($0) } || titleOnly.contains { titleText.contains($0) }
+            let everything = ([title, description] + tags).joined(separator: " ")
+            guard !CommunityCollections.mentions(CommunityCollections.adultWords, in: everything) else { return false }
+            let categorised = ([title] + tags).joined(separator: " ")
+            return CommunityCollections.mentions(CommunityCollections.kidWords, in: categorised)
+                || CommunityCollections.mentions(CommunityCollections.strongKidWords, in: description)
         }
     }
 
@@ -168,11 +163,137 @@ enum CommunityCollections {
         return nil
     }
 
-    /// Kids profiles see the child-friendly ones first, otherwise in the
-    /// site's order.
+    /// Kids profiles see only the child-friendly ones; others everything, in
+    /// the site's order.
     static func ordered(_ items: [Item], forKids: Bool) -> [Item] {
-        guard forKids else { return items }
-        return items.filter(\.isKidFriendly) + items.filter { !$0.isKidFriendly }
+        forKids ? items.filter(\.isKidFriendly) : items
+    }
+
+    // MARK: Kids filtering
+
+    static let kidWords = ["kid", "kids", "child", "children", "childrens", "family", "families",
+                           "toddler", "toddlers", "preschool", "cartoon", "cartoons", "junior", "nick jr"]
+    /// Said in a description, only these mean made for children: "family"
+    /// there is as often "something for the whole family" in a general one.
+    static let strongKidWords = ["kids", "children", "childrens", "toddler", "toddlers", "preschool", "for kids"]
+    static let adultWords = ["horror", "adult", "18", "nsfw", "gore", "erotic", "mature", "xxx", "porn", "slasher"]
+    /// TMDB genres: Animation, Family, and TV's Kids.
+    private static let kidGenreIDs: Set<String> = ["16", "10751", "10762"]
+
+    /// Whole words or phrases, so "kid" is not found in "kidnap".
+    static func mentions(_ words: [String], in text: String) -> Bool {
+        let tokens = text.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+        let joined = " " + tokens.joined(separator: " ") + " "
+        return words.contains { joined.contains(" " + $0 + " ") }
+    }
+
+    /// A folder made for children: by its name, its catalogs' names and
+    /// genres, or TMDB's Family, Animation and Kids genres.
+    static func folderIsKidFriendly(_ folder: [String: Any]) -> Bool {
+        let title = folder["title"] as? String ?? ""
+        let sources = (folder["sources"] as? [[String: Any]] ?? []) + (folder["catalogSources"] as? [[String: Any]] ?? [])
+            + (folder["catalog_sources"] as? [[String: Any]] ?? [])
+        var text = title
+        var genreIDs = Set<String>()
+        for source in sources {
+            for key in ["genre", "catalogId", "catalog_id", "title"] {
+                if let value = source[key] as? String { text += " " + value }
+            }
+            let filters = source["filters"] as? [String: Any]
+            let genres = (filters?["withGenres"] as? String) ?? (filters?["with_genres"] as? String) ?? ""
+            genreIDs.formUnion(genres.components(separatedBy: CharacterSet(charactersIn: ",|")).map {
+                $0.trimmingCharacters(in: .whitespaces)
+            })
+        }
+        guard !mentions(adultWords, in: text) else { return false }
+        return mentions(kidWords + ["animation", "animated"], in: text) || !genreIDs.isDisjoint(with: kidGenreIDs)
+    }
+
+    /// What a kids profile gets of these collections: all of one made for
+    /// children (less any folder marked for adults); of a general library,
+    /// only its children's folders. A collection left empty is dropped.
+    static func forKids(_ collections: [[String: Any]]) -> [[String: Any]] {
+        collections.compactMap { collection in
+            let folders = collection["folders"] as? [[String: Any]] ?? []
+            let name = [collection["title"] as? String, collection["name"] as? String].compactMap { $0 }.joined(separator: " ")
+            let madeForKids = mentions(kidWords, in: name) && !mentions(adultWords, in: name)
+            let kept = madeForKids
+                ? folders.filter { !mentions(adultWords, in: $0["title"] as? String ?? "") }
+                : folders.filter(folderIsKidFriendly)
+            guard !kept.isEmpty else { return nil }
+            var trimmed = collection
+            trimmed["folders"] = kept
+            return trimmed
+        }
+    }
+
+    /// Adds an entry's collections to the current profile (only the
+    /// children's part on a kids profile) and counts the install on the
+    /// site. Returns how many collections were added.
+    @MainActor
+    @discardableResult
+    static func install(_ item: Item, forKids: Bool) async throws -> Int {
+        var rows = try await collections(for: item)
+        if forKids { rows = Self.forKids(rows) }
+        guard !rows.isEmpty else { return 0 }
+        var current = CollectionsStore.rawCollections()
+        let existing = Set(current.compactMap { $0["id"] as? String })
+        let fresh = rows.filter { ($0["id"] as? String).map { !existing.contains($0) } ?? true }
+        current += fresh
+        CollectionsStore.saveLocalEdit(current)
+        await recordInstall(item)
+        return fresh.count
+    }
+
+    // MARK: Chosen at profile creation
+
+    /// Collections picked in Add Profile (id → title), added the first time
+    /// the profile is in use, so they go through that profile's own sync.
+    static let pendingInstallKey = "omni.collections.pendingInstall"
+
+    static func setPendingInstall(_ picks: [String: String], in store: UserDefaults) {
+        guard let data = try? JSONSerialization.data(withJSONObject: picks) else { return }
+        store.set(data, forKey: pendingInstallKey)
+    }
+
+    /// Adds the current profile's pending picks, once. Returns how many
+    /// collections were added.
+    @MainActor
+    @discardableResult
+    static func installPendingIfNeeded() async -> Int {
+        let store = ProfileSettings.current
+        guard let data = store.data(forKey: pendingInstallKey),
+              let picks = try? JSONSerialization.jsonObject(with: data) as? [String: String] else { return 0 }
+        store.removeObject(forKey: pendingInstallKey)
+        let kids = store.bool(forKey: SettingsKey.kidsProfile)
+        var added = 0
+        for (id, title) in picks {
+            let item = Item(id: id, title: title, description: "", tags: [], imageURL: nil, likes: 0, installs: 0, isPack: false)
+            added += (try? await install(item, forKids: kids)) ?? 0
+        }
+        return added
+    }
+
+    /// Kids and family collections: the site searched for each of those
+    /// words, merged, kept only if child-friendly, most installed first.
+    static func kidsAndFamily() async throws -> [Item] {
+        var seen = Set<String>()
+        var found: [Item] = []
+        var lastError: Error?
+        for query in ["kids", "family", "children", "child"] {
+            do {
+                let page = try await list(sort: .popular, search: query, limit: 24)
+                for item in page.items where item.isKidFriendly && seen.insert(item.id).inserted {
+                    found.append(item)
+                }
+            } catch {
+                lastError = error
+            }
+        }
+        if found.isEmpty, let lastError { throw lastError }
+        return found.sorted { $0.installs > $1.installs }
     }
 
     // MARK: Kids profiles
@@ -193,7 +314,7 @@ enum CommunityCollections {
         var added: [[String: Any]] = []
         for item in picks {
             if let rows = try? await collections(for: item) {
-                added += rows
+                added += forKids(rows)
                 await recordInstall(item)
             }
         }

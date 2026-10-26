@@ -25,7 +25,7 @@ struct OnboardingView: View {
     var vaultOnly = false
     let onFinish: () -> Void
 
-    private enum Step: CaseIterable { case vault, layout, alerts, done }
+    private enum Step: CaseIterable { case vault, layout, collections, alerts, done }
 
     @ObservedObject private var vault = CredentialVault.shared
     @AppStorage(SettingsKey.homeLayout) private var homeLayout = SettingsDefault.homeLayout
@@ -36,6 +36,12 @@ struct OnboardingView: View {
     @State private var restored = false
     @State private var teams: [String] = FavouriteTeamsStore.teams()
     @State private var newTeam = ""
+    @State private var community: [CommunityCollections.Item] = []
+    @State private var communityLoading = false
+    @State private var communityError: String?
+    @State private var addingCollection: String?
+    @State private var addedCollections: Set<String> = []
+    private var isKidsProfile: Bool { ProfileSettings.current.bool(forKey: SettingsKey.kidsProfile) }
     #if os(macOS)
     @ObservedObject private var macFocus = MacSettingsRowFocus.shared
     #endif
@@ -45,6 +51,8 @@ struct OnboardingView: View {
         if isSignedIn { list.append(.vault) }
         if vaultOnly { return list }
         list.append(.layout)
+        // The community list needs a Nuvio sign-in.
+        if isSignedIn { list.append(.collections) }
         #if os(iOS) || os(macOS)
         list.append(.alerts)
         #endif
@@ -61,6 +69,7 @@ struct OnboardingView: View {
                     switch step {
                     case .vault: vaultStep
                     case .layout: layoutStep
+                    case .collections: collectionsStep
                     case .alerts: alertsStep
                     case .done: doneStep
                     }
@@ -71,7 +80,12 @@ struct OnboardingView: View {
             }
         }
         .foregroundStyle(.white)
-        .onAppear { step = steps.first ?? .done }
+        .onAppear {
+            step = steps.first ?? .done
+            // A box made on another device minutes ago would otherwise only
+            // show up at the next full account pull.
+            if isSignedIn { vault.refreshFromAccount() }
+        }
         #if os(macOS)
         .modifier(MacSheetKeyboardHost())
         #endif
@@ -82,6 +96,19 @@ struct OnboardingView: View {
     @ViewBuilder
     private var vaultStep: some View {
         title("Bring your sign-ins over")
+        if vault.isChecking {
+            HStack(spacing: 12) {
+                ProgressView()
+                text("Checking your account…")
+            }
+            .onAppear {}
+        } else {
+            vaultStepBody
+        }
+    }
+
+    @ViewBuilder
+    private var vaultStepBody: some View {
         switch vault.status {
         case .locked:
             text("This account keeps its IPTV logins, Trakt, Simkl, Jellyfin and SMB sign-ins encrypted with your sync passphrase. Enter it once on this device.")
@@ -168,6 +195,70 @@ struct OnboardingView: View {
     }
 
     @ViewBuilder
+    private var collectionsStep: some View {
+        title("Add some collections")
+        text(isKidsProfile
+            ? "Collections for kids and families, shared on nuvio.tv. From a big library only its children's sections are added."
+            : "Collections people have shared on nuvio.tv: themed rows and folders for Home.")
+        if communityLoading && community.isEmpty {
+            HStack(spacing: 12) { ProgressView(); text("Loading…") }
+        } else if let communityError, community.isEmpty {
+            hint(communityError)
+        } else {
+            VStack(alignment: .leading, spacing: Metrics.chipSpacing) {
+                ForEach(community.prefix(10)) { item in
+                    collectionRow(item)
+                }
+            }
+        }
+        primary(addedCollections.isEmpty ? "Skip" : "Continue", id: "onboard.collectionsnext", enabled: true) { advance() }
+    }
+
+    private func collectionRow(_ item: CommunityCollections.Item) -> some View {
+        let added = addedCollections.contains(item.id)
+        return HStack(alignment: .center, spacing: Metrics.chipSpacing) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title).font(Metrics.button).lineLimit(1)
+                if !item.description.isEmpty {
+                    Text(item.description).font(Metrics.caption).foregroundStyle(.white.opacity(0.6)).lineLimit(2)
+                }
+            }
+            Spacer(minLength: Metrics.chipSpacing)
+            if addingCollection == item.id {
+                ProgressView()
+            } else {
+                chip(added ? "Added" : "Add", isOn: added, id: "onboard.collection.\(item.id)") {
+                    guard !added, addingCollection == nil else { return }
+                    addingCollection = item.id
+                    Task {
+                        let count = (try? await CommunityCollections.install(item, forKids: isKidsProfile)) ?? 0
+                        addingCollection = nil
+                        if count > 0 { addedCollections.insert(item.id) }
+                    }
+                }
+            }
+        }
+    }
+
+    private func loadCommunity() async {
+        guard community.isEmpty, !communityLoading else { return }
+        communityLoading = true
+        defer { communityLoading = false }
+        do {
+            community = isKidsProfile
+                ? try await CommunityCollections.kidsAndFamily()
+                : try await CommunityCollections.list(sort: .popular, limit: 48).items
+            if community.isEmpty {
+                communityError = isKidsProfile
+                    ? "No kids or family collections are shared right now."
+                    : "No collections are shared right now."
+            }
+        } catch {
+            communityError = error.localizedDescription
+        }
+    }
+
+    @ViewBuilder
     private var alertsStep: some View {
         title("Stay in the loop")
         text("Omni can tell you when a match you set a reminder for is about to start, and when a show you follow has a new episode.")
@@ -197,6 +288,7 @@ struct OnboardingView: View {
             return
         }
         withAnimation(.easeInOut(duration: 0.25)) { step = list[index + 1] }
+        if list[index + 1] == .collections { Task { await loadCommunity() } }
     }
 
     private func finish() {

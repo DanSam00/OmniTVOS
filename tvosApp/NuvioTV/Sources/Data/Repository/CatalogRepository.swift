@@ -1432,9 +1432,7 @@ final class CinemetaCatalogRepository: CatalogRepository {
                 contentType: contentType,
                 catalogId: catalogId
             ) else {
-                throw CollectionSourceError.invalidResponse(
-                    "The add-on “\(addonId)” for “\(catalogId)” is not installed or available."
-                )
+                throw CollectionSourceError.addonNotInstalled(addonId: addonId)
             }
             sourceBaseURL = resolved
         } else if let resolved = await baseURL(
