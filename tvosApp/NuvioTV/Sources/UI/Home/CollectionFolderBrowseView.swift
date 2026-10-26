@@ -829,7 +829,7 @@ struct CollectionFolderBrowseView: View {
             for (index, source) in sources.enumerated() {
                 group.addTask { @MainActor [repository] in
                     do {
-                        let page = try await CollectionSourceResolver(repository: repository)
+                        let page = try await CollectionSourceResolver(repository: repository, folderTitle: folder.title)
                             .browse(source)
                         return CollectionFolderSourceLoad(
                             index: index,
@@ -948,7 +948,7 @@ struct CollectionFolderBrowseView: View {
 
         Task { @MainActor in
             do {
-                let page = try await CollectionSourceResolver(repository: repository)
+                let page = try await CollectionSourceResolver(repository: repository, folderTitle: folder.title)
                     .browse(source, cursor: requestedSkip)
                 guard let latestIndex = catalogRows.firstIndex(where: { $0.id == rowId }) else { return }
 

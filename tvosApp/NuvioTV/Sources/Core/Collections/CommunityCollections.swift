@@ -179,6 +179,24 @@ enum CommunityCollections {
     static let adultWords = ["horror", "adult", "18", "nsfw", "gore", "erotic", "mature", "xxx", "porn", "slasher"]
     /// TMDB genres: Animation, Family, and TV's Kids.
     private static let kidGenreIDs: Set<String> = ["16", "10751", "10762"]
+    /// Children's channels and studios, whose folders say nothing else about
+    /// who they are for.
+    static let kidBrands = ["nickelodeon", "nicktoons", "nick jr", "disney", "disney channel", "disney junior",
+                            "disney xd", "cartoon network", "boomerang", "cartoonito", "pbs kids", "cbeebies",
+                            "cbbc", "pixar", "dreamworks", "toon", "toons", "looney tunes", "hanna barbera"]
+    /// TMDB networks: Nickelodeon, Nick Jr., Nicktoons, Disney Channel,
+    /// Disney Junior, Disney XD, Cartoon Network, Boomerang.
+    private static let kidNetworkIDs: Set<String> = ["13", "35", "224", "54", "281", "44", "56", "523"]
+    /// A folder named for any of these is never a children's one, whatever
+    /// else it matches ("Child's Play" is a Chucky film).
+    static let kidBlockedWords = adultWords + [
+        "reality", "dating", "chucky", "child s play", "thriller", "thrillers", "crime", "killer", "killers",
+        "murder", "murders", "war", "zombie", "zombies", "romance", "romantic", "drama", "dramas",
+        "tearjerkers", "noir", "gangster", "gangsters", "mafia",
+    ]
+    /// TMDB genres no children's folder is built from: Horror, Thriller,
+    /// Crime, War, Reality, Romance, Talk, War & Politics.
+    private static let kidBlockedGenreIDs: Set<String> = ["27", "53", "80", "10752", "10764", "10749", "10767", "10768"]
 
     /// Whole words or phrases, so "kid" is not found in "kidnap".
     static func mentions(_ words: [String], in text: String) -> Bool {
@@ -189,43 +207,104 @@ enum CommunityCollections {
         return words.contains { joined.contains(" " + $0 + " ") }
     }
 
-    /// A folder made for children: by its name, its catalogs' names and
-    /// genres, or TMDB's Family, Animation and Kids genres.
-    static func folderIsKidFriendly(_ folder: [String: Any]) -> Bool {
-        let title = folder["title"] as? String ?? ""
-        let sources = (folder["sources"] as? [[String: Any]] ?? []) + (folder["catalogSources"] as? [[String: Any]] ?? [])
-            + (folder["catalog_sources"] as? [[String: Any]] ?? [])
-        var text = title
-        var genreIDs = Set<String>()
-        for source in sources {
-            for key in ["genre", "catalogId", "catalog_id", "title"] {
-                if let value = source[key] as? String { text += " " + value }
-            }
-            let filters = source["filters"] as? [String: Any]
-            let genres = (filters?["withGenres"] as? String) ?? (filters?["with_genres"] as? String) ?? ""
-            genreIDs.formUnion(genres.components(separatedBy: CharacterSet(charactersIn: ",|")).map {
-                $0.trimmingCharacters(in: .whitespaces)
-            })
-        }
-        guard !mentions(adultWords, in: text) else { return false }
-        return mentions(kidWords + ["animation", "animated"], in: text) || !genreIDs.isDisjoint(with: kidGenreIDs)
+    /// One catalog of a folder, as far as the kids rules care: its words,
+    /// TMDB genres and network.
+    struct KidsSourceTraits {
+        var text: String
+        var genres: Set<String>
+        var networks: Set<String>
     }
 
-    /// What a kids profile gets of these collections: all of one made for
-    /// children (less any folder marked for adults); of a general library,
-    /// only its children's folders. A collection left empty is dropped.
-    static func forKids(_ collections: [[String: Any]]) -> [[String: Any]] {
+    private static func ids(_ value: String?) -> Set<String> {
+        Set((value ?? "").components(separatedBy: CharacterSet(charactersIn: ",|"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty })
+    }
+
+    static func traits(ofRawSource source: [String: Any]) -> KidsSourceTraits {
+        let text = ["genre", "catalogId", "catalog_id", "title"].compactMap { source[$0] as? String }.joined(separator: " ")
+        let filters = source["filters"] as? [String: Any]
+        return KidsSourceTraits(
+            text: text,
+            genres: ids((filters?["withGenres"] as? String) ?? (filters?["with_genres"] as? String)),
+            networks: ids((filters?["withNetworks"] as? String) ?? (filters?["with_networks"] as? String))
+        )
+    }
+
+    static func traits(of source: NuvioCollectionSource) -> KidsSourceTraits {
+        KidsSourceTraits(
+            text: [source.genre, source.catalogId, source.title].compactMap { $0 }.joined(separator: " "),
+            genres: ids(source.filters?.withGenres),
+            networks: ids(source.filters?.withNetworks)
+        )
+    }
+
+    /// Never for a kids profile: named for something adult, violent or
+    /// romantic, or built mostly from genres like Horror, Crime or Reality.
+    static func folderIsBlockedForKids(title: String, sources: [KidsSourceTraits]) -> Bool {
+        if mentions(kidBlockedWords, in: title) { return true }
+        let withGenres = sources.filter { !$0.genres.isEmpty }
+        let blocked = withGenres.filter { !$0.genres.isDisjoint(with: kidBlockedGenreIDs) }
+        return !withGenres.isEmpty && blocked.count * 2 >= withGenres.count
+    }
+
+    /// A folder made for children: named for them or for a children's
+    /// channel or studio, or built mostly from children's genres or channels.
+    static func folderIsKidFriendly(title: String, sources: [KidsSourceTraits]) -> Bool {
+        guard !folderIsBlockedForKids(title: title, sources: sources) else { return false }
+        if mentions(kidWords + kidBrands + ["animation", "animated"], in: title) { return true }
+        let forKids = sources.filter { source in
+            (!source.genres.isDisjoint(with: kidGenreIDs) && source.genres.isDisjoint(with: kidBlockedGenreIDs))
+                || !source.networks.isDisjoint(with: kidNetworkIDs)
+                || mentions(kidWords + kidBrands, in: source.text)
+        }
+        return !sources.isEmpty && forKids.count * 2 >= sources.count
+    }
+
+    private static func rawSources(_ folder: [String: Any]) -> [KidsSourceTraits] {
+        ((folder["sources"] as? [[String: Any]] ?? []) + (folder["catalogSources"] as? [[String: Any]] ?? [])
+            + (folder["catalog_sources"] as? [[String: Any]] ?? [])).map(traits(ofRawSource:))
+    }
+
+    static func folderIsKidFriendly(_ folder: [String: Any]) -> Bool {
+        folderIsKidFriendly(title: folder["title"] as? String ?? "", sources: rawSources(folder))
+    }
+
+    /// Made for children by its own name or tags, not just mentioning them in
+    /// a description ("Includes … Kids").
+    static func entryIsMadeForKids(title: String, tags: [String] = []) -> Bool {
+        let text = ([title] + tags).joined(separator: " ")
+        return mentions(kidWords, in: text) && !mentions(adultWords, in: text)
+    }
+
+    /// What a kids profile gets of these collections: everything of an entry
+    /// or row made for children, less any folder that is never for them; of
+    /// a general library, only its children's folders. A collection left
+    /// empty is dropped.
+    static func forKids(_ collections: [[String: Any]], madeForKids entryForKids: Bool = false) -> [[String: Any]] {
         collections.compactMap { collection in
             let folders = collection["folders"] as? [[String: Any]] ?? []
             let name = [collection["title"] as? String, collection["name"] as? String].compactMap { $0 }.joined(separator: " ")
-            let madeForKids = mentions(kidWords, in: name) && !mentions(adultWords, in: name)
+            let madeForKids = entryForKids || (mentions(kidWords, in: name) && !mentions(adultWords, in: name))
             let kept = madeForKids
-                ? folders.filter { !mentions(adultWords, in: $0["title"] as? String ?? "") }
+                ? folders.filter { !folderIsBlockedForKids(title: $0["title"] as? String ?? "", sources: rawSources($0)) }
                 : folders.filter(folderIsKidFriendly)
             guard !kept.isEmpty else { return nil }
             var trimmed = collection
             trimmed["folders"] = kept
             return trimmed
+        }
+    }
+
+    /// What a kids profile shows of collections it already has: anything
+    /// added before these rules, less the folders never for children.
+    static func forKidsDisplay(_ collections: [NuvioCollection]) -> [NuvioCollection] {
+        collections.compactMap { collection in
+            var trimmed = collection
+            trimmed.folders = collection.folders.filter {
+                !folderIsBlockedForKids(title: $0.title, sources: $0.sources.map(traits(of:)))
+            }
+            return trimmed.folders.isEmpty ? nil : trimmed
         }
     }
 
@@ -236,7 +315,7 @@ enum CommunityCollections {
     @discardableResult
     static func install(_ item: Item, forKids: Bool) async throws -> Int {
         var rows = try await collections(for: item)
-        if forKids { rows = Self.forKids(rows) }
+        if forKids { rows = Self.forKids(rows, madeForKids: entryIsMadeForKids(title: item.title, tags: item.tags)) }
         guard !rows.isEmpty else { return 0 }
         var current = CollectionsStore.rawCollections()
         let existing = Set(current.compactMap { $0["id"] as? String })
@@ -299,24 +378,43 @@ enum CommunityCollections {
     // MARK: Kids profiles
 
     /// Set on a kids profile when it is created; the first time it is in use
-    /// it gets a couple of child-friendly collections, then this is cleared.
+    /// it gets the kids starter collections, then this is cleared.
     static let kidsSeedPendingKey = "omni.collections.kidsSeedPending"
 
-    /// Adds the two most popular child-friendly collections to the current
-    /// profile, once, if it is a new kids profile. Returns how many it added.
+    /// A new kids profile's Home, in this order: films, cartoons, kids'
+    /// streaming and decades; kids and family discovery; studios and
+    /// universes; and the children's part of the Mega library (its
+    /// channels, genres, film collections and anime).
+    static let kidsStarter: [(id: String, title: String)] = [
+        ("simple-kids-profile", "Simple Kids Profile"),
+        ("kaptain-s-kids-and-family-collection-easy-install-no-addons", "Kaptain's Kids and Family Collection"),
+        ("kids", "Kids"),
+        ("kaptain-s-mega-collection-v0-4", "Kaptain's Mega Collection"),
+    ]
+
+    /// Adds the kids starter collections to the current profile, once, if it
+    /// is a new kids profile; the two most popular child-friendly entries if
+    /// none of those can be had. Returns how many it added.
     @MainActor
     @discardableResult
     static func seedKidsProfileIfNeeded() async -> Int {
         let store = ProfileSettings.current
         guard store.bool(forKey: kidsSeedPendingKey) else { return 0 }
-        guard let page = try? await list(sort: .popular, limit: 48) else { return 0 }
-        let picks = page.items.filter(\.isKidFriendly).prefix(2)
         var added: [[String: Any]] = []
-        for item in picks {
-            if let rows = try? await collections(for: item) {
-                added += forKids(rows)
-                await recordInstall(item)
+        var picks = kidsStarter.map {
+            Item(id: $0.id, title: $0.title, description: "", tags: [], imageURL: nil, likes: 0, installs: 0, isPack: false)
+        }
+        var usedStarter = true
+        while true {
+            for item in picks {
+                if let rows = try? await collections(for: item) {
+                    added += forKids(rows, madeForKids: entryIsMadeForKids(title: item.title, tags: item.tags))
+                    await recordInstall(item)
+                }
             }
+            guard added.isEmpty, usedStarter, let page = try? await list(sort: .popular, limit: 48) else { break }
+            picks = Array(page.items.filter(\.isKidFriendly).prefix(2))
+            usedStarter = false
         }
         // Cleared even when nothing suitable was found, so it does not retry forever.
         store.set(false, forKey: kidsSeedPendingKey)

@@ -7,11 +7,12 @@ enum CollectionSourceError: LocalizedError {
     case missingTmdbID(String)
     case missingTraktClientID
     case missingTraktListID
+    case missingMdbListKey
     case unsupportedProvider(String)
     case requestFailed(String, Int)
     case invalidResponse(String)
     /// The folder names an add-on this profile does not have installed.
-    case addonNotInstalled(addonId: String)
+    case addonNotInstalled(addonId: String, catalogId: String? = nil)
 
     var errorDescription: String? {
         switch self {
@@ -27,13 +28,19 @@ enum CollectionSourceError: LocalizedError {
             return "Enter a Trakt Client ID in Settings to load this folder."
         case .missingTraktListID:
             return "This Trakt source has no public list ID."
+        case .missingMdbListKey:
+            return "This folder is an MDBList list. Enter an MDBList API key in Settings → Integrations to load it."
         case .unsupportedProvider(let provider):
             return "The collection source provider “\(provider)” is not supported."
         case .requestFailed(let provider, let status):
             return ServiceErrorText.describe(status: status, service: provider)
         case .invalidResponse(let provider):
             return "\(provider) returned data the app could not read."
-        case .addonNotInstalled(let addonId):
+        case .addonNotInstalled(let addonId, let catalogId):
+            if let name = Self.knownAddonName(addonId) {
+                let catalog = catalogId.map { " It needs the catalog “\($0)” in that add-on's configuration, as the collection's author set it up." } ?? ""
+                return "This row comes from \(name), which isn't installed on this profile.\(catalog) Install and configure \(name) in Settings → Integrations → Add-ons."
+            }
             return "This row comes from the add-on “\(addonId)”, which isn't installed on this profile. Install it in Settings → Integrations → Add-ons to see it."
         }
     }
@@ -47,9 +54,21 @@ extension CollectionSourceError {
         case .missingTmdbAPIKey: return "Add a TMDB Key"
         case .tmdbKeyRejected: return "Update the TMDB Key"
         case .missingTraktClientID: return "Set Up Trakt"
-        case .addonNotInstalled: return "Install the Add-on"
+        case .missingMdbListKey: return "Add an MDBList Key"
+        case .addonNotInstalled(let addonId, _):
+            return Self.knownAddonName(addonId).map { "Set Up \($0)" } ?? "Install the Add-on"
         default: return nil
         }
+    }
+
+    /// The add-on's own name, for the ids collections refer to it by.
+    static func knownAddonName(_ addonId: String) -> String? {
+        let id = addonId.lowercased()
+        if id.contains("aio-metadata") || id.contains("aiometadata") || id.contains("aio.metadata") { return "AIOMetadata" }
+        if id.contains("aiostreams") { return "AIOStreams" }
+        if id.contains("mdblist") { return "MDBList" }
+        if id.contains("trakt") { return "Trakt" }
+        return nil
     }
 
     /// Where in Settings → Integrations that fix is.
@@ -57,6 +76,7 @@ extension CollectionSourceError {
         switch self {
         case .missingTmdbAPIKey, .tmdbKeyRejected: return .tmdb
         case .missingTraktClientID: return .trakt
+        case .missingMdbListKey: return .mdblist
         case .addonNotInstalled: return .addons
         default: return nil
         }
@@ -95,6 +115,9 @@ enum SettingsDeepLink {
 /// TMDB/Trakt; callers store the opaque value from `CatalogPage.nextSkip`.
 struct CollectionSourceResolver {
     let repository: CatalogRepository
+    /// The folder's title ("1980s"), a hint for catalogs whose id says less
+    /// than it should (`AIOMetadataFallback`).
+    var folderTitle: String? = nil
     var session: URLSession = .shared
     var settings: UserDefaults = ProfileSettings.current
 
@@ -122,17 +145,30 @@ struct CollectionSourceResolver {
                   let catalogId = nonEmpty(source.catalogId) else {
                 throw CollectionSourceError.invalidAddonSource
             }
-            return try await repository.browseCatalog(
-                addonId: nonEmpty(source.addonId),
-                contentType: type,
-                catalogId: catalogId,
-                skip: max(cursor, 0),
-                genre: nonEmpty(source.genre)
-            )
+            // A catalog AIOMetadata builds from TMDB, Trakt or MDBList, without
+            // that add-on (or with it, unconfigured): straight from the
+            // service, with this profile's key. The cursor is then a page number.
+            let fallback = AIOMetadataFallback.source(for: source, folderTitle: folderTitle)
+            do {
+                if fallback != nil, cursor > 0 { throw CollectionSourceError.addonNotInstalled(addonId: source.addonId ?? "", catalogId: source.catalogId) }
+                return try await repository.browseCatalog(
+                    addonId: nonEmpty(source.addonId),
+                    contentType: type,
+                    catalogId: catalogId,
+                    skip: max(cursor, 0),
+                    genre: nonEmpty(source.genre)
+                )
+            } catch {
+                guard let fallback, !(error is CancellationError) else { throw error }
+                let page = try await browseSource(fallback, cursor: max(cursor, 1))
+                return AIOMetadataFallback.filtered(page, for: source)
+            }
         case "tmdb":
             return try await browseTmdb(source, page: max(cursor, 1))
         case "trakt":
             return try await browseTrakt(source, page: max(cursor, 1))
+        case "mdblist":
+            return try await browseMdbList(source, page: max(cursor, 1))
         default:
             throw CollectionSourceError.unsupportedProvider(source.provider)
         }
@@ -146,6 +182,7 @@ struct CollectionSourceResolver {
         case "trakt":
             return "Trakt List"
         default:
+            if let readable = AIOMetadataFallback.readableName(for: source) { return readable }
             let name = (nonEmpty(source.catalogId) ?? "Catalog")
                 .replacingOccurrences(of: "_", with: " ")
                 .replacingOccurrences(of: "-", with: " ")
@@ -281,13 +318,21 @@ struct CollectionSourceResolver {
         let voteCountGte = filters?.voteCountGte.map { String($0) }
         let voteAverageGte = filters?.voteAverageGte.map { String($0) }
         let voteAverageLte = filters?.voteAverageLte.map { String($0) }
+        // A kids profile browsing a channel or service with no genre of its
+        // own gets its children's titles (Animation, Family, Kids) rather
+        // than a page of mostly adult ones the kids filter then hides.
+        let isKids = settings.bool(forKey: SettingsKey.kidsProfile)
+        let kidsGenres = isKids && nonEmpty(filters?.withGenres) == nil
+            ? (mediaType == "tv" ? "10762|10751|16" : "10751|16")
+            : nil
         var values: [(String, String?)] = [
             ("language", language),
             ("page", String(page)),
             ("sort_by", sort),
             ("with_companies", filters?.withCompanies),
             ("with_networks", filters?.withNetworks),
-            ("with_genres", filters?.withGenres),
+            ("with_genres", filters?.withGenres ?? kidsGenres),
+            ("without_genres", isKids ? "27,53,80,10752,10764,10749" : nil),
             ("vote_count.gte", voteCountGte),
             ("vote_average.gte", voteAverageGte),
             ("vote_average.lte", voteAverageLte),
@@ -545,6 +590,92 @@ struct CollectionSourceResolver {
         return value
     }
 
+    // MARK: - MDBList
+
+    /// An MDBList list, with this profile's MDBList key; its titles' art and
+    /// overviews from TMDB when there is a TMDB key, else MetaHub's posters.
+    private func browseMdbList(_ source: NuvioCollectionSource, page: Int) async throws -> CatalogPage {
+        guard let apiKey = nonEmpty(settings.string(forKey: SettingsKey.mdbListApiKey)) else {
+            throw CollectionSourceError.missingMdbListKey
+        }
+        guard let listID = nonEmpty(source.catalogId) else {
+            throw CollectionSourceError.invalidAddonSource
+        }
+        let limit = 40
+        var components = URLComponents(string: "https://api.mdblist.com/lists/\(listID)/items")!
+        components.queryItems = [
+            URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "offset", value: String((page - 1) * limit)),
+            URLQueryItem(name: "apikey", value: apiKey),
+        ]
+        guard let url = components.url else { throw CollectionSourceError.invalidResponse("MDBList") }
+        // MDBList's firewall turns away requests without an app's user agent.
+        let response: MdbListItemsResponse = try await request(url, provider: "MDBList", headers: ["User-Agent": "Omni"])
+        let entries = ((response.movies ?? []) + (response.shows ?? [])).sorted { ($0.rank ?? .max) < ($1.rank ?? .max) }
+
+        let tmdbKey = nonEmpty(settings.string(forKey: SettingsKey.tmdbApiKey))
+        let language = TmdbDetailsService.preferredLanguage
+        var details = [Int: TmdbCollectionItem]()
+        if let tmdbKey {
+            await withTaskGroup(of: (Int, TmdbCollectionItem?).self) { group in
+                var next = 0
+                func addNext() {
+                    guard next < entries.count else { return }
+                    let index = next
+                    next += 1
+                    let entry = entries[index]
+                    guard let tmdb = entry.ids?.tmdb else { group.addTask { (index, nil) }; return }
+                    let path = entry.isShow ? "tv/\(tmdb)" : "movie/\(tmdb)"
+                    group.addTask {
+                        let item: TmdbCollectionItem? = try? await tmdbRequest(
+                            path: path, apiKey: tmdbKey, query: [URLQueryItem(name: "language", value: language)]
+                        )
+                        return (index, item)
+                    }
+                }
+                for _ in 0..<8 { addNext() }
+                while let (index, item) = await group.next() {
+                    details[index] = item
+                    addNext()
+                }
+            }
+        }
+        let items = entries.indices.compactMap { mdbListMeta(entries[$0], details: details[$0]) }
+        let hasMore = response.pagination?.hasMore ?? (entries.count >= limit)
+        return CatalogPage(items: items, hasMore: hasMore, page: page, nextSkip: hasMore ? page + 1 : nil)
+    }
+
+    private func mdbListMeta(_ entry: MdbListEntry, details: TmdbCollectionItem?) -> NuvioMeta? {
+        guard let name = nonEmpty(details?.title) ?? nonEmpty(details?.name) ?? nonEmpty(entry.title) else { return nil }
+        let imdb = nonEmpty(entry.ids?.imdb) ?? nonEmpty(entry.imdbId)
+        let tmdb = entry.ids?.tmdb
+        guard let id = imdb ?? tmdb.map({ "tmdb:\($0)" }) else { return nil }
+        let releaseDate = nonEmpty(details?.releaseDate) ?? nonEmpty(details?.firstAirDate) ?? nonEmpty(entry.releaseDate)
+        let metahub: (String) -> String? = { kind in imdb.map { "https://images.metahub.space/\(kind)/medium/\($0)/img" } }
+        return NuvioMeta(
+            id: id,
+            name: name,
+            description: nonEmpty(details?.overview),
+            posterUrl: tmdbImage(details?.posterPath, size: "w500") ?? metahub("poster"),
+            backgroundUrl: tmdbImage(details?.backdropPath, size: "w1280") ?? metahub("background"),
+            logoUrl: nil,
+            imdbId: imdb,
+            tmdbId: tmdb,
+            type: entry.isShow ? "series" : "movie",
+            year: entry.releaseYear ?? releaseDate.flatMap { Int($0.prefix(4)) },
+            genres: nil,
+            rating: details?.voteAverage.flatMap { $0 > 0 ? $0 : nil },
+            releaseInfo: (entry.releaseYear.map(String.init)) ?? releaseDate.map { String($0.prefix(4)) },
+            runtime: nil,
+            cast: nil,
+            director: nil,
+            writer: nil,
+            certification: nil,
+            country: nil,
+            released: releaseDate
+        )
+    }
+
     // MARK: - Networking
 
     private func request<T: Decodable>(
@@ -730,6 +861,41 @@ private struct TmdbCollectionItem: Decodable {
     }
 }
 
+private struct MdbListItemsResponse: Decodable {
+    let movies: [MdbListEntry]?
+    let shows: [MdbListEntry]?
+    let pagination: Pagination?
+
+    struct Pagination: Decodable {
+        let hasMore: Bool?
+        enum CodingKeys: String, CodingKey { case hasMore = "has_more" }
+    }
+}
+
+private struct MdbListEntry: Decodable {
+    let title: String?
+    let mediatype: String?
+    let imdbId: String?
+    let releaseYear: Int?
+    let releaseDate: String?
+    let rank: Int?
+    let ids: IDs?
+
+    var isShow: Bool { (mediatype ?? "").lowercased() == "show" }
+
+    struct IDs: Decodable {
+        let imdb: String?
+        let tmdb: Int?
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case title, mediatype, rank, ids
+        case imdbId = "imdb_id"
+        case releaseYear = "release_year"
+        case releaseDate = "release_date"
+    }
+}
+
 private struct TraktCollectionListItem: Decodable {
     let movie: TraktCollectionMedia?
     let show: TraktCollectionMedia?
@@ -770,3 +936,229 @@ private struct TraktCollectionImages: Decodable {
     let banner: [String]?
     let thumb: [String]?
 }
+
+/// AIOMetadata's catalogs, read without AIOMetadata.
+///
+/// Community collections built with AIOMetadata name its catalogs
+/// (`tmdb.list.8661472.series`, `tmdb.discover.movie.decades.1980s`,
+/// `trakt.list.22899376`), which only that add-on, configured as its author's
+/// was, can serve. Most say enough in the id to ask TMDB or Trakt directly:
+/// - `tmdb.list.<id>[.movies|.series]`: the TMDB list, of that type.
+/// - `tmdb.collection.<id>`: the TMDB collection.
+/// - `tmdb.discover.<type>.<words>.<suffix>`: a TMDB discover search built
+///   from the words: a streaming service ("netflix", "amazon_prime"), a
+///   decade ("1980s"; the folder's own title wins, since copied catalogs keep
+///   their old name), a year, genres, and "new"/"top" for the order; plus the
+///   folder's genre. Ids with none of these are left to the add-on.
+/// - `tmdb.top`, `tmdb.trending`, `tmdb.popular`, `tmdb.top_rated`,
+///   `tmdb.year`, `tmdb.airing_today`: the matching TMDB order.
+/// - `trakt.list.<id>`: the public Trakt list.
+enum AIOMetadataFallback {
+    static func source(for source: NuvioCollectionSource, folderTitle: String?) -> NuvioCollectionSource? {
+        guard let catalogId = source.catalogId?.trimmingCharacters(in: .whitespaces).lowercased(),
+              !catalogId.isEmpty else { return nil }
+        let parts = catalogId.split(separator: ".").map(String.init)
+        let isSeries = (source.type ?? "").lowercased() == "series"
+        let mediaType = isSeries ? "tv" : "movie"
+        let genreName = source.genre
+
+        if parts.count >= 3, parts[0] == "trakt", parts[1] == "list", let id = Int64(parts[2]) {
+            return NuvioCollectionSource(provider: "trakt", title: source.title, traktListId: id, mediaType: mediaType)
+        }
+        if parts.count >= 2, parts[0] == "mdblist", Int(parts[1]) != nil {
+            return NuvioCollectionSource(provider: "mdblist", catalogId: parts[1], title: source.title, mediaType: mediaType)
+        }
+        guard parts.first == "tmdb", parts.count >= 2 else { return nil }
+
+        switch parts[1] {
+        case "list":
+            guard parts.count >= 3, let id = Int(parts[2]) else { return nil }
+            return NuvioCollectionSource(provider: "tmdb", tmdbSourceType: "LIST", title: source.title, tmdbId: id, mediaType: mediaType)
+        case "collection":
+            guard parts.count >= 3, let id = Int(parts[2]) else { return nil }
+            return NuvioCollectionSource(provider: "tmdb", tmdbSourceType: "COLLECTION", title: source.title, tmdbId: id, mediaType: "movie")
+        case "discover":
+            let words = parts.dropFirst(3).joined(separator: ".")
+            return discover(words: words, mediaType: mediaType, genreName: genreName, folderTitle: folderTitle, title: source.title)
+        case "top", "popular", "trending":
+            return discoverSource(filters: genreFilters(genreName, mediaType: mediaType), sort: "popularity.desc", mediaType: mediaType, title: source.title)
+        case "top_rated":
+            var filters = genreFilters(genreName, mediaType: mediaType)
+            filters.voteCountGte = 300
+            return discoverSource(filters: filters, sort: "vote_average.desc", mediaType: mediaType, title: source.title)
+        case "year":
+            var filters = NuvioTmdbCollectionFilters()
+            filters.year = genreName.flatMap { Int($0) } ?? Calendar.current.component(.year, from: Date())
+            return discoverSource(filters: filters, sort: "popularity.desc", mediaType: mediaType, title: source.title)
+        case "airing_today":
+            var filters = NuvioTmdbCollectionFilters()
+            let today = ISO8601DateFormatter.string(from: Date(), timeZone: .current, formatOptions: [.withFullDate])
+            filters.releaseDateGte = today
+            filters.releaseDateLte = today
+            return discoverSource(filters: filters, sort: "popularity.desc", mediaType: "tv", title: source.title)
+        default:
+            return nil
+        }
+    }
+
+    /// "Netflix Series", "1980s Movies", "Movies · Trakt": an AIOMetadata
+    /// catalog's id as a tab name, without its random suffix; a list says
+    /// whose, so a folder's TMDB and Trakt lists aren't both "Movies".
+    static func readableName(for source: NuvioCollectionSource) -> String? {
+        guard let catalogId = source.catalogId?.lowercased(),
+              catalogId.hasPrefix("tmdb.") || catalogId.hasPrefix("trakt.") || catalogId.hasPrefix("mdblist.") else { return nil }
+        let parts = catalogId.split(separator: ".").map(String.init)
+        let kind = (source.type ?? "").lowercased() == "series" ? "Series" : "Movies"
+        guard parts.count > 2, parts[1] == "discover" else {
+            if parts.count > 1, parts[1] == "collection" { return "Collection" }
+            let service = ["tmdb": "TMDB", "trakt": "Trakt", "mdblist": "MDBList"][parts[0]] ?? parts[0]
+            return "\(kind) · \(service)"
+        }
+        let isSuffix: (String) -> Bool = { word in
+            word.count >= 6 && word.contains(where: \.isNumber) && word.contains(where: \.isLetter)
+                && word.range(of: #"^(19|20)\d0s$"#, options: .regularExpression) == nil
+        }
+        let words = parts.dropFirst(3)
+            .flatMap { $0.split(separator: "_").map(String.init) }
+            .filter { !isSuffix($0) && !["copy", "decades", "decade", "movie", "movies", "series", "tv"].contains($0) }
+        guard !words.isEmpty else { return kind }
+        let names = ["hbo": "HBO", "appletv": "Apple TV", "amazon": "Amazon", "max": "Max"]
+        let title = words.map { names[$0] ?? ($0.prefix(1).uppercased() + $0.dropFirst()) }.joined(separator: " ")
+        return "\(title) \(kind)"
+    }
+
+    /// A list mixes films and shows; a catalog of one type keeps its own.
+    static func filtered(_ page: CatalogPage, for source: NuvioCollectionSource) -> CatalogPage {
+        guard let type = source.type?.lowercased(), type == "movie" || type == "series" else { return page }
+        let kept = page.items.filter { $0.type.lowercased() == type }
+        return CatalogPage(items: kept, hasMore: page.hasMore, page: page.page, nextSkip: page.nextSkip)
+    }
+
+    // MARK: Discover
+
+    private static func discover(
+        words: String,
+        mediaType: String,
+        genreName: String?,
+        folderTitle: String?,
+        title: String?
+    ) -> NuvioCollectionSource? {
+        let tokens = words.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty && $0 != "copy" }
+        let joined = tokens.joined(separator: " ")
+        var filters = genreFilters(genreName, mediaType: mediaType)
+        var understood = filters.withGenres != nil
+
+        // A streaming service.
+        for (names, providers) in services where names.contains(where: { name in
+            (" " + joined + " ").contains(" " + name + " ")
+        }) {
+            filters.withWatchProviders = providers
+            filters.watchRegion = Locale.current.region?.identifier ?? "US"
+            understood = true
+            break
+        }
+        // Genres named in the id, beside the folder's.
+        let named = tokens.compactMap { genreIDs(mediaType)[$0] }
+        if !named.isEmpty {
+            filters.withGenres = ([filters.withGenres].compactMap { $0 } + named).joined(separator: ",")
+            understood = true
+        }
+        // A decade: the folder's title first, since a copied catalog keeps the
+        // name it was copied from ("1990s_copy" in the 1980s folder).
+        if let decade = decade(in: folderTitle ?? "") ?? decade(in: joined) {
+            filters.releaseDateGte = "\(decade)-01-01"
+            filters.releaseDateLte = "\(decade + 9)-12-31"
+            understood = true
+        } else if let year = tokens.compactMap({ Int($0) }).first(where: { (1900...2100).contains($0) }) {
+            filters.year = year
+            understood = true
+        }
+        guard understood else { return nil }
+
+        var sort = "popularity.desc"
+        if tokens.contains(where: { ["new", "latest", "recent", "newest"].contains($0) }) {
+            sort = mediaType == "tv" ? "first_air_date.desc" : "primary_release_date.desc"
+            if filters.releaseDateLte == nil {
+                filters.releaseDateLte = ISO8601DateFormatter.string(from: Date(), timeZone: .current, formatOptions: [.withFullDate])
+            }
+        } else if tokens.contains(where: { ["top", "best", "rated", "acclaimed"].contains($0) }) {
+            sort = "vote_average.desc"
+            filters.voteCountGte = 300
+        }
+        return discoverSource(filters: filters, sort: sort, mediaType: mediaType, title: title)
+    }
+
+    private static func discoverSource(
+        filters: NuvioTmdbCollectionFilters,
+        sort: String,
+        mediaType: String,
+        title: String?
+    ) -> NuvioCollectionSource {
+        NuvioCollectionSource(
+            provider: "tmdb",
+            tmdbSourceType: "DISCOVER",
+            title: title,
+            mediaType: mediaType,
+            sortBy: sort,
+            filters: filters
+        )
+    }
+
+    private static func decade(in text: String) -> Int? {
+        let lowered = text.lowercased()
+        guard let match = lowered.range(of: #"(19|20)\d0s"#, options: .regularExpression) else {
+            // "80s", "90s".
+            guard let short = lowered.range(of: #"\b[0-9]0s\b"#, options: .regularExpression),
+                  let digit = Int(lowered[short].prefix(1)) else { return nil }
+            return digit >= 3 ? 1900 + digit * 10 : 2000 + digit * 10
+        }
+        return Int(lowered[match].prefix(4))
+    }
+
+    private static func genreFilters(_ name: String?, mediaType: String) -> NuvioTmdbCollectionFilters {
+        var filters = NuvioTmdbCollectionFilters()
+        if let name, let id = genreIDs(mediaType)[name.lowercased()] { filters.withGenres = id }
+        return filters
+    }
+
+    /// TMDB watch providers: Netflix, Prime Video, Disney+, Apple TV+, Max,
+    /// Paramount+, Hulu, Peacock, Crunchyroll, Starz, Showtime, Stan, Binge.
+    private static let services: [([String], String)] = [
+        (["netflix"], "8"),
+        (["amazon", "prime", "primevideo"], "9|119"),
+        (["disney", "disneyplus"], "337"),
+        (["appletv", "apple"], "350"),
+        (["hbo", "max", "hbomax"], "1899|384"),
+        (["paramount"], "531"),
+        (["hulu"], "15"),
+        (["peacock"], "386|387"),
+        (["crunchyroll"], "283"),
+        (["starz"], "43"),
+        (["showtime"], "37"),
+        (["stan"], "21"),
+        (["binge"], "385"),
+    ]
+
+    private static func genreIDs(_ mediaType: String) -> [String: String] {
+        mediaType == "tv" ? tvGenres : movieGenres
+    }
+
+    private static let movieGenres: [String: String] = [
+        "action": "28", "adventure": "12", "animation": "16", "animated": "16", "comedy": "35",
+        "crime": "80", "documentary": "99", "drama": "18", "family": "10751", "kids": "10751",
+        "fantasy": "14", "history": "36", "horror": "27", "music": "10402", "musical": "10402",
+        "mystery": "9648", "romance": "10749", "science fiction": "878", "scifi": "878", "sci": "878",
+        "thriller": "53", "war": "10752", "western": "37",
+    ]
+
+    private static let tvGenres: [String: String] = [
+        "action": "10759", "adventure": "10759", "action & adventure": "10759", "animation": "16",
+        "animated": "16", "comedy": "35", "crime": "80", "documentary": "99", "drama": "18",
+        "family": "10751", "kids": "10762", "mystery": "9648", "news": "10763", "reality": "10764",
+        "sci-fi & fantasy": "10765", "scifi": "10765", "sci": "10765", "fantasy": "10765",
+        "soap": "10766", "talk": "10767", "war": "10768", "war & politics": "10768", "western": "37",
+    ]
+}
+

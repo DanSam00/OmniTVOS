@@ -19,6 +19,8 @@ public struct UserProfileView: View {
     @State private var newProfilePin = ""
     @State private var newProfileAvatarId = ProfileAvatarCatalog.defaultId
     @State private var newProfilePhoto: Data?
+    @State private var newProfileIsKids = false
+    @State private var newProfileSetup = NewProfileSetup()
     @FocusState private var focusedItem: String?
     #if os(macOS)
     /// macOS has no focus engine, so the cards were unreachable: the profile
@@ -189,12 +191,17 @@ public struct UserProfileView: View {
                     name: $newProfileName,
                     pin: $newProfilePin,
                     avatarId: $newProfileAvatarId,
-                    photo: $newProfilePhoto
+                    photo: $newProfilePhoto,
+                    isKids: $newProfileIsKids,
+                    setup: $newProfileSetup,
+                    primaryName: viewModel.primaryProfile?.name ?? "Primary"
                 ) {
                     viewModel.createProfile(
                         name: newProfileName,
                         pin: newProfilePin.isEmpty ? nil : newProfilePin,
                         avatarId: newProfileAvatarId,
+                        isKids: newProfileIsKids,
+                        setup: newProfileSetup,
                         customAvatarPhoto: newProfilePhoto,
                         onCreated: onProfileCreated
                     )
@@ -202,6 +209,8 @@ public struct UserProfileView: View {
                     newProfilePin = ""
                     newProfileAvatarId = ProfileAvatarCatalog.defaultId
                     newProfilePhoto = nil
+                    newProfileIsKids = false
+                    newProfileSetup = NewProfileSetup()
                 }
                 .transition(.opacity)
                 .zIndex(2)
@@ -920,7 +929,19 @@ struct AddProfileView: View {
     @Binding var avatarId: String
     /// A photo for Omni (macOS picks one from Photos); nil on the TV.
     @Binding var photo: Data?
+    @Binding var isKids: Bool
+    @Binding var setup: NewProfileSetup
+    var primaryName: String = "Primary"
     var onSave: () -> Void
+
+    /// 0: name, PIN and avatar; 1: kids, setup from primary, teams and
+    /// collections, as the iPhone's Add Profile offers.
+    @State private var page = 0
+    @State private var newTeam = ""
+    @State private var isEditingTeam = false
+    @State private var community: [CommunityCollections.Item] = []
+    @State private var communityLoading = false
+    @State private var communityError: String?
 
     @FocusState private var focusedField: Field?
     @State private var showingPinSheet = false
@@ -939,7 +960,7 @@ struct AddProfileView: View {
     #endif
 
     fileprivate enum Field {
-        case name
+        case name, team
     }
 
     #if os(macOS)
@@ -957,7 +978,8 @@ struct AddProfileView: View {
     }
 
     private var macBands: [MacFocusBand] {
-        [
+        if page == 1 { return macSetupBands }
+        return [
             MacFocusBand(id: "info", items: [Self.nameID, Self.pinID]),
             MacFocusBand(id: "photo", items: macAvatarButtonIDs),
             MacFocusBand(id: "categories", items: avatarCatalog.categories.map { Self.categoryPrefix + $0 }),
@@ -973,15 +995,33 @@ struct AddProfileView: View {
 
     private func macIsFocused(_ id: String) -> Bool { macFocus.itemID == id }
 
+    private var macSetupBands: [MacFocusBand] {
+        var bands = [
+            MacFocusBand(id: "toggles", items: Self.toggleIDs, columns: 1),
+            MacFocusBand(id: "teamEntry", items: [Self.teamFieldID, Self.teamAddID]),
+        ]
+        if !setup.favouriteTeams.isEmpty {
+            bands.append(MacFocusBand(id: "teams", items: setup.favouriteTeams.map { Self.teamPrefix + $0 }))
+        }
+        if !shownCommunity.isEmpty {
+            bands.append(MacFocusBand(id: "collections", items: shownCommunity.map { Self.collectionPrefix + $0.id }, columns: 1))
+        }
+        bands.append(MacFocusBand(id: "setupActions", items: [Self.backID, Self.saveID]))
+        return bands
+    }
+
     private func macActivate(_ band: String, _ item: String) {
+        if page == 1 {
+            macActivateSetup(item)
+            return
+        }
         switch item {
         case Self.nameID: isEditingName = true
         case Self.pinID: showingPinSheet = true
         case Self.cancelID: isPresented = false
         case Self.saveID:
             guard canSave else { return }
-            onSave()
-            isPresented = false
+            showSetupPage()
         default:
             if item.hasPrefix(Self.categoryPrefix) {
                 avatarCategory = String(item.dropFirst(Self.categoryPrefix.count))
@@ -994,6 +1034,28 @@ struct AddProfileView: View {
         }
     }
 
+    private func macActivateSetup(_ item: String) {
+        switch item {
+        case Self.kidsID: isKids.toggle()
+        case Self.addonsID: setup.usesPrimaryAddons.toggle()
+        case Self.pluginsID: setup.usesPrimaryPlugins.toggle()
+        case Self.copySettingsID: setup.copiesSettings.toggle()
+        case Self.copyKeysID: if setup.copiesSettings { setup.copiesCredentials.toggle() }
+        case Self.teamFieldID: isEditingTeam = true
+        case Self.teamAddID: addTeam()
+        case Self.backID: showInfoPage()
+        case Self.saveID: save()
+        default:
+            if item.hasPrefix(Self.teamPrefix) {
+                let team = String(item.dropFirst(Self.teamPrefix.count))
+                setup.favouriteTeams.removeAll { $0 == team }
+            } else if item.hasPrefix(Self.collectionPrefix),
+                      let picked = shownCommunity.first(where: { $0.id == String(item.dropFirst(Self.collectionPrefix.count)) }) {
+                togglePick(picked)
+            }
+        }
+    }
+
     private func macHandle(_ key: MacKey) {
         // The PIN pad covers the screen; it takes digits itself, and Escape
         // closes it rather than the whole screen.
@@ -1002,11 +1064,12 @@ struct AddProfileView: View {
             return
         }
         if key == .back {
-            isPresented = false
+            if page == 1 { showInfoPage() } else { isPresented = false }
             return
         }
         // Up or Down out of the name field ends typing in it.
         if isEditingName, key == .up || key == .down { isEditingName = false }
+        if isEditingTeam, key == .up || key == .down { isEditingTeam = false }
         // There is no menu here to open, so Left at the edge goes nowhere.
         if key == .left, let band = macBands.first(where: { $0.id == macFocus.bandID }),
            let index = macFocus.itemID.flatMap({ band.items.firstIndex(of: $0) }),
@@ -1027,6 +1090,13 @@ struct AddProfileView: View {
             ProfileBackground()
                 .ignoresSafeArea()
 
+            if page == 1 {
+                setupPage
+                    .padding(.horizontal, 84)
+                    .padding(.vertical, 62)
+                    .frame(maxWidth: 1180, maxHeight: .infinity)
+                    .transition(.opacity)
+            } else {
             VStack(alignment: .leading, spacing: 28) {
                 HStack(alignment: .center, spacing: 24) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -1093,14 +1163,13 @@ struct AddProfileView: View {
                     }
 
                     ProfileAvatarPickerButton(
-                        title: "Save",
-                        systemImage: "checkmark",
+                        title: "Continue",
+                        systemImage: "arrow.right",
                         prominent: true,
                         disabled: !canSave,
                         macIsFocused: macFocused(Self.macSaveID)
                     ) {
-                        onSave()
-                        isPresented = false
+                        showSetupPage()
                     }
                 }
             }
@@ -1108,6 +1177,7 @@ struct AddProfileView: View {
             .padding(.vertical, 62)
             .frame(maxWidth: 1180, maxHeight: .infinity)
             .disabled(showingPinSheet)
+            }
 
             if showingPinSheet {
                 ProfilePinManagementView(
@@ -1129,6 +1199,7 @@ struct AddProfileView: View {
             }
         }
         .animation(.easeInOut(duration: 0.18), value: showingPinSheet)
+        .animation(.easeInOut(duration: 0.2), value: page)
         .onExitCommand(perform: handleExitCommand)
         .onAppear {
             DispatchQueue.main.async { focusedField = .name }
@@ -1186,9 +1257,343 @@ struct AddProfileView: View {
     private func handleExitCommand() {
         if showingPinSheet {
             showingPinSheet = false
+        } else if page == 1 {
+            showInfoPage()
         } else {
             isPresented = false
         }
+    }
+
+    // MARK: Setup page
+
+    private static let kidsID = "setup.kids"
+    private static let addonsID = "setup.addons"
+    private static let pluginsID = "setup.plugins"
+    private static let copySettingsID = "setup.copySettings"
+    private static let copyKeysID = "setup.copyKeys"
+    private static let toggleIDs = [kidsID, addonsID, pluginsID, copySettingsID, copyKeysID]
+    private static let teamFieldID = "setup.teamField"
+    private static let teamAddID = "setup.teamAdd"
+    private static let teamPrefix = "team:"
+    private static let collectionPrefix = "collection:"
+    private static let backID = "setup.back"
+
+    private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var shownCommunity: [CommunityCollections.Item] { Array(community.prefix(12)) }
+
+    private func showSetupPage() {
+        guard canSave else { return }
+        isEditingName = false
+        page = 1
+        #if os(macOS)
+        macFocus.update(macBands)
+        macFocus.focus(band: "toggles", item: Self.kidsID)
+        #endif
+        Task { await loadCommunity() }
+    }
+
+    private func showInfoPage() {
+        isEditingTeam = false
+        page = 0
+        #if os(macOS)
+        macFocus.update(macBands)
+        macFocus.focus(band: "actions", item: Self.saveID)
+        #endif
+    }
+
+    private func save() {
+        onSave()
+        isPresented = false
+    }
+
+    private func addTeam() {
+        let team = newTeam.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !team.isEmpty, !setup.favouriteTeams.contains(team) else { return }
+        setup.favouriteTeams.append(team)
+        newTeam = ""
+        isEditingTeam = false
+    }
+
+    private func togglePick(_ item: CommunityCollections.Item) {
+        if setup.communityPicks[item.id] != nil {
+            setup.communityPicks[item.id] = nil
+        } else {
+            setup.communityPicks[item.id] = item.title
+        }
+    }
+
+    /// Kids profiles: nuvio.tv searched for kids, family and children;
+    /// others the most popular.
+    private func loadCommunity() async {
+        communityLoading = true
+        communityError = nil
+        defer { communityLoading = false }
+        do {
+            community = isKids
+                ? try await CommunityCollections.kidsAndFamily()
+                : try await CommunityCollections.list(sort: .popular, limit: 24).items
+            let ids = Set(community.map(\.id))
+            setup.communityPicks = setup.communityPicks.filter { ids.contains($0.key) }
+            if community.isEmpty {
+                communityError = isKids ? "No kids or family collections are shared right now." : "No collections are shared right now."
+            }
+        } catch {
+            community = []
+            communityError = error.localizedDescription
+        }
+    }
+
+    private var setupPage: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Set Up \(trimmedName)")
+                    .font(.system(size: 42, weight: .bold))
+                    .foregroundColor(.white)
+                Text("Choose what this profile starts with. Everything can be changed later in Settings.")
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundColor(.white.opacity(0.62))
+            }
+
+            ScrollViewReader { reader in
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 30) {
+                        setupSection("Profile") {
+                            AddProfileToggleRow(
+                                title: "Kids profile",
+                                subtitle: "Only films rated up to PG and shows up to TV-G, and nothing tagged horror, thriller, crime or war.",
+                                isOn: $isKids,
+                                macIsFocused: macFocused(Self.kidsID)
+                            )
+                            .id(Self.kidsID)
+                        }
+
+                        setupSection("Setup from \(primaryName)") {
+                            AddProfileToggleRow(title: "Use primary profile add-ons", isOn: $setup.usesPrimaryAddons, macIsFocused: macFocused(Self.addonsID)).id(Self.addonsID)
+                            AddProfileToggleRow(title: "Use primary profile plugins", isOn: $setup.usesPrimaryPlugins, macIsFocused: macFocused(Self.pluginsID)).id(Self.pluginsID)
+                            AddProfileToggleRow(title: "Copy primary settings", isOn: $setup.copiesSettings, macIsFocused: macFocused(Self.copySettingsID)).id(Self.copySettingsID)
+                            AddProfileToggleRow(
+                                title: "Also copy API keys and linked services",
+                                subtitle: "Trakt, Simkl, TMDB, MDBList and your debrid service. Copied once; the two profiles change independently after.",
+                                isOn: $setup.copiesCredentials,
+                                enabled: setup.copiesSettings,
+                                macIsFocused: macFocused(Self.copyKeysID)
+                            )
+                            .id(Self.copyKeysID)
+                        }
+
+                        setupSection("Favourite Teams", subtitle: "Their next match joins Continue Watching.") {
+                            HStack(spacing: 16) {
+                                AddProfileTextField(
+                                    placeholder: "Team, e.g. Liverpool",
+                                    text: $newTeam,
+                                    isEditing: $isEditingTeam,
+                                    focusedField: $focusedField,
+                                    field: .team,
+                                    macIsFocused: macFocused(Self.teamFieldID)
+                                )
+                                ProfileAvatarPickerButton(
+                                    title: "Add",
+                                    systemImage: "plus",
+                                    disabled: newTeam.trimmingCharacters(in: .whitespaces).isEmpty,
+                                    macIsFocused: macFocused(Self.teamAddID)
+                                ) {
+                                    addTeam()
+                                }
+                            }
+                            .id(Self.teamFieldID)
+                            if !setup.favouriteTeams.isEmpty {
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 14) {
+                                        ForEach(setup.favouriteTeams, id: \.self) { team in
+                                            ProfileAvatarPickerButton(
+                                                title: team,
+                                                systemImage: "xmark",
+                                                macIsFocused: macFocused(Self.teamPrefix + team)
+                                            ) {
+                                                setup.favouriteTeams.removeAll { $0 == team }
+                                            }
+                                        }
+                                    }
+                                    .padding(6)
+                                }
+                            }
+                        }
+
+                        setupSection(
+                            "Collections",
+                            subtitle: isKids
+                                ? "Kids and family collections shared on nuvio.tv. From a big library only its children's sections are added."
+                                : "Popular collections shared on nuvio.tv, added when this profile is first opened."
+                        ) {
+                            if communityLoading && community.isEmpty {
+                                ProgressView().tint(.white)
+                            } else if let communityError, community.isEmpty {
+                                Text(communityError)
+                                    .font(.system(size: 20))
+                                    .foregroundColor(.white.opacity(0.6))
+                            } else {
+                                ForEach(shownCommunity) { item in
+                                    AddProfileCollectionRow(
+                                        item: item,
+                                        picked: setup.communityPicks[item.id] != nil,
+                                        macIsFocused: macFocused(Self.collectionPrefix + item.id)
+                                    ) {
+                                        togglePick(item)
+                                    }
+                                    .id(Self.collectionPrefix + item.id)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 6)
+                }
+                #if os(macOS)
+                .onChange(of: macFocus.itemID) { _, id in
+                    guard let id else { return }
+                    let target = id.hasPrefix(Self.teamPrefix) || id == Self.teamAddID ? Self.teamFieldID : id
+                    withAnimation(.easeOut(duration: 0.2)) { reader.scrollTo(target, anchor: .center) }
+                }
+                #endif
+            }
+            // Kids changes which collections are offered.
+            .onChange(of: isKids) { _, _ in
+                community = []
+                Task { await loadCommunity() }
+            }
+
+            HStack(spacing: 16) {
+                ProfileAvatarPickerButton(title: "Back", systemImage: "chevron.left", macIsFocused: macFocused(Self.backID)) {
+                    showInfoPage()
+                }
+                ProfileAvatarPickerButton(title: "Save", systemImage: "checkmark", prominent: true, macIsFocused: macFocused(Self.macSaveID)) {
+                    save()
+                }
+            }
+        }
+    }
+
+    private func setupSection<Content: View>(
+        _ title: String,
+        subtitle: String? = nil,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.62))
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 18))
+                        .foregroundColor(.white.opacity(0.45))
+                }
+            }
+            content()
+        }
+    }
+}
+
+/// An on/off row on the Add Profile setup page.
+private struct AddProfileToggleRow: View {
+    let title: String
+    var subtitle: String? = nil
+    @Binding var isOn: Bool
+    var enabled = true
+    var macIsFocused = false
+    @FocusState private var focusState: Bool
+    private var isFocused: Bool { focusState || macIsFocused }
+
+    var body: some View {
+        Button {
+            if enabled { isOn.toggle() }
+        } label: {
+            HStack(spacing: 18) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.system(size: 24, weight: .semibold))
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(.system(size: 18))
+                            .foregroundColor(isFocused ? .black.opacity(0.65) : .white.opacity(0.6))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 16)
+                Text(isOn ? "On" : "Off")
+                    .font(.system(size: 20, weight: .bold))
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 8)
+                    .background(isOn ? Color.green.opacity(0.85) : Color.white.opacity(0.18), in: Capsule())
+                    .foregroundColor(.white)
+            }
+            .foregroundColor(isFocused ? .black : .white)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(isFocused ? Color.white : Color.white.opacity(0.08))
+            )
+            .opacity(enabled ? 1 : 0.45)
+            .scaleEffect(isFocused ? 1.01 : 1)
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
+        .focused($focusState)
+        .focusEffectDisabledIfAvailable()
+        .animation(.easeOut(duration: 0.12), value: isFocused)
+    }
+}
+
+/// A community collection to add with the new profile.
+private struct AddProfileCollectionRow: View {
+    let item: CommunityCollections.Item
+    let picked: Bool
+    var macIsFocused = false
+    let action: () -> Void
+    @FocusState private var focusState: Bool
+    private var isFocused: Bool { focusState || macIsFocused }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 18) {
+                AsyncImage(url: item.imageURL) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    Color.white.opacity(0.08)
+                }
+                .frame(width: 128, height: 72)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(item.title)
+                        .font(.system(size: 22, weight: .semibold))
+                        .lineLimit(1)
+                    if !item.description.isEmpty {
+                        Text(item.description)
+                            .font(.system(size: 17))
+                            .foregroundColor(isFocused ? .black.opacity(0.6) : .white.opacity(0.6))
+                            .lineLimit(2)
+                    }
+                }
+                Spacer(minLength: 12)
+                Image(systemName: picked ? "checkmark.circle.fill" : "plus.circle")
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundColor(picked ? .green : (isFocused ? .black : .white.opacity(0.7)))
+            }
+            .foregroundColor(isFocused ? .black : .white)
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(isFocused ? Color.white : Color.white.opacity(0.06))
+            )
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
+        .focused($focusState)
+        .focusEffectDisabledIfAvailable()
+        .animation(.easeOut(duration: 0.12), value: isFocused)
     }
 }
 

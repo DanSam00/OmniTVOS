@@ -1441,7 +1441,7 @@ struct PhoneCollectionFolderView: View {
             for (index, source) in sources.enumerated() {
                 group.addTask { @MainActor in
                     do {
-                        let page = try await CollectionSourceResolver(repository: repository).browse(source)
+                        let page = try await CollectionSourceResolver(repository: repository, folderTitle: folder.title).browse(source)
                         let items = source.normalizedProvider == "addon"
                             ? Array(page.items.prefix(Self.pageSize))
                             : page.items

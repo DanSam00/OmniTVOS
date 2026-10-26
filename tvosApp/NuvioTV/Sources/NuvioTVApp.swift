@@ -477,6 +477,17 @@ struct ContentView: View {
             guard onMain, onboardingMode == nil, !OnboardingState.isDone else { return }
             withAnimation(.easeInOut(duration: 0.28)) { onboardingMode = .full }
         }
+        #if !os(iOS)
+        // Collections picked in Add Profile, else a new kids profile's
+        // starter set, the first time that profile reaches Home (the iPhone
+        // does this in PhoneMainTabView).
+        .task(id: isOnMainScreen ? profileViewModel.activeProfile?.id : nil) {
+            guard isOnMainScreen, profileViewModel.activeProfile != nil else { return }
+            await CommunityCollections.installPendingIfNeeded()
+            guard ProfileSettings.current.bool(forKey: SettingsKey.kidsProfile) else { return }
+            await CommunityCollections.seedKidsProfileIfNeeded()
+        }
+        #endif
         #if os(iOS)
         // A collection's "Add a TMDB Key" and the like: the Settings tab.
         .onReceive(NotificationCenter.default.publisher(for: SettingsDeepLink.notification)) { _ in

@@ -4,10 +4,13 @@ import SwiftUI
 /// Kids profiles: only titles rated for children are listed.
 ///
 /// A title's official US age rating decides it — up to PG for films and up
-/// to TV-G for shows — looked up through TMDB and remembered. Where there
-/// is no rating (no TMDB key, or TMDB has none) a genre rule decides
-/// instead: family or kids titles only. Either way nothing tagged horror,
-/// thriller, crime, war, mystery or adult gets through.
+/// to TV-G for shows — looked up through TMDB and remembered. Where TMDB
+/// has no rating (or "NR") its genres decide: Family or Kids, or older
+/// Western animation (the classic shorts and cartoons were never rated);
+/// nothing that is also Horror, Thriller, Crime, War, Romance or Reality.
+/// Without a TMDB key a genre rule decides instead: family or kids titles
+/// only. Either way nothing tagged horror, thriller, crime, war, mystery or
+/// adult gets through.
 enum PhoneKidsMode {
     static var isActive: Bool {
         #if OMNI_DEBUG_TOOLS
@@ -58,6 +61,7 @@ enum KidsContentFilter {
         // suitable, so these are out whatever the rating says.
         if hasAdultGenre(meta) { return false }
         let rating = await KidsRatingCache.shared.rating(for: meta)
+        if rating == KidsRatingCache.unratedForKids { return true }
         if let rating, !rating.isEmpty {
             let normalized = rating.uppercased()
             if allowedMovieRatings.contains(normalized) || allowedTVRatings.contains(normalized) { return true }
@@ -86,16 +90,22 @@ enum KidsContentFilter {
 actor KidsRatingCache {
     static let shared = KidsRatingCache()
 
-    private static let storageKey = "omni.kids.ratings.v1"
+    /// Stored for a title with no US rating that TMDB's genres say is for
+    /// children.
+    static let unratedForKids = "~unrated-kids"
+    /// v2 judges unrated titles by genre; v1 kept them as "none".
+    private static let storageKey = "omni.kids.ratings.v2"
     private var ratings: [String: String]
     private var inFlight: [String: Task<String?, Never>] = [:]
 
     private init() {
         ratings = UserDefaults.standard.dictionary(forKey: Self.storageKey) as? [String: String] ?? [:]
+        UserDefaults.standard.removeObject(forKey: "omni.kids.ratings.v1")
     }
 
     func rating(for meta: NuvioMeta) async -> String? {
-        if let certification = meta.certification?.trimmingCharacters(in: .whitespaces), !certification.isEmpty {
+        if let certification = meta.certification?.trimmingCharacters(in: .whitespaces), !certification.isEmpty,
+           certification.uppercased() != "NR" {
             return certification
         }
         if let known = ratings[meta.id] { return known }
@@ -113,29 +123,47 @@ actor KidsRatingCache {
         return value
     }
 
-    /// The US certification, "" when TMDB has none, nil when it couldn't be
-    /// asked (no key, offline).
+    /// The US certification; `unratedForKids` or "" for a title without
+    /// one, by its genres; nil when TMDB couldn't be asked (no key, offline).
     private static func fetchRating(for meta: NuvioMeta) async -> String? {
         let key = ProfileSettings.current.string(forKey: SettingsKey.tmdbApiKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !key.isEmpty, let resolved = await TmdbDetailsService.resolveTmdbId(for: meta) else { return nil }
         let isTV = resolved.mediaType == "tv"
-        let path = isTV ? "tv/\(resolved.id)/content_ratings" : "movie/\(resolved.id)/release_dates"
-        guard let url = URL(string: "https://api.themoviedb.org/3/\(path)?api_key=\(key)") else { return nil }
+        let path = isTV
+            ? "tv/\(resolved.id)?append_to_response=content_ratings"
+            : "movie/\(resolved.id)?append_to_response=release_dates"
+        guard let url = URL(string: "https://api.themoviedb.org/3/\(path)&api_key=\(key)") else { return nil }
         var request = URLRequest(url: url)
         request.timeoutInterval = 10
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               (response as? HTTPURLResponse)?.statusCode == 200,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let results = json["results"] as? [[String: Any]] else { return nil }
-        guard let us = results.first(where: { ($0["iso_3166_1"] as? String) == "US" }) else { return "" }
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        let results = (json[isTV ? "content_ratings" : "release_dates"] as? [String: Any])?["results"] as? [[String: Any]] ?? []
+        let us = results.first { ($0["iso_3166_1"] as? String) == "US" }
+        let rating: String
         if isTV {
-            return (us["rating"] as? String)?.trimmingCharacters(in: .whitespaces) ?? ""
+            rating = (us?["rating"] as? String)?.trimmingCharacters(in: .whitespaces) ?? ""
+        } else {
+            rating = (us?["release_dates"] as? [[String: Any]] ?? [])
+                .compactMap { ($0["certification"] as? String)?.trimmingCharacters(in: .whitespaces) }
+                .first { !$0.isEmpty } ?? ""
         }
-        let releases = us["release_dates"] as? [[String: Any]] ?? []
-        return releases
-            .compactMap { ($0["certification"] as? String)?.trimmingCharacters(in: .whitespaces) }
-            .first { !$0.isEmpty } ?? ""
+        if !rating.isEmpty, rating.uppercased() != "NR" { return rating }
+        let genres = Set((json["genres"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? Int })
+        let language = json["original_language"] as? String ?? ""
+        let date = (json["release_date"] as? String) ?? (json["first_air_date"] as? String) ?? ""
+        let year = Int(date.prefix(4)) ?? .max
+        return unratedIsForKids(genres: genres, language: language, year: year) ? unratedForKids : ""
+    }
+
+    /// Family or Kids; or Animation from before 1990 and not Japanese (the
+    /// Looney Tunes and Hanna-Barbera era, never rated). Never alongside
+    /// Horror, Thriller, Crime, War, Romance or Reality.
+    private static func unratedIsForKids(genres: Set<Int>, language: String, year: Int) -> Bool {
+        guard genres.isDisjoint(with: [27, 53, 80, 10752, 10749, 10764]) else { return false }
+        if !genres.isDisjoint(with: [10751, 10762]) { return true }
+        return genres.contains(16) && language != "ja" && year < 1990
     }
 }
 

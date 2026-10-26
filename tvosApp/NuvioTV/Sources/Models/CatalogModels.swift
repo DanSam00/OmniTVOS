@@ -3642,8 +3642,16 @@ enum CollectionsStore {
         _ = writeData(data, forKey: lastPulledIdsStorageKey)
     }
 
-    /// Decode one collection at a time so a single bad row cannot drop the rest.
+    /// What the current profile shows: on a kids profile without the folders
+    /// never meant for children (`CommunityCollections.forKidsDisplay`).
     static func collections() -> [NuvioCollection] {
+        let all = allCollections()
+        guard ProfileSettings.current.bool(forKey: SettingsKey.kidsProfile) else { return all }
+        return CommunityCollections.forKidsDisplay(all)
+    }
+
+    /// Decode one collection at a time so a single bad row cannot drop the rest.
+    private static func allCollections() -> [NuvioCollection] {
         rawCollections().compactMap { row in
             guard let data = try? JSONSerialization.data(withJSONObject: row) else { return nil }
             do {
@@ -3675,7 +3683,7 @@ enum CollectionsStore {
             return
         }
 
-        if collections() == decoded {
+        if allCollections() == decoded {
             rememberPulledIds(decoded.map(\.id))
             return
         }
