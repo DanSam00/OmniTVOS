@@ -391,7 +391,10 @@ enum SettingsKey {
     /// API app credentials must remain on the Apple TV and never enter the
     /// account settings payload.
     static let deviceLocal = Set([
-        traktClientID, traktClientSecret, simklClientID, aiSubtitlesGeminiAPIKey
+        traktClientID, traktClientSecret, simklClientID, aiSubtitlesGeminiAPIKey,
+        // Carried end-to-end encrypted in `CredentialVault` instead; this used
+        // to sync them in the clear.
+        simklAccessToken, simklRefreshToken,
     ])
 
     /// Settings each platform keeps for itself, out of account and iCloud sync
@@ -1854,6 +1857,16 @@ private struct SettingsCategoryPillBackground: ViewModifier {
 }
 
 private struct AccountSettingsView: View {
+    @ObservedObject private var vault = CredentialVault.shared
+
+    private var vaultStatusText: String {
+        switch vault.status {
+        case .unlocked: return L10n.string("settings_sync_on", fallback: "On")
+        case .locked: return L10n.string("settings_sync_locked", fallback: "Enter Passphrase")
+        case .notSetUp, .unavailable: return L10n.string("settings_sync_off", fallback: "Set Up")
+        }
+    }
+
     let accentColor: Color
     let activeProfile: Profile?
     let accountEmail: String?
@@ -2034,6 +2047,23 @@ private struct AccountSettingsView: View {
                         title: L10n.string("tvos_account_email", fallback: "Email"),
                         value: accountEmail
                     )
+                }
+
+                // The encrypted sign-ins (`CredentialVault`): set it up, unlock
+                // it on this device, or forget it here.
+                if isAuthenticated {
+                    SettingsActionRow(
+                        title: L10n.string("settings_sync_passphrase", fallback: "Sync Passphrase"),
+                        subtitle: L10n.string(
+                            "settings_sync_passphrase_subtitle",
+                            fallback: "IPTV logins and Trakt, Simkl, Jellyfin and SMB sign-ins, encrypted, on all your devices"
+                        ),
+                        value: vaultStatusText,
+                        accentColor: accentColor,
+                        macRowID: "account.vault"
+                    ) {
+                        NotificationCenter.default.post(name: OnboardingState.openVaultNotification, object: nil)
+                    }
                 }
 
                 SettingsToggleRow(

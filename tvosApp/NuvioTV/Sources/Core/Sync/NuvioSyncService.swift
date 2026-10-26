@@ -146,6 +146,14 @@ final class NuvioSyncManager: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in self?.schedulePush() }
         })
+        // The encrypted sign-ins changed, or a passphrase was just set.
+        observers.append(center.addObserver(
+            forName: CredentialVault.pushRequestNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.schedulePush() }
+        })
         observers.append(center.addObserver(
             forName: LibraryStore.changedNotification,
             object: nil,
@@ -346,6 +354,7 @@ final class NuvioSyncManager: ObservableObject {
             schedulePull(force: !isSameAccount)
         case .signedOut:
             Self.accountSyncDiagnostic = "signed out"
+            CredentialVault.shared.setAccount(nil)
             pullGeneration &+= 1
             pullTask?.cancel()
             pullTask = nil
@@ -2677,6 +2686,18 @@ fileprivate final class NuvioAPIClient {
             ?? (features[Self.mdbListSettingsFeature] as? [String: Any])
         let themeFeature = (mobileFeatures[Self.themeSettingsFeature] as? [String: Any])
             ?? (features[Self.themeSettingsFeature] as? [String: Any])
+        // The encrypted sign-ins: kept for unlocking, applied when this device
+        // has the passphrase and the box is newer.
+        let vaultJSON = (features[CredentialVault.feature] as? [String: Any]).flatMap {
+            try? JSONSerialization.data(withJSONObject: $0)
+        }
+        await MainActor.run {
+            CredentialVault.shared.setAccount(session.userId)
+            CredentialVault.shared.received(
+                vaultJSON.flatMap { try? JSONSerialization.jsonObject(with: $0) },
+                profileScope: localProfileId
+            )
+        }
 
         guard tvosFeature != nil || debridFeature != nil || tmdbFeature != nil || streamBadgeFeature != nil || posterCardStyleFeature != nil || playerFeature != nil || continueWatchingFeature != nil || mdbListFeature != nil || themeFeature != nil else {
             return false
@@ -2788,6 +2809,22 @@ fileprivate final class NuvioAPIClient {
         )
         features[Self.themeSettingsFeature] = themePayload
 
+        // The encrypted sign-ins, resealed only when this device holds the
+        // passphrase and the newer credentials; otherwise left as they are.
+        let existingVault = (features[CredentialVault.feature] as? [String: Any]).flatMap {
+            try? JSONSerialization.data(withJSONObject: $0)
+        }
+        let vaultData: Data? = await MainActor.run {
+            CredentialVault.shared.setAccount(session.userId)
+            let vault = CredentialVault.shared.envelopeForPush(
+                profileScope: localProfileId,
+                existing: existingVault.flatMap { try? JSONSerialization.jsonObject(with: $0) }
+            )
+            return vault.flatMap { try? JSONSerialization.data(withJSONObject: $0) }
+        }
+        if let vaultData, let vault = try? JSONSerialization.jsonObject(with: vaultData) {
+            features[CredentialVault.feature] = vault
+        }
         settingsJSON["features"] = features
         if settingsJSON["version"] == nil { settingsJSON["version"] = 1 }
         try await rpcVoid(
@@ -2799,6 +2836,8 @@ fileprivate final class NuvioAPIClient {
                 "p_settings_json": settingsJSON
             ]
         )
+        // What is on the account now, so the next push merges onto it.
+        lastPulledProfileSettingsJSON = settingsJSON
 
         // Keep the Android/mobile-compatible feature in its own blob as well.
         // Other mobile settings remain untouched by merging the latest remote

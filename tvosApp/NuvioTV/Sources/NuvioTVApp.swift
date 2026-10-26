@@ -331,6 +331,14 @@ struct ContentView: View {
     // then restores the exact card instead of reloading and jumping to the top.
     @StateObject private var homeStore = TVHomeStore()
 
+    private enum OnboardingMode { case full, vault }
+    @State private var onboardingMode: OnboardingMode?
+
+    private var isOnMainScreen: Bool {
+        if case .main = activeScreen { return true }
+        return false
+    }
+
     var body: some View {
         ZStack {
             ProfileScopedRootBackground()
@@ -450,8 +458,27 @@ struct ContentView: View {
                 // card (tvOS focus memory) -- instead of rebuilding it from
                 // scratch and snapping back to the first card.
                 appContainer
+                    // Out of the focus engine's reach while onboarding is up.
+                    .disabled(onboardingMode != nil)
                     .transition(.opacity)
             }
+
+            // First run on this device, or Settings → Sync Passphrase.
+            if let mode = onboardingMode {
+                OnboardingView(isSignedIn: authManager.isAuthenticated, vaultOnly: mode == .vault) {
+                    withAnimation(.easeInOut(duration: 0.28)) { onboardingMode = nil }
+                }
+                .transition(.opacity)
+                .zIndex(100)
+            }
+        }
+        // Once per device, the first time it reaches Home.
+        .onChange(of: isOnMainScreen, initial: true) { _, onMain in
+            guard onMain, onboardingMode == nil, !OnboardingState.isDone else { return }
+            withAnimation(.easeInOut(duration: 0.28)) { onboardingMode = .full }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: OnboardingState.openVaultNotification)) { _ in
+            withAnimation(.easeInOut(duration: 0.28)) { onboardingMode = .vault }
         }
         // Resolve every @AppStorage in the app against the active profile's
         // settings suite, so each profile keeps its own theme, layout, playback

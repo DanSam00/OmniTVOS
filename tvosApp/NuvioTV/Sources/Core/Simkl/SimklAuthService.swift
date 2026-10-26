@@ -309,6 +309,13 @@ enum SimklAuthStore {
         static let settingsWatermark = "nuvio.tv.simkl.auth.settingsWatermark"
     }
 
+    /// The signed-in session beside its keychain tokens, for carrying it to
+    /// another device (`CredentialVault`).
+    static let credentialKeys = [
+        Key.username, Key.accountID, Key.accountPlan, Key.avatarURL,
+        Key.credentialClientID, Key.accessTokenExpiresAt, Key.hasAccessToken,
+    ]
+
     static func state(
         in defaults: UserDefaults,
         profileScope: String,

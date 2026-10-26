@@ -1,0 +1,490 @@
+import Foundation
+import Combine
+import CryptoKit
+import CommonCrypto
+import Security
+
+/// Sign-ins and passwords that follow the account, end-to-end encrypted.
+///
+/// IPTV sources (Xtream logins included), Trakt and Simkl sessions, Jellyfin
+/// servers and SMB shares are sealed per profile with a key derived from a
+/// passphrase only the viewer knows (PBKDF2-SHA256, AES-GCM), and ride in the
+/// profile's account settings blob as `omni_vault`. Nuvio's server only ever
+/// holds the sealed box. Each device asks for the passphrase once and keeps
+/// it in its own keychain, never synced.
+///
+/// Newest wins: a device's local change, or the box another device pushed,
+/// whichever is later. A device without the passphrase leaves the box as it
+/// is and keeps its own credentials.
+@MainActor
+final class CredentialVault: ObservableObject {
+    static let shared = CredentialVault()
+
+    /// The account settings feature the box travels in.
+    nonisolated static let feature = "omni_vault"
+    static let changedNotification = Notification.Name("omni.vault.changed")
+    private static let iterations = 210_000
+
+    enum Status: Equatable {
+        /// Signed out, or a guest.
+        case unavailable
+        /// The account has no vault yet.
+        case notSetUp
+        /// The account has one; this device does not have the passphrase.
+        case locked
+        case unlocked
+    }
+
+    @Published private(set) var status: Status = .unavailable
+    /// What the last unlock or restore brought over, for onboarding's summary.
+    @Published private(set) var lastRestore: Summary?
+
+    struct Summary: Equatable {
+        var iptvSources = 0
+        var trakt = false
+        var simkl = false
+        var jellyfinServers = 0
+        var smbShares = 0
+        var isEmpty: Bool { iptvSources == 0 && !trakt && !simkl && jellyfinServers == 0 && smbShares == 0 }
+    }
+
+    private var accountID: String? {
+        didSet { if accountID != oldValue { refreshStatus() } }
+    }
+    private var isApplying = false
+    private var keyCache: [String: SymmetricKey] = [:]
+    private var observers: [NSObjectProtocol] = []
+
+    private init() {
+        accountID = UserDefaults.standard.string(forKey: Self.accountKey)
+        let center = NotificationCenter.default
+        for name in [
+            IPTVSourceStore.changedNotification,
+            TraktAuthStore.changedNotification,
+            SimklAuthStore.changedNotification,
+            JellyfinServerStore.changedNotification,
+            SMBServerStore.changedNotification,
+        ] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { _ in
+                Task { @MainActor in CredentialVault.shared.noteLocalChange() }
+            })
+        }
+        refreshStatus()
+    }
+
+    // MARK: Account
+
+    /// The signed-in account, from the sync service; nil on sign-out.
+    func setAccount(_ id: String?) {
+        if id != accountID {
+            keyCache.removeAll()
+            UserDefaults.standard.set(id, forKey: Self.accountKey)
+        }
+        accountID = id
+    }
+
+    var hasPassphrase: Bool { passphrase != nil }
+
+    /// Takes a passphrase for an account that already has a vault: true when
+    /// it opens the box, which is then applied to this device.
+    @discardableResult
+    func unlock(with candidate: String, profileScope: String = ProfileSettings.activeProfileScope) -> Bool {
+        guard let envelope = cachedEnvelope(profileScope) ?? anyCachedEnvelope(),
+              let key = derive(candidate, salt: envelope.salt, iterations: envelope.iterations),
+              (try? open(envelope, key: key)) != nil else { return false }
+        storePassphrase(candidate)
+        if let own = cachedEnvelope(profileScope) {
+            applyIfNewer(own, profileScope: profileScope, force: true)
+        }
+        refreshStatus()
+        return true
+    }
+
+    /// Sets the passphrase for an account with no vault yet (or replaces it,
+    /// re-sealing this device's credentials), and pushes.
+    func create(passphrase: String) {
+        storePassphrase(passphrase)
+        keyCache.removeAll()
+        setLocalModified(ProfileSettings.activeProfileScope, Date())
+        refreshStatus()
+        requestPush()
+    }
+
+    /// Forgets the passphrase on this device only.
+    func lockThisDevice() {
+        guard let accountID else { return }
+        KeychainItem.remove(service: Self.keychainService, account: accountID)
+        keyCache.removeAll()
+        refreshStatus()
+    }
+
+    // MARK: Sync hooks
+
+    /// The box to push for a profile: freshly sealed when this device holds
+    /// the passphrase and has the newer credentials, otherwise the one already
+    /// on the account, untouched.
+    func envelopeForPush(profileScope: String, existing: Any?) -> Any? {
+        guard let passphrase else { return existing }
+        let remote = (existing as? [String: Any]).flatMap(Envelope.init(json:))
+        let localModified = localModified(profileScope)
+        if let remote, let localModified, remote.updatedAt >= localModified { return existing }
+        if remote != nil, localModified == nil { return existing }
+        let salt = remote?.salt ?? anyCachedEnvelope()?.salt ?? Self.randomSalt()
+        guard let key = derive(passphrase, salt: salt, iterations: Self.iterations),
+              let contents = try? JSONEncoder().encode(Contents.export(profileScope: profileScope)),
+              let box = try? AES.GCM.seal(contents, using: key).combined else { return existing }
+        let envelope = Envelope(
+            salt: salt,
+            iterations: Self.iterations,
+            box: box,
+            updatedAt: localModified ?? Date()
+        )
+        cache(envelope, profileScope: profileScope)
+        setLastApplied(profileScope, envelope.updatedAt)
+        return envelope.json
+    }
+
+    /// A pulled blob's box: kept for unlocking later, and applied now when
+    /// this device can open it and it is newer than what is here.
+    func received(_ json: Any?, profileScope: String) {
+        guard let envelope = (json as? [String: Any]).flatMap(Envelope.init(json:)) else {
+            refreshStatus()
+            return
+        }
+        cache(envelope, profileScope: profileScope)
+        applyIfNewer(envelope, profileScope: profileScope, force: false)
+        refreshStatus()
+    }
+
+    private func applyIfNewer(_ envelope: Envelope, profileScope: String, force: Bool) {
+        if !force {
+            if let applied = lastApplied(profileScope), applied >= envelope.updatedAt { return }
+            if let local = localModified(profileScope), local > envelope.updatedAt { return }
+        }
+        guard let passphrase,
+              let key = derive(passphrase, salt: envelope.salt, iterations: envelope.iterations),
+              let data = try? open(envelope, key: key),
+              let contents = try? JSONDecoder().decode(Contents.self, from: data) else { return }
+        isApplying = true
+        // The first unlock on a device merges: it may hold sign-ins the box
+        // has never seen, which replacing would delete. The union is then
+        // pushed. Later boxes replace, so removals elsewhere carry over.
+        lastRestore = contents.apply(profileScope: profileScope, merging: force)
+        isApplying = false
+        setLastApplied(profileScope, envelope.updatedAt)
+        if force {
+            setLocalModified(profileScope, Date())
+            requestPush()
+        } else {
+            setLocalModified(profileScope, nil)
+        }
+        NotificationCenter.default.post(name: Self.changedNotification, object: nil)
+    }
+
+    private func noteLocalChange() {
+        guard !isApplying else { return }
+        setLocalModified(ProfileSettings.activeProfileScope, Date())
+        if hasPassphrase { requestPush() }
+    }
+
+    private func requestPush() {
+        NotificationCenter.default.post(name: Self.pushRequestNotification, object: nil)
+    }
+
+    /// Asks the sync service for a settings push.
+    static let pushRequestNotification = Notification.Name("omni.vault.pushRequested")
+
+    private func refreshStatus() {
+        let next: Status
+        if accountID == nil {
+            next = .unavailable
+        } else if anyCachedEnvelope() == nil {
+            next = hasPassphrase ? .unlocked : .notSetUp
+        } else {
+            next = hasPassphrase ? .unlocked : .locked
+        }
+        if next != status { status = next }
+    }
+
+    // MARK: Crypto
+
+    private struct Envelope {
+        let salt: Data
+        let iterations: Int
+        let box: Data
+        let updatedAt: Date
+
+        init(salt: Data, iterations: Int, box: Data, updatedAt: Date) {
+            self.salt = salt
+            self.iterations = iterations
+            self.box = box
+            self.updatedAt = updatedAt
+        }
+
+        init?(json: [String: Any]) {
+            guard (json["v"] as? Int ?? 1) == 1,
+                  let salt = (json["salt"] as? String).flatMap({ Data(base64Encoded: $0) }),
+                  let box = (json["box"] as? String).flatMap({ Data(base64Encoded: $0) }),
+                  let iterations = json["iter"] as? Int,
+                  let updated = json["updatedAt"] as? Double else { return nil }
+            self.salt = salt
+            self.iterations = iterations
+            self.box = box
+            self.updatedAt = Date(timeIntervalSince1970: updated / 1000)
+        }
+
+        var json: [String: Any] {
+            [
+                "v": 1,
+                "salt": salt.base64EncodedString(),
+                "iter": iterations,
+                "box": box.base64EncodedString(),
+                "updatedAt": (updatedAt.timeIntervalSince1970 * 1000).rounded(),
+            ]
+        }
+    }
+
+    private func open(_ envelope: Envelope, key: SymmetricKey) throws -> Data {
+        try AES.GCM.open(AES.GCM.SealedBox(combined: envelope.box), using: key)
+    }
+
+    private func derive(_ passphrase: String, salt: Data, iterations: Int) -> SymmetricKey? {
+        let cacheKey = "\(salt.base64EncodedString())|\(iterations)|\(passphrase.hashValue)"
+        if let cached = keyCache[cacheKey] { return cached }
+        var derived = Data(count: 32)
+        let password = Array(passphrase.utf8).map { Int8(bitPattern: $0) }
+        let status = derived.withUnsafeMutableBytes { out in
+            salt.withUnsafeBytes { saltBytes in
+                CCKeyDerivationPBKDF(
+                    CCPBKDFAlgorithm(kCCPBKDF2),
+                    password, password.count,
+                    saltBytes.bindMemory(to: UInt8.self).baseAddress, salt.count,
+                    CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA256),
+                    UInt32(iterations),
+                    out.bindMemory(to: UInt8.self).baseAddress, 32
+                )
+            }
+        }
+        guard status == kCCSuccess else { return nil }
+        let key = SymmetricKey(data: derived)
+        keyCache[cacheKey] = key
+        return key
+    }
+
+    private static func randomSalt() -> Data {
+        Data((0..<16).map { _ in UInt8.random(in: 0...255) })
+    }
+
+    // MARK: Local state
+
+    private static let accountKey = "omni.vault.account"
+    private static let keychainService = "com.saminaden.omni.vault"
+
+    private var passphrase: String? {
+        guard let accountID else { return nil }
+        return KeychainItem.read(service: Self.keychainService, account: accountID)
+    }
+
+    private func storePassphrase(_ value: String) {
+        guard let accountID else { return }
+        KeychainItem.save(value, service: Self.keychainService, account: accountID)
+    }
+
+    private func scopedKey(_ name: String, _ profileScope: String) -> String {
+        "omni.vault.\(name).\(accountID ?? "-").\(profileScope)"
+    }
+
+    private func cache(_ envelope: Envelope, profileScope: String) {
+        guard let data = try? JSONSerialization.data(withJSONObject: envelope.json) else { return }
+        UserDefaults.standard.set(data, forKey: scopedKey("box", profileScope))
+        UserDefaults.standard.set(data, forKey: scopedKey("box", "any"))
+    }
+
+    private func cachedEnvelope(_ profileScope: String) -> Envelope? {
+        UserDefaults.standard.data(forKey: scopedKey("box", profileScope))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            .flatMap(Envelope.init(json:))
+    }
+
+    /// Any profile's box, to test a passphrase against on a profile that has
+    /// none yet: the account shares one passphrase.
+    private func anyCachedEnvelope() -> Envelope? { cachedEnvelope("any") }
+
+    private func localModified(_ profileScope: String) -> Date? {
+        UserDefaults.standard.object(forKey: scopedKey("modified", profileScope)) as? Date
+    }
+
+    private func setLocalModified(_ profileScope: String, _ date: Date?) {
+        UserDefaults.standard.set(date, forKey: scopedKey("modified", profileScope))
+    }
+
+    private func lastApplied(_ profileScope: String) -> Date? {
+        UserDefaults.standard.object(forKey: scopedKey("applied", profileScope)) as? Date
+    }
+
+    private func setLastApplied(_ profileScope: String, _ date: Date) {
+        UserDefaults.standard.set(date, forKey: scopedKey("applied", profileScope))
+    }
+}
+
+// MARK: - Contents
+
+private extension CredentialVault {
+    /// What a profile's box holds.
+    struct Contents: Codable {
+        /// Profile settings that are secrets or go with them: Trakt and Simkl
+        /// sessions, the client IDs they were issued to, IPTV sources, and the
+        /// Jellyfin and SMB server lists. Values as property-list data.
+        var settings: [String: Data] = [:]
+        var simklAccessToken: String?
+        var simklRefreshToken: String?
+        var jellyfinTokens: [String: String] = [:]
+        var smbPasswords: [String: String] = [:]
+
+        static var settingKeys: [String] {
+            TraktAuthStore.credentialKeys + SimklAuthStore.credentialKeys + [
+                SettingsKey.traktClientID, SettingsKey.traktClientSecret, SettingsKey.simklClientID,
+                SettingsKey.iptvSources, SettingsKey.jellyfinServers, SettingsKey.smbServers,
+            ]
+        }
+
+        @MainActor
+        static func export(profileScope: String) -> Contents {
+            let defaults = ProfileSettings.store(for: profileScope)
+            var contents = Contents()
+            for key in settingKeys {
+                guard let value = defaults.object(forKey: key),
+                      let data = try? PropertyListSerialization.data(fromPropertyList: [key: value], format: .binary, options: 0)
+                else { continue }
+                contents.settings[key] = data
+            }
+            let simkl = SimklKeychainTokenStorage()
+            contents.simklAccessToken = simkl.accessToken(for: profileScope)
+            contents.simklRefreshToken = simkl.refreshToken(for: profileScope)
+            for server in Self.ids(in: defaults, key: SettingsKey.jellyfinServers) {
+                let token = JellyfinCredentialStore.token(forServerID: server, profileScope: profileScope)
+                if !token.isEmpty { contents.jellyfinTokens[server] = token }
+            }
+            for server in Self.ids(in: defaults, key: SettingsKey.smbServers) {
+                let password = SMBCredentialStore.password(forServerID: server, profileScope: profileScope)
+                if !password.isEmpty { contents.smbPasswords[server] = password }
+            }
+            return contents
+        }
+
+        /// Lists merged by `id`: IPTV sources, Jellyfin servers, SMB shares.
+        static let listKeys: Set<String> = [SettingsKey.iptvSources, SettingsKey.jellyfinServers, SettingsKey.smbServers]
+
+        /// `merging`: keep what this device has that the box lacks, and
+        /// combine the lists, rather than replacing.
+        @MainActor
+        func apply(profileScope: String, merging: Bool) -> CredentialVault.Summary {
+            let defaults = ProfileSettings.store(for: profileScope)
+            for key in Self.settingKeys {
+                let remote = settings[key]
+                    .flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) as? [String: Any] }?[key]
+                if merging, Self.listKeys.contains(key) {
+                    if let merged = Self.mergedList(local: defaults.object(forKey: key), remote: remote) {
+                        defaults.set(merged, forKey: key)
+                    }
+                } else if let remote {
+                    defaults.set(remote, forKey: key)
+                } else if !merging {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+            let simkl = SimklKeychainTokenStorage()
+            if !merging || simklAccessToken != nil {
+                simkl.setAccessToken(simklAccessToken, for: profileScope)
+                simkl.setRefreshToken(simklRefreshToken, for: profileScope)
+            }
+            for (server, token) in jellyfinTokens {
+                JellyfinCredentialStore.save(token, forServerID: server, profileScope: profileScope)
+            }
+            for (server, password) in smbPasswords {
+                SMBCredentialStore.save(password, forServerID: server, profileScope: profileScope)
+            }
+            if profileScope == ProfileSettings.activeProfileScope {
+                JellyfinServerStore.shared.reload()
+                SMBServerStore.shared.reload()
+            }
+            for name in [
+                IPTVSourceStore.changedNotification, TraktAuthStore.changedNotification,
+                SimklAuthStore.changedNotification,
+            ] {
+                NotificationCenter.default.post(name: name, object: nil)
+            }
+            return CredentialVault.Summary(
+                iptvSources: IPTVSourceStore.sources(in: defaults).count,
+                trakt: !(defaults.string(forKey: TraktAuthStore.credentialKeys[0]) ?? "").isEmpty,
+                simkl: !(simklAccessToken ?? "").isEmpty,
+                jellyfinServers: Self.ids(in: defaults, key: SettingsKey.jellyfinServers).count,
+                smbShares: Self.ids(in: defaults, key: SettingsKey.smbServers).count
+            )
+        }
+
+        /// Two stored lists (a JSON string or JSON data of objects with `id`)
+        /// as one, the box's entries first and this device's after, in the
+        /// form the local value had. Nil when neither is there.
+        static func mergedList(local: Any?, remote: Any?) -> Any? {
+            func decode(_ value: Any?) -> [[String: Any]]? {
+                let data = (value as? Data) ?? (value as? String).map { Data($0.utf8) }
+                return data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [[String: Any]] }
+            }
+            let remoteList = decode(remote) ?? []
+            let localList = decode(local) ?? []
+            guard !remoteList.isEmpty || !localList.isEmpty else { return local ?? remote }
+            var seen = Set<String>()
+            let merged = (remoteList + localList).filter { item in
+                guard let id = item["id"] as? String else { return true }
+                return seen.insert(id).inserted
+            }
+            guard let data = try? JSONSerialization.data(withJSONObject: merged) else { return local ?? remote }
+            // Keep the stored form: IPTV sources are a string, servers data.
+            if (local ?? remote) is String { return String(data: data, encoding: .utf8) }
+            return data
+        }
+
+        /// The `id`s in a stored server list.
+        static func ids(in defaults: UserDefaults, key: String) -> [String] {
+            guard let data = defaults.data(forKey: key),
+                  let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
+            return list.compactMap { $0["id"] as? String }
+        }
+    }
+}
+
+// MARK: - Keychain
+
+/// One device-only keychain string.
+enum KeychainItem {
+    static func read(service: String, account: String) -> String? {
+        var query = base(service: service, account: account)
+        query[kSecReturnData as String] = kCFBooleanTrue
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data, let value = String(data: data, encoding: .utf8), !value.isEmpty else { return nil }
+        return value
+    }
+
+    static func save(_ value: String, service: String, account: String) {
+        remove(service: service, account: account)
+        var query = base(service: service, account: account)
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        query[kSecValueData as String] = Data(value.utf8)
+        SecItemAdd(query as CFDictionary, nil)
+    }
+
+    static func remove(service: String, account: String) {
+        SecItemDelete(base(service: service, account: account) as CFDictionary)
+    }
+
+    private static func base(service: String, account: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+    }
+}

@@ -141,12 +141,18 @@
 		C0D31051 /* NuvioTV/Sources/Core/Player/PlaybackEngineControlling.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D30051 /* NuvioTV/Sources/Core/Player/PlaybackEngineControlling.swift */; };
 		C0D31054 /* NuvioTV/Sources/Core/Player/PlaybackWakeLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D30054 /* NuvioTV/Sources/Core/Player/PlaybackWakeLock.swift */; };
 		C0D31060 /* NuvioTV/Sources/Core/Streams/StreamQualityTags.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D30060 /* NuvioTV/Sources/Core/Streams/StreamQualityTags.swift */; };
+		CWX0T010 /* NuvioTV/Sources/UI/Onboarding/OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CWX0F010 /* NuvioTV/Sources/UI/Onboarding/OnboardingView.swift */; };
+		CWX0T009 /* NuvioTV/Sources/Core/Sync/CredentialVault.swift in Sources */ = {isa = PBXBuildFile; fileRef = CWX0F009 /* NuvioTV/Sources/Core/Sync/CredentialVault.swift */; };
 		CWX0T008 /* NuvioTV/Sources/Core/Notifications/MatchReminders.swift in Sources */ = {isa = PBXBuildFile; fileRef = CWX0F008 /* NuvioTV/Sources/Core/Notifications/MatchReminders.swift */; };
 		CWX0T007 /* NuvioTV/Sources/Core/Search/AdultContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = CWX0F007 /* NuvioTV/Sources/Core/Search/AdultContent.swift */; };
 		CWX0T006 /* NuvioTV/Sources/Core/Sync/RelatedMatches.swift in Sources */ = {isa = PBXBuildFile; fileRef = CWX0F006 /* NuvioTV/Sources/Core/Sync/RelatedMatches.swift */; };
+		CWX0M010 /* NuvioTV/Sources/UI/Onboarding/OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CWX0F010 /* NuvioTV/Sources/UI/Onboarding/OnboardingView.swift */; };
+		CWX0M009 /* NuvioTV/Sources/Core/Sync/CredentialVault.swift in Sources */ = {isa = PBXBuildFile; fileRef = CWX0F009 /* NuvioTV/Sources/Core/Sync/CredentialVault.swift */; };
 		CWX0M008 /* NuvioTV/Sources/Core/Notifications/MatchReminders.swift in Sources */ = {isa = PBXBuildFile; fileRef = CWX0F008 /* NuvioTV/Sources/Core/Notifications/MatchReminders.swift */; };
 		CWX0M007 /* NuvioTV/Sources/Core/Search/AdultContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = CWX0F007 /* NuvioTV/Sources/Core/Search/AdultContent.swift */; };
 		CWX0M006 /* NuvioTV/Sources/Core/Sync/RelatedMatches.swift in Sources */ = {isa = PBXBuildFile; fileRef = CWX0F006 /* NuvioTV/Sources/Core/Sync/RelatedMatches.swift */; };
+		CWX0I010 /* NuvioTV/Sources/UI/Onboarding/OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CWX0F010 /* NuvioTV/Sources/UI/Onboarding/OnboardingView.swift */; };
+		CWX0I009 /* NuvioTV/Sources/Core/Sync/CredentialVault.swift in Sources */ = {isa = PBXBuildFile; fileRef = CWX0F009 /* NuvioTV/Sources/Core/Sync/CredentialVault.swift */; };
 		CWX0I008 /* NuvioTV/Sources/Core/Notifications/MatchReminders.swift in Sources */ = {isa = PBXBuildFile; fileRef = CWX0F008 /* NuvioTV/Sources/Core/Notifications/MatchReminders.swift */; };
 		CWX0I007 /* NuvioTV/Sources/Core/Search/AdultContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = CWX0F007 /* NuvioTV/Sources/Core/Search/AdultContent.swift */; };
 		CWX0I006 /* NuvioTV/Sources/Core/Sync/RelatedMatches.swift in Sources */ = {isa = PBXBuildFile; fileRef = CWX0F006 /* NuvioTV/Sources/Core/Sync/RelatedMatches.swift */; };
@@ -710,6 +716,8 @@
 		C0D30051 /* NuvioTV/Sources/Core/Player/PlaybackEngineControlling.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/Player/PlaybackEngineControlling.swift; sourceTree = "<group>"; };
 		C0D30054 /* NuvioTV/Sources/Core/Player/PlaybackWakeLock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/Player/PlaybackWakeLock.swift; sourceTree = "<group>"; };
 		C0D30060 /* NuvioTV/Sources/Core/Streams/StreamQualityTags.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/Streams/StreamQualityTags.swift; sourceTree = "<group>"; };
+		CWX0F010 /* NuvioTV/Sources/UI/Onboarding/OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/UI/Onboarding/OnboardingView.swift; sourceTree = "<group>"; };
+		CWX0F009 /* NuvioTV/Sources/Core/Sync/CredentialVault.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/Sync/CredentialVault.swift; sourceTree = "<group>"; };
 		CWX0F008 /* NuvioTV/Sources/Core/Notifications/MatchReminders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/Notifications/MatchReminders.swift; sourceTree = "<group>"; };
 		CWX0F007 /* NuvioTV/Sources/Core/Search/AdultContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/Search/AdultContent.swift; sourceTree = "<group>"; };
 		CWX0F006 /* NuvioTV/Sources/Core/Sync/RelatedMatches.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/Sync/RelatedMatches.swift; sourceTree = "<group>"; };
@@ -986,6 +994,8 @@
 				51A100070000000000000007 /* NuvioTV/Sources/Core/Simkl/SimklSyncService.swift */,
 				C0D3002D000000000000002D /* NuvioTV/Sources/Core/Skip/IntroDBSkipService.swift */,
 				C0D30060 /* NuvioTV/Sources/Core/Streams/StreamQualityTags.swift */,
+				CWX0F010 /* NuvioTV/Sources/UI/Onboarding/OnboardingView.swift */,
+				CWX0F009 /* NuvioTV/Sources/Core/Sync/CredentialVault.swift */,
 				CWX0F008 /* NuvioTV/Sources/Core/Notifications/MatchReminders.swift */,
 				CWX0F007 /* NuvioTV/Sources/Core/Search/AdultContent.swift */,
 				CWX0F006 /* NuvioTV/Sources/Core/Sync/RelatedMatches.swift */,
@@ -1582,6 +1592,8 @@
 				C0D31062 /* NuvioTV/Sources/Core/Addons/CommunityAddonCatalog.swift in Sources */,
 				C0D31063 /* NuvioTV/Sources/Core/Addons/AddonTransportUrls.swift in Sources */,
 				C0D31060 /* NuvioTV/Sources/Core/Streams/StreamQualityTags.swift in Sources */,
+				CWX0T010 /* NuvioTV/Sources/UI/Onboarding/OnboardingView.swift in Sources */,
+				CWX0T009 /* NuvioTV/Sources/Core/Sync/CredentialVault.swift in Sources */,
 				CWX0T008 /* NuvioTV/Sources/Core/Notifications/MatchReminders.swift in Sources */,
 				CWX0T007 /* NuvioTV/Sources/Core/Search/AdultContent.swift in Sources */,
 				CWX0T006 /* NuvioTV/Sources/Core/Sync/RelatedMatches.swift in Sources */,
@@ -1701,6 +1713,8 @@
 				MACID000000000000000009A /* NuvioTV/Sources/Core/Simkl/SimklSyncService.swift in Sources */,
 				MACID000000000000000009B /* NuvioTV/Sources/Core/Skip/IntroDBSkipService.swift in Sources */,
 				MACID000000000000000009C /* NuvioTV/Sources/Core/Streams/StreamQualityTags.swift in Sources */,
+				CWX0M010 /* NuvioTV/Sources/UI/Onboarding/OnboardingView.swift in Sources */,
+				CWX0M009 /* NuvioTV/Sources/Core/Sync/CredentialVault.swift in Sources */,
 				CWX0M008 /* NuvioTV/Sources/Core/Notifications/MatchReminders.swift in Sources */,
 				CWX0M007 /* NuvioTV/Sources/Core/Search/AdultContent.swift in Sources */,
 				CWX0M006 /* NuvioTV/Sources/Core/Sync/RelatedMatches.swift in Sources */,
@@ -1900,6 +1914,8 @@
 				IOSID0000000000000000058 /* NuvioTV/Sources/Core/Addons/CommunityAddonCatalog.swift in Sources */,
 				IOSID0000000000000000059 /* NuvioTV/Sources/Core/Addons/AddonTransportUrls.swift in Sources */,
 				IOSID000000000000000005A /* NuvioTV/Sources/Core/Streams/StreamQualityTags.swift in Sources */,
+				CWX0I010 /* NuvioTV/Sources/UI/Onboarding/OnboardingView.swift in Sources */,
+				CWX0I009 /* NuvioTV/Sources/Core/Sync/CredentialVault.swift in Sources */,
 				CWX0I008 /* NuvioTV/Sources/Core/Notifications/MatchReminders.swift in Sources */,
 				CWX0I007 /* NuvioTV/Sources/Core/Search/AdultContent.swift in Sources */,
 				CWX0I006 /* NuvioTV/Sources/Core/Sync/RelatedMatches.swift in Sources */,
@@ -1995,7 +2011,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGNING_REQUIRED = NO;
-				CURRENT_PROJECT_VERSION = 103;
+				CURRENT_PROJECT_VERSION = 104;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -2003,7 +2019,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 4.1.15;
+				MARKETING_VERSION = 4.1.16;
 				PRODUCT_BUNDLE_IDENTIFIER = com.saminaden.omni.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = appletvos;
@@ -2023,7 +2039,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGNING_REQUIRED = NO;
-				CURRENT_PROJECT_VERSION = 103;
+				CURRENT_PROJECT_VERSION = 104;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -2031,7 +2047,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 4.1.15;
+				MARKETING_VERSION = 4.1.16;
 				PRODUCT_BUNDLE_IDENTIFIER = com.saminaden.omni.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = appletvos;
@@ -2049,7 +2065,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = NuvioTV/NuvioTV.entitlements;
-				CURRENT_PROJECT_VERSION = 103;
+				CURRENT_PROJECT_VERSION = 104;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				ENABLE_BITCODE = NO;
 				ENABLE_TESTABILITY = YES;
@@ -2059,7 +2075,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 4.1.15;
+				MARKETING_VERSION = 4.1.16;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2083,7 +2099,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = NuvioTV/NuvioTV.entitlements;
-				CURRENT_PROJECT_VERSION = 103;
+				CURRENT_PROJECT_VERSION = 104;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				INFOPLIST_FILE = NuvioTV/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
@@ -2091,7 +2107,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 4.1.15;
+				MARKETING_VERSION = 4.1.16;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2113,7 +2129,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = TopShelf/TopShelf.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 103;
+				CURRENT_PROJECT_VERSION = 104;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TopShelf/Info.plist;
@@ -2122,7 +2138,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 4.1.15;
+				MARKETING_VERSION = 4.1.16;
 				PRODUCT_BUNDLE_IDENTIFIER = com.saminaden.omni.TopShelf;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = appletvos;
@@ -2139,7 +2155,7 @@
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = TopShelf/TopShelf.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 103;
+				CURRENT_PROJECT_VERSION = 104;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = TopShelf/Info.plist;
@@ -2148,7 +2164,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 4.1.15;
+				MARKETING_VERSION = 4.1.16;
 				PRODUCT_BUNDLE_IDENTIFIER = com.saminaden.omni.TopShelf;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = appletvos;
@@ -2276,7 +2292,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIconMac;
 				CODE_SIGN_ENTITLEMENTS = NuvioTV/Omni-macOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 103;
+				CURRENT_PROJECT_VERSION = 104;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				ENABLE_HARDENED_RUNTIME = NO;
 				INFOPLIST_FILE = "NuvioTV/Info-macOS.plist";
@@ -2286,7 +2302,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 4.1.15;
+				MARKETING_VERSION = 4.1.16;
 				PRODUCT_BUNDLE_IDENTIFIER = com.saminaden.omni.mac;
 				PRODUCT_NAME = Omni;
 				SDKROOT = macosx;
@@ -2302,7 +2318,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIconMac;
 				CODE_SIGN_ENTITLEMENTS = NuvioTV/Omni-macOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 103;
+				CURRENT_PROJECT_VERSION = 104;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				ENABLE_HARDENED_RUNTIME = NO;
 				INFOPLIST_FILE = "NuvioTV/Info-macOS.plist";
@@ -2312,7 +2328,7 @@
 					"@loader_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 4.1.15;
+				MARKETING_VERSION = 4.1.16;
 				PRODUCT_BUNDLE_IDENTIFIER = com.saminaden.omni.mac;
 				PRODUCT_NAME = Omni;
 				SDKROOT = macosx;
@@ -2328,7 +2344,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIconiOS;
 				CODE_SIGN_ENTITLEMENTS = "NuvioTV/Omni-iOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 103;
+				CURRENT_PROJECT_VERSION = 104;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				INFOPLIST_FILE = "NuvioTV/Info-iOS.plist";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
@@ -2336,7 +2352,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 4.1.15;
+				MARKETING_VERSION = 4.1.16;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2361,7 +2377,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIconiOS;
 				CODE_SIGN_ENTITLEMENTS = "NuvioTV/Omni-iOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 103;
+				CURRENT_PROJECT_VERSION = 104;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				INFOPLIST_FILE = "NuvioTV/Info-iOS.plist";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
@@ -2369,7 +2385,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 4.1.15;
+				MARKETING_VERSION = 4.1.16;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-ObjC",
@@ -2392,7 +2408,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = OmniWidgets/OmniWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 103;
+				CURRENT_PROJECT_VERSION = 104;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OmniWidgets/Info.plist;
@@ -2402,7 +2418,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 4.1.15;
+				MARKETING_VERSION = 4.1.16;
 				PRODUCT_BUNDLE_IDENTIFIER = com.saminaden.omni.ios.Widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -2421,7 +2437,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = OmniWidgets/OmniWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 103;
+				CURRENT_PROJECT_VERSION = 104;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = OmniWidgets/Info.plist;
@@ -2431,7 +2447,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 4.1.15;
+				MARKETING_VERSION = 4.1.16;
 				PRODUCT_BUNDLE_IDENTIFIER = com.saminaden.omni.ios.Widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -2449,7 +2465,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = OmniWidgets/OmniWidgetsMac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 103;
+				CURRENT_PROJECT_VERSION = 104;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2460,7 +2476,7 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 4.1.15;
+				MARKETING_VERSION = 4.1.16;
 				PRODUCT_BUNDLE_IDENTIFIER = com.saminaden.omni.mac.Widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
@@ -2477,7 +2493,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = OmniWidgets/OmniWidgetsMac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 103;
+				CURRENT_PROJECT_VERSION = 104;
 				DEVELOPMENT_TEAM = 2528NP47CP;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -2488,7 +2504,7 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 4.1.15;
+				MARKETING_VERSION = 4.1.16;
 				PRODUCT_BUNDLE_IDENTIFIER = com.saminaden.omni.mac.Widgets;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
