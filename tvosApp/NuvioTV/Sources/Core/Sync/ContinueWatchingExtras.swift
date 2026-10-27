@@ -298,6 +298,8 @@ final class ContinueWatchingExtras {
             }
             for await items in group { listed += items }
         }
+        // Omni has no sports add-ons: fixtures come from the schedule.
+        if AppEdition.isPublic { listed += await SportsSchedule.fixtures().map(\.meta) }
         #if os(macOS)
         MacDiagnostics.log("fixtures.load catalogs=\(catalogs.count) listed=\(listed.count)")
         #endif

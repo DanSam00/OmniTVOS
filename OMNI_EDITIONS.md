@@ -20,7 +20,6 @@ Where shared code needs a symbol from that code, `Core/Streams/PublicEditionStub
 - Settings → Integrations: Add-ons, Stremio import and Debrid sections. (Collections and Home-row settings are available in Omni.)
 - The community-add-on store, `nuvio://addon` installs, Torrentio / Comet / MediaFusion lists, the sports/stream add-on defaults.
 - Add Profile's "use primary add-ons / plugins".
-- Sign-up in the Nuvio login (sign-in only; Omni X keeps it).
 - Torrent / debrid / Stremio strings in the language catalog (removed from the built bundle by the "Strip Public Catalog" phase; the source file is untouched).
 
 ## How the fixed add-ons and collections work
@@ -31,6 +30,16 @@ Where shared code needs a symbol from that code, `Core/Streams/PublicEditionStub
 - `regularCollections` / `kidsCollections`: nuvio.tv community-collection ids. On a profile's first use `installCollectionsIfNeeded()` adds the three built-in TMDB rows (Streaming Services, Studios & Franchises, Genres) plus these, through the same kids filter as before. Bump `version` to re-install after changing the lists.
 - Collections stay on the device in Omni (not synced to the Nuvio account) and the defaults are installed once per `version`; a removed default comes back only if `version` is bumped.
 - Sync: Omni never reads or writes add-ons, collections, Home row order or debrid settings on the Nuvio account, so it cannot disturb an Omni X account that shares the login.
+
+## Omni onboarding order
+
+1. Nuvio sign-in or account creation (the login screen; Skip continues as a guest)
+2. IPTV setup (Xtream login or M3U link, checked by loading the channels)
+3. Collections (signed-in only; the defaults are already added)
+4. Favourite teams (fixtures come from `SportsSchedule`, so a team must be in one of its leagues)
+5. Passphrase: create for a new account, link/unlock for an existing one (signed-in only)
+
+Then notifications (optional) and done. Omni X keeps its original order. The Home layout step is not part of Omni's onboarding; it stays in Settings.
 
 ## Live and on-demand
 
@@ -64,4 +73,5 @@ The Omni target runs `python3 scripts/strip_public_catalog.py` after copying res
 - **League ids** in `SportsSchedule.leagues` are TheSportsDB ids from memory — confirm them.
 - Widgets, Google Cast and Bonjour are not in the Omni Mac target yet (Cast needs the sandbox `network.server` entitlement).
 - iOS / tvOS Omni targets, App Store Connect record, privacy policy, age rating, screenshots, and App Review notes (state that Omni ships no content and no content sources; users supply their own IPTV / Jellyfin / SMB).
-- Nuvio sign-in: optional (Skip works), no sign-up in Omni so no in-app account deletion is required. It is still a third-party service; a bundled offline copy of the curated collections would remove Review's dependence on it.
+- **Account deletion**: Omni offers account creation, so App Store guideline 5.1.1(v) requires an in-app way to delete the account. There is none yet, and it needs a delete endpoint on Nuvio's backend (or remove sign-up from Omni again).
+- Nuvio sign-in: optional (Skip works). It is still a third-party service; a bundled offline copy of the curated collections would remove Review's dependence on it.

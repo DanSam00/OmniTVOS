@@ -232,15 +232,11 @@ struct LoginView: View {
                 }
             }
 
-            // Omni signs in to an existing Nuvio account; accounts are made on
-            // nuvio.tv, so Omni has no account creation (or deletion) to offer.
-            if AppEdition.isOmniX {
-                LoginLinkButton(
-                    title: isSignUp ? "Already have an account? Sign in" : "New here? Create an account"
-                ) {
-                    isSignUp.toggle()
-                    auth.errorMessage = nil
-                }
+            LoginLinkButton(
+                title: isSignUp ? "Already have an account? Sign in" : "New here? Create an account"
+            ) {
+                isSignUp.toggle()
+                auth.errorMessage = nil
             }
         }
     }

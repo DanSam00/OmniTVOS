@@ -25,7 +25,7 @@ struct OnboardingView: View {
     var vaultOnly = false
     let onFinish: () -> Void
 
-    private enum Step: CaseIterable { case vault, layout, collections, alerts, done }
+    private enum Step: CaseIterable { case iptv, vault, layout, collections, teams, alerts, done }
 
     @ObservedObject private var vault = CredentialVault.shared
     @AppStorage(SettingsKey.homeLayout) private var homeLayout = SettingsDefault.homeLayout
@@ -34,6 +34,15 @@ struct OnboardingView: View {
     @State private var confirmation = ""
     @State private var message: String?
     @State private var restored = false
+    @State private var iptvKind: IPTVSource.Kind = .xtream
+    @State private var iptvName = ""
+    @State private var iptvURL = ""
+    @State private var iptvUser = ""
+    @State private var iptvPass = ""
+    @State private var iptvBusy = false
+    @State private var iptvStage = ""
+    @State private var iptvError: String?
+    @State private var iptvChannels: Int?
     @State private var teams: [String] = FavouriteTeamsStore.teams()
     @State private var newTeam = ""
     @State private var community: [CommunityCollections.Item] = []
@@ -48,8 +57,22 @@ struct OnboardingView: View {
 
     private var steps: [Step] {
         var list: [Step] = []
+        if vaultOnly { return isSignedIn ? [.vault] : [] }
+        if AppEdition.isPublic {
+            // Omni: sign-in comes first (the login screen), then your IPTV,
+            // collections, teams, and last the passphrase that links or
+            // creates the encrypted sign-in box for the account.
+            list.append(.iptv)
+            if isSignedIn { list.append(.collections) }
+            list.append(.teams)
+            if isSignedIn { list.append(.vault) }
+            #if os(iOS) || os(macOS)
+            list.append(.alerts)
+            #endif
+            list.append(.done)
+            return list
+        }
         if isSignedIn { list.append(.vault) }
-        if vaultOnly { return list }
         list.append(.layout)
         // The community list needs a Nuvio sign-in.
         if isSignedIn { list.append(.collections) }
@@ -67,6 +90,8 @@ struct OnboardingView: View {
                 VStack(alignment: .leading, spacing: Metrics.spacing) {
                     progress
                     switch step {
+                    case .iptv: iptvStep
+                    case .teams: teamsStep
                     case .vault: vaultStep
                     case .layout: layoutStep
                     case .collections: collectionsStep
@@ -94,8 +119,108 @@ struct OnboardingView: View {
     // MARK: Steps
 
     @ViewBuilder
+    private var iptvStep: some View {
+        title("Add your IPTV")
+        text("Omni plays what you already subscribe to. Enter the Xtream login or M3U playlist link your provider gave you. You can add more later in Settings.")
+        if vault.status == .locked {
+            hint("Already set up on this account? Your sources come over when you link this device in the last step, so you can skip this.")
+        }
+        if let iptvChannels {
+            Label("\(iptvName) added · \(iptvChannels) channels", systemImage: "checkmark.circle.fill").font(Metrics.body)
+            primary("Continue", id: "onboard.iptvnext", enabled: true) { advance() }
+        } else {
+            HStack(spacing: Metrics.chipSpacing) {
+                chip("Xtream login", isOn: iptvKind == .xtream, id: "onboard.iptv.xtream") { iptvKind = .xtream }
+                chip("M3U playlist", isOn: iptvKind == .m3u, id: "onboard.iptv.m3u") { iptvKind = .m3u }
+            }
+            field("Name, e.g. My IPTV", $iptvName)
+            field(iptvKind == .m3u ? "Playlist URL" : "Server, e.g. http://host:8080", $iptvURL)
+            if iptvKind == .xtream {
+                field("Username", $iptvUser)
+                secure("Password", $iptvPass)
+            }
+            if let iptvError { Text(iptvError).font(Metrics.caption).foregroundStyle(.red) }
+            if iptvBusy {
+                HStack(spacing: 12) {
+                    ProgressView()
+                    hint(iptvStage.isEmpty ? "Connecting to the provider…" : iptvStage)
+                }
+            }
+            primary(iptvBusy ? "Loading channels…" : "Add", id: "onboard.iptv.add", enabled: iptvCanAdd && !iptvBusy) { addIPTV() }
+            secondary("Skip — I'll add one later", id: "onboard.iptv.skip") { advance() }
+        }
+    }
+
+    private var iptvCanAdd: Bool {
+        let name = iptvName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let url = iptvURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !url.isEmpty else { return false }
+        return iptvKind == .m3u || (!iptvUser.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !iptvPass.isEmpty)
+    }
+
+    /// Loads the channels before keeping the source, so a wrong link or login
+    /// is reported here rather than as an empty Home (as in Settings).
+    private func addIPTV() {
+        var source = IPTVSource(
+            name: iptvName.trimmingCharacters(in: .whitespacesAndNewlines),
+            kind: iptvKind,
+            url: iptvURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        if iptvKind == .xtream {
+            source.username = iptvUser.trimmingCharacters(in: .whitespacesAndNewlines)
+            source.password = iptvPass
+        }
+        iptvBusy = true
+        iptvError = nil
+        iptvStage = ""
+        Task { @MainActor in
+            do {
+                let playlist = try await IPTVLibrary.shared.playlist(for: source, force: true) { update in
+                    Task { @MainActor in iptvStage = update.stage }
+                }
+                var all = IPTVSourceStore.sources().filter { $0.id != source.id }
+                all.append(source)
+                IPTVSourceStore.save(all)
+                NuvioSyncManager.current?.noteHomeCatalogSettingsChangedLocally()
+                iptvPass = ""
+                iptvChannels = playlist.channels.count
+            } catch {
+                iptvError = error.localizedDescription
+            }
+            iptvBusy = false
+        }
+    }
+
+    @ViewBuilder
+    private var teamsStep: some View {
+        title("Follow your teams")
+        text("Their next match joins Continue Watching and the Calendar, with the live channels in your IPTV that carry it.")
+        HStack(spacing: Metrics.chipSpacing) {
+            field("Team, e.g. Liverpool", $newTeam)
+            primary("Add", id: "onboard.addteam", enabled: !newTeam.trimmingCharacters(in: .whitespaces).isEmpty, fill: false) {
+                FavouriteTeamsStore.add(newTeam)
+                teams = FavouriteTeamsStore.teams()
+                newTeam = ""
+            }
+        }
+        if !teams.isEmpty {
+            FlowRow(spacing: Metrics.chipSpacing) {
+                ForEach(teams, id: \.self) { team in
+                    chip("\(team)  ✕", isOn: true, id: "onboard.team.\(team)") {
+                        FavouriteTeamsStore.remove(team)
+                        teams = FavouriteTeamsStore.teams()
+                    }
+                }
+            }
+        }
+        primary(teams.isEmpty ? "Skip" : "Continue", id: "onboard.teamsnext", enabled: true) { advance() }
+    }
+
+    @ViewBuilder
     private var vaultStep: some View {
-        title("Bring your sign-ins over")
+        title(AppEdition.isPublic
+            ? (vault.status == .locked ? "Link this device" : "Protect your sign-ins")
+            : "Bring your sign-ins over")
         if vault.isChecking {
             HStack(spacing: 12) {
                 ProgressView()
