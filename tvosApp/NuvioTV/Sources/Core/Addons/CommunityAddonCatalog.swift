@@ -29,6 +29,10 @@ enum CommunityAddonCatalog {
     /// Public collection used by several Stremio clients. Fails soft to curated list.
     private static let remoteURL = URL(string: "https://stremio-addons.com/catalog.json")
 
+    #if !OMNI_X
+    /// Omni has no add-on store; its add-ons are fixed (`CuratedLibrary`).
+    static let curated: [CommunityAddon] = []
+    #else
     static let curated: [CommunityAddon] = [
         CommunityAddon(
             name: "Torrentio",
@@ -79,8 +83,10 @@ enum CommunityAddonCatalog {
             categories: ["Streams", "Torrents"]
         )
     ]
+    #endif
 
     static func load(preferRemote: Bool = true) async -> [CommunityAddon] {
+        guard AppEdition.isOmniX else { return [] }
         if preferRemote, let remote = await fetchRemote() {
             return merge(remote: remote, curated: curated)
         }
@@ -99,6 +105,7 @@ enum CommunityAddonCatalog {
     /// Installs (or re-enables) a community add-on and notifies account sync.
     @discardableResult
     static func install(manifestURL raw: String) -> Bool {
+        guard AppEdition.isOmniX else { return false }
         guard let url = CinemetaCatalogRepository.normalizedManifestURL(from: raw) else {
             return false
         }
@@ -219,6 +226,9 @@ private struct RemoteAddonDTO: Decodable {
 /// new account. Added once per account profile — the first sync in Omni — so
 /// one the user later removes stays removed.
 enum OmniDefaultAddons {
+    #if !OMNI_X
+    static let manifestURLs: [String] = []
+    #else
     static let manifestURLs: [String] = [
         // Nuvio Live Sports
         "https://nuviosports.xyz/manifest.json",
@@ -235,6 +245,7 @@ enum OmniDefaultAddons {
         // Rotten Tomatoes
         "https://7a82163c306e-rottentomatoes.baby-beamup.club/manifest.json",
     ]
+    #endif
 
     /// Rotten Tomatoes' two catalogs, put on Home rather than held back the way
     /// a new add-on's catalogs otherwise are.

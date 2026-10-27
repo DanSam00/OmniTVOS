@@ -1,3 +1,4 @@
+#if OMNI_X
 import Foundation
 
 /// TorBox cloud library: lists saved torrents, usenet and web downloads, then
@@ -150,3 +151,4 @@ private struct Item: Decodable {
 private extension String {
     var nonEmpty: String? { isEmpty ? nil : self }
 }
+#endif

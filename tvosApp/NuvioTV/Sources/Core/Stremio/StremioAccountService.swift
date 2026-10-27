@@ -1,3 +1,4 @@
+#if OMNI_X
 import Foundation
 
 /// Stremio account import.
@@ -433,3 +434,4 @@ struct StremioLibraryItem: Decodable {
         )
     }
 }
+#endif

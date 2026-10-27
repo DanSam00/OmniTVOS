@@ -14,6 +14,7 @@ struct ConnectedCloudProvider: Identifiable, Hashable {
     }
 }
 
+#if OMNI_X
 /// Reads the configured debrid provider + key and exposes the matching cloud
 /// library backend. Only Premiumize and TorBox expose a browsable cloud (as on
 /// Android); Real-Debrid / others return no provider.
@@ -125,3 +126,14 @@ struct CloudLibraryService {
         return await prov.resolvePlayback(apiKey: p.apiKey, item: item, file: file)
     }
 }
+#else
+/// Omni has no cloud library: nothing is ever connected.
+struct CloudLibraryService {
+    init(store: UserDefaults) {}
+    var connectedProviders: [ConnectedCloudProvider] { [] }
+    var isAvailable: Bool { false }
+    var providerName: String? { nil }
+    func loadItems(providerId: String? = nil) async throws -> [CloudItem] { [] }
+    func resolve(item: CloudItem, file: CloudFile) async -> CloudPlaybackResult { .notPlayable }
+}
+#endif

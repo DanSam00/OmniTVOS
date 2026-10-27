@@ -1,3 +1,4 @@
+#if OMNI_X
 import Foundation
 
 /// Entry point for turning a torrent-only `NuvioStream` into a playable one.
@@ -56,3 +57,4 @@ struct DebridResolver {
         }
     }
 }
+#endif

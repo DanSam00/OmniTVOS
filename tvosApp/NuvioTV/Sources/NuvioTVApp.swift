@@ -483,9 +483,13 @@ struct ContentView: View {
         // does this in PhoneMainTabView).
         .task(id: isOnMainScreen ? profileViewModel.activeProfile?.id : nil) {
             guard isOnMainScreen, profileViewModel.activeProfile != nil else { return }
+            #if OMNI_X
             await CommunityCollections.installPendingIfNeeded()
             guard ProfileSettings.current.bool(forKey: SettingsKey.kidsProfile) else { return }
             await CommunityCollections.seedKidsProfileIfNeeded()
+            #else
+            await CuratedLibrary.installCollectionsIfNeeded()
+            #endif
         }
         #endif
         #if os(iOS)
@@ -9186,6 +9190,8 @@ enum TVHomeCatalogOrder {
     /// - Returns: the keys held back by this call.
     @discardableResult
     static func holdBackNewCatalogs(_ keys: [String]) -> Set<String> {
+        // Omni's catalogs are fixed and all on Home; nothing waits to be added.
+        guard AppEdition.isOmniX else { return [] }
         // Home's load and the Settings list both call this at launch, and each
         // reads, extends and writes two lists: unserialised, one call's
         // additions were lost to the other's write.

@@ -669,6 +669,7 @@ final class CinemetaCatalogRepository: CatalogRepository {
             return jellyfinMeta
         }
         if let iptvMeta = await Self.iptvMeta(id) { return iptvMeta }
+        if let fixture = await Self.fixtureMeta(id) { return fixture }
         let cached = cachedMetadata(for: id)
         if let cached, isCachedFullMetadata(id: id) {
             return await TmdbDetailsService.localizedMetadata(for: cached)
@@ -682,12 +683,20 @@ final class CinemetaCatalogRepository: CatalogRepository {
             return jellyfinMeta
         }
         if let iptvMeta = await Self.iptvMeta(id) { return iptvMeta }
+        if let fixture = await Self.fixtureMeta(id) { return fixture }
         // A catalog can report `type: movie` while its nonempty videos prove
         // that it is a series. Keep that inference while replacing the cache,
         // otherwise refresh falls back to the wrong Cinemeta endpoint.
         let cachedIsSeriesHint = cachedMetadata(for: id)?.isSeries
         removeCachedMetadata(for: id)
         return try await loadMetadata(id: id, type: type, cachedIsSeriesHint: cachedIsSeriesHint)
+    }
+
+    /// A fixture from the Calendar's schedule (`SportsSchedule`).
+    private static func fixtureMeta(_ id: String) async -> NuvioMeta? {
+        guard SportsSchedule.isFixtureID(id) else { return nil }
+        if SportsSchedule.meta(forContentID: id) == nil { _ = await SportsSchedule.fixtures() }
+        return SportsSchedule.meta(forContentID: id)
     }
 
     /// An IPTV channel's page comes from its playlists, loading them first
@@ -950,6 +959,10 @@ final class CinemetaCatalogRepository: CatalogRepository {
     }
 
     static func configuredStreamAddonPreferences(in defaults: UserDefaults = ProfileSettings.current) -> [StreamAddonPreference] {
+        #if !OMNI_X
+        // Omni: a fixed list, whatever is stored or synced.
+        return CuratedLibrary.addonPreferences(forKids: defaults.bool(forKey: SettingsKey.kidsProfile))
+        #else
         var preferences: [StreamAddonPreference] = []
         if let json = defaults.string(forKey: SettingsKey.streamAddonManifestStates),
            let data = json.data(using: .utf8),
@@ -960,6 +973,7 @@ final class CinemetaCatalogRepository: CatalogRepository {
             StreamAddonPreference(url: $0.absoluteString, enabled: true)
         })
         return normalizedPreferences(preferences)
+        #endif
     }
 
     /// Full ordered add-on state for Settings. The legacy URL fields are still
@@ -972,6 +986,9 @@ final class CinemetaCatalogRepository: CatalogRepository {
         _ preferences: [StreamAddonPreference],
         in defaults: UserDefaults = ProfileSettings.current
     ) {
+        #if !OMNI_X
+        return  // Omni's add-ons cannot be changed.
+        #else
         let normalized = normalizedPreferences(preferences)
         let enabledURLs = normalized
             .filter(\.enabled)
@@ -985,6 +1002,7 @@ final class CinemetaCatalogRepository: CatalogRepository {
         }
         defaults.set(enabledURLs.first ?? "", forKey: SettingsKey.streamAddonManifestURL)
         defaults.set(enabledURLs.joined(separator: "\n"), forKey: SettingsKey.streamAddonManifestURLs)
+        #endif
     }
 
     private static func legacyStreamAddonURLs(in defaults: UserDefaults) -> [URL] {

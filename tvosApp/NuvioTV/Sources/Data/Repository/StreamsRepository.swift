@@ -130,6 +130,19 @@ final class StreamsRepository: ObservableObject {
         )
     }
 
+    /// A fixture's live channels from the viewer's own IPTV playlists.
+    private func sportsStreamGroup(videoId: String) async -> AddonStreamGroup? {
+        guard SportsSchedule.isFixtureID(videoId) else { return nil }
+        let streams = await SportsSchedule.liveStreams(forContentID: videoId)
+        guard !streams.isEmpty else { return nil }
+        return AddonStreamGroup(
+            addonId: "omni.iptv.sports",
+            displayName: "IPTV",
+            streams: streams,
+            isLoading: false
+        )
+    }
+
     private func jellyfinStreamGroup(videoId: String) -> AddonStreamGroup? {
         let contentId = Self.baseContentId(from: videoId)
         let episode = Self.seasonEpisode(fromVideoId: videoId)
@@ -265,11 +278,11 @@ final class StreamsRepository: ObservableObject {
             || iptvStreamGroup(videoId: videoId) != nil {
             return true
         }
-
-        let enabledURLs = CinemetaCatalogRepository.configuredStreamAddonPreferences.compactMap { pref -> URL? in
-            guard pref.enabled else { return nil }
-            return CinemetaCatalogRepository.normalizedManifestURL(from: pref.url)
+        if SportsSchedule.isFixtureID(videoId) {
+            return await sportsStreamGroup(videoId: videoId) != nil
         }
+
+        let enabledURLs = Self.streamAddonURLs()
         let manifestsByURL = await Self.loadManifestsConcurrently(urls: enabledURLs)
         let targets: [StreamAddonTarget] = enabledURLs.compactMap { url in
             guard let manifest = manifestsByURL[url],
@@ -300,14 +313,29 @@ final class StreamsRepository: ObservableObject {
         return await iptvVODGroup(type: type, videoId: videoId) != nil
     }
 
+    /// The add-ons asked for streams. Omni asks none: its streams come from
+    /// the viewer's own IPTV, Jellyfin and SMB sources, and its fixed add-ons
+    /// only describe titles.
+    private static func streamAddonURLs() -> [URL] {
+        #if OMNI_X
+        return CinemetaCatalogRepository.configuredStreamAddonPreferences.compactMap { pref -> URL? in
+            guard pref.enabled else { return nil }
+            return CinemetaCatalogRepository.normalizedManifestURL(from: pref.url)
+        }
+        #else
+        return []
+        #endif
+    }
+
     // MARK: - Discovery
 
     private func runDiscovery(requestKey: String, type: String, videoId: String) async {
-        let ownedGroups = [
+        var ownedGroups = [
             localStreamGroup(videoId: videoId),
             jellyfinStreamGroup(videoId: videoId),
             iptvStreamGroup(videoId: videoId),
         ].compactMap { $0 }
+        if let sports = await sportsStreamGroup(videoId: videoId) { ownedGroups.append(sports) }
         let iptvVOD: Task<AddonStreamGroup?, Never>? = Self.searchesIPTVLibrary(type: type, videoId: videoId)
             ? Task { await self.iptvVODGroup(type: type, videoId: videoId) }
             : nil
@@ -318,11 +346,7 @@ final class StreamsRepository: ObservableObject {
             isAnyLoading: true
         )
 
-        let preferences = CinemetaCatalogRepository.configuredStreamAddonPreferences
-        let enabledURLs = preferences.compactMap { pref -> URL? in
-            guard pref.enabled else { return nil }
-            return CinemetaCatalogRepository.normalizedManifestURL(from: pref.url)
-        }
+        let enabledURLs = Self.streamAddonURLs()
 
         guard !enabledURLs.isEmpty else {
             let ownedGroups = ownedGroups + [await iptvVOD?.value].compactMap { $0 ?? nil }

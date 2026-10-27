@@ -1,3 +1,4 @@
+#if OMNI_X
 import Foundation
 
 // MARK: - Debrid provider abstraction
@@ -170,3 +171,4 @@ enum DebridFileSelection {
         return playable.max(by: { (size($0) ?? 0) < (size($1) ?? 0) })
     }
 }
+#endif

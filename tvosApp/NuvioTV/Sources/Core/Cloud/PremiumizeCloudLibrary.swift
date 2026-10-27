@@ -1,3 +1,4 @@
+#if OMNI_X
 import Foundation
 
 /// Premiumize cloud library: `item/listall` returns every saved file with a
@@ -140,3 +141,4 @@ private struct ItemDetails: Decodable {
     let size: Int64?
     let link: String?
 }
+#endif

@@ -1,3 +1,4 @@
+#if OMNI_X
 import Foundation
 
 /// Resolves a torrent through TorBox: create the (cached-only) torrent, read its
@@ -145,3 +146,4 @@ private struct TorrentData: Decodable {
         }
     }
 }
+#endif

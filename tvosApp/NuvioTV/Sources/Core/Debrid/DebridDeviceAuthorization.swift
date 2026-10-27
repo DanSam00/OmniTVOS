@@ -1,3 +1,4 @@
+#if OMNI_X
 import Combine
 import Foundation
 
@@ -636,3 +637,4 @@ private struct RealDebridDeviceToken: Decodable {
         case errorDescription = "error_description"
     }
 }
+#endif

@@ -30,6 +30,18 @@ enum LibrarySourceMode: String, CaseIterable, Identifiable {
     case downloads
     #endif
 
+    /// Omni (the public app) has no cloud-provider library.
+    static var allCases: [LibrarySourceMode] {
+        var modes: [LibrarySourceMode] = [.saved]
+        #if OMNI_X
+        modes.append(.cloud)
+        #endif
+        #if os(macOS)
+        modes.append(.downloads)
+        #endif
+        return modes
+    }
+
     var id: String { rawValue }
 
     var localizedTitle: String {

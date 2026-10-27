@@ -1,3 +1,4 @@
+#if OMNI_X
 import Foundation
 
 /// Resolves a torrent through Real-Debrid's REST API. Mirrors the Android
@@ -150,3 +151,4 @@ private struct UnrestrictResponse: Decodable {
     let filename: String?
     let filesize: Int64?
 }
+#endif

@@ -37,11 +37,17 @@ enum CollectionSourceError: LocalizedError {
         case .invalidResponse(let provider):
             return "\(provider) returned data the app could not read."
         case .addonNotInstalled(let addonId, let catalogId):
+            #if !OMNI_X
+            // Omni's add-ons are fixed; there is nothing for the viewer to install.
+            _ = (addonId, catalogId)
+            return "This row isn't available in Omni."
+            #else
             if let name = Self.knownAddonName(addonId) {
                 let catalog = catalogId.map { " It needs the catalog “\($0)” in that add-on's configuration, as the collection's author set it up." } ?? ""
                 return "This row comes from \(name), which isn't installed on this profile.\(catalog) Install and configure \(name) in Settings → Integrations → Add-ons."
             }
             return "This row comes from the add-on “\(addonId)”, which isn't installed on this profile. Install it in Settings → Integrations → Add-ons to see it."
+            #endif
         }
     }
 }
@@ -56,7 +62,12 @@ extension CollectionSourceError {
         case .missingTraktClientID: return "Set Up Trakt"
         case .missingMdbListKey: return "Add an MDBList Key"
         case .addonNotInstalled(let addonId, _):
+            #if !OMNI_X
+            _ = addonId
+            return nil
+            #else
             return Self.knownAddonName(addonId).map { "Set Up \($0)" } ?? "Install the Add-on"
+            #endif
         default: return nil
         }
     }

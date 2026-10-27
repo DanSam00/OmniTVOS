@@ -3628,11 +3628,14 @@ private struct LayoutDiscoverySettingsView: View {
                 .disabled(!trailersEnabled)
             }
 
+            // Omni's catalogs and collections are fixed (see CuratedLibrary).
+            #if OMNI_X
             HomeCatalogOrderSection(accentColor: accentColor)
 
             HomeCatalogAddSection(accentColor: accentColor)
 
             CollectionsSettingsSection(accentColor: accentColor)
+            #endif
 
             SettingsGroup(
                 title: L10n.string("tvos_layout_discovery", fallback: "Discovery"),
@@ -3959,13 +3962,16 @@ private struct IntegrationSettingsView: View {
     @AppStorage(SettingsKey.tmdbApiKey) private var tmdbApiKey = ""
     @AppStorage(SettingsKey.mdbListEnabled) private var mdbListEnabled = false
     @AppStorage(SettingsKey.mdbListApiKey) private var mdbListApiKey = ""
+    #if OMNI_X
     @AppStorage(SettingsKey.debridProvider) private var debridProvider = "None"
     @AppStorage(SettingsKey.debridApiKey) private var debridApiKey = ""
     @AppStorage(SettingsKey.torboxAccessToken) private var torboxAccessToken = ""
     @AppStorage(SettingsKey.premiumizeAccessToken) private var premiumizeAccessToken = ""
     @AppStorage(SettingsKey.realDebridAccessToken) private var realDebridAccessToken = ""
-    @AppStorage(SettingsKey.aiSubtitlesEnabled) private var aiSubtitlesEnabled = false
     @State private var debridAccountToConnect: DebridAccountProvider?
+    @StateObject private var debridConnection = DebridAccountConnectionViewModel()
+    #endif
+    @AppStorage(SettingsKey.aiSubtitlesEnabled) private var aiSubtitlesEnabled = false
     @State private var showingTraktLogin = false
     @State private var showingTraktSettings = false
     @State private var showingSimklLogin = false
@@ -3973,7 +3979,7 @@ private struct IntegrationSettingsView: View {
     @State private var showingTmdbOptions = false
     @State private var showingMdbListOptions = false
     @State private var showingAISubtitleOptions = false
-    @StateObject private var debridConnection = DebridAccountConnectionViewModel()
+    #if OMNI_X
     @State private var stremioEmailDraft = ""
     @State private var stremioPasswordDraft = ""
     @State private var stremioStatus = ""
@@ -4073,6 +4079,8 @@ private struct IntegrationSettingsView: View {
         )
     }
 
+    #endif
+
     init(accentColor: Color, profileID: String?) {
         self.accentColor = accentColor
         let profileStore = ProfileSettings.store(for: profileID)
@@ -4088,6 +4096,7 @@ private struct IntegrationSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
+            #if OMNI_X
             AddonsSettingsSection(accentColor: accentColor)
                 .id(SettingsDeepLink.Anchor.addons.id)
 
@@ -4185,6 +4194,7 @@ private struct IntegrationSettingsView: View {
                     }
                 }
             }
+            #endif
 
             SettingsGroup(
                 title: L10n.string("settings_simkl_title", fallback: "Simkl"),
@@ -4263,6 +4273,7 @@ private struct IntegrationSettingsView: View {
             }
             .id(SettingsDeepLink.Anchor.tmdb.id)
 
+            #if OMNI_X
             SettingsGroup(
                 title: L10n.string("tvos_integrations_debrid", fallback: "Debrid"),
                 subtitle: L10n.string(
@@ -4302,6 +4313,7 @@ private struct IntegrationSettingsView: View {
                     debridAccountToConnect = .premiumize
                 }
             }
+            #endif
 
             SMBSettingsSection(accentColor: accentColor)
 
@@ -4325,6 +4337,7 @@ private struct IntegrationSettingsView: View {
                 mdbListEnabled = false
             }
         }
+        #if OMNI_X
         .sheet(item: $debridAccountToConnect) { provider in
             Group {
             if provider == .premiumize && !PremiumizeOAuthConfiguration.isDeviceOAuthConfigured {
@@ -4342,6 +4355,7 @@ private struct IntegrationSettingsView: View {
             }
             .modifier(MacSheetCloseButton())
         }
+        #endif
         .sheet(isPresented: $showingTraktLogin, onDismiss: {
             if traktViewModel.mode == .connected {
                 showingTraktSettings = true
@@ -4408,6 +4422,7 @@ private struct IntegrationSettingsView: View {
         !AISubtitleTranslationSettings.current().apiKey.isEmpty
     }
 
+    #if OMNI_X
     private func isConnected(_ provider: DebridAccountProvider) -> Bool {
         switch provider {
         case .torbox:
@@ -4420,6 +4435,7 @@ private struct IntegrationSettingsView: View {
         return debridProvider == provider.debridKind.rawValue &&
             !debridApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+    #endif
 
     private var traktCredentialsReady: Bool { TraktConfig.isConfigured(in: ProfileSettings.current) }
 
@@ -5047,6 +5063,7 @@ private struct AISubtitleOptionsSheet: View {
     }
 }
 
+#if OMNI_X
 /// Premiumize has no public open-source device OAuth — paste the account API key.
 private struct PremiumizeApiKeySheet: View {
     let isConnected: Bool
@@ -5325,6 +5342,7 @@ private struct DebridDeviceAuthorizationSheet: View {
         .focusEffectDisabledIfAvailable()
     }
 }
+#endif
 
 private struct TraktConnectionSettingsCard: View {
     @ObservedObject var viewModel: TraktSettingsViewModel
@@ -6912,12 +6930,14 @@ private struct PlaybackSettingsView: View {
                 .opacity(smartStreamSelection ? 1 : 0.46)
                 .disabled(!smartStreamSelection)
 
+                #if OMNI_X
                 SettingsToggleRow(
                     title: L10n.string("tvos_settings_cached_only", fallback: "Cached Only"),
                     subtitle: L10n.string("tvos_settings_prefer_debrid_cached_links_in_auto_selec_57c11672", fallback: "Prefer debrid-cached links in auto-select and the stream picker filter"),
                     isOn: $cachedOnlyStreams,
                     accentColor: accentColor
                 )
+                #endif
 
                 SettingsToggleRow(
                     title: L10n.string("tvos_settings_prefer_hardware_codecs", fallback: "Prefer Hardware Decoded Streams"),
@@ -8118,18 +8138,6 @@ private struct LicensesAttributionsSheet: View {
             title: L10n.string("tvos_settings_cinemeta_stremio", fallback: "Cinemeta / Stremio"),
             body: "Default catalog and metadata endpoints using the Stremio-compatible add-on protocol.",
             license: "Stremio add-on protocol"
-        ),
-        LicenseEntry(
-            id: "premiumize",
-            title: L10n.string("tvos_settings_premiumize", fallback: "Premiumize"),
-            body: "Optional debrid resolution and Cloud Library when an account is linked.",
-            license: "Premiumize Terms"
-        ),
-        LicenseEntry(
-            id: "torbox",
-            title: L10n.string("tvos_settings_torbox", fallback: "TorBox"),
-            body: "Optional debrid resolution and Cloud Library when an account is linked.",
-            license: "TorBox Terms"
         ),
         LicenseEntry(
             id: "mdblist",
@@ -9576,7 +9584,7 @@ private struct AddonsSettingsSection: View {
     @State private var configuringAddon: SyncedAddon?
     @Environment(\.openURL) private var openURL
 
-    #if os(iOS) || os(macOS)
+    #if OMNI_X && (os(iOS) || os(macOS))
     /// Torrentio is set up on its own site, which builds the manifest link.
     private static let torrentioSetupURL = URL(string: "https://torrentio.strem.fun/")!
     private static let findAddonsURL = URL(string: "https://stremio-addons.net/")!
@@ -9586,14 +9594,14 @@ private struct AddonsSettingsSection: View {
     /// as they render — which is what lets the list below be lazy.
     private var macAddonRowIDs: [String] {
         var ids = [L10n.string("tvos_settings_add_on_url", fallback: "Add-on URL")]
-        #if os(iOS) || os(macOS)
+        #if OMNI_X && (os(iOS) || os(macOS))
         ids.append("addon.torrentio")
         #endif
         ids += syncedAddons.map { "addon.synced.\($0.id)" }
         ids += addons
             .filter { !isCoveredBySyncedAddon($0) }
             .map { "addon.\($0.id)" }
-        #if os(iOS) || os(macOS)
+        #if OMNI_X && (os(iOS) || os(macOS))
         ids.append("addon.discover")
         #endif
         return ids
@@ -9620,7 +9628,7 @@ private struct AddonsSettingsSection: View {
                 )
                 .settingsEntryAnchor()
 
-                #if os(iOS) || os(macOS)
+                #if OMNI_X && (os(iOS) || os(macOS))
                 SettingsActionRow(
                     title: L10n.string("settings_addon_torrentio_setup", fallback: "Set Up Torrentio"),
                     subtitle: L10n.string(
@@ -9676,7 +9684,7 @@ private struct AddonsSettingsSection: View {
                     )
                 }
 
-                #if os(iOS) || os(macOS)
+                #if OMNI_X && (os(iOS) || os(macOS))
                 SettingsActionRow(
                     title: L10n.string("settings_addon_find_more", fallback: "Find More Add-ons"),
                     subtitle: L10n.string(
@@ -11750,7 +11758,7 @@ private struct CollectionTemplateSummaryCard: View {
     }
 }
 
-private enum StreamingServicesCollectionTemplate {
+enum StreamingServicesCollectionTemplate {
     struct Service: Identifiable, Sendable {
         let name: String
         let providerID: Int
@@ -11939,7 +11947,7 @@ private enum StreamingServicesCollectionTemplate {
     }
 }
 
-private enum StudiosFranchisesCollectionTemplate {
+enum StudiosFranchisesCollectionTemplate {
     static func payload() -> [String: Any] {
         let folders: [[String: Any]] = [
             companyFolder(
@@ -12115,7 +12123,7 @@ private enum StudiosFranchisesCollectionTemplate {
     }
 }
 
-private enum DiscoverGenresCollectionTemplate {
+enum DiscoverGenresCollectionTemplate {
     private struct GenreGroup {
         let title: String
         let emoji: String

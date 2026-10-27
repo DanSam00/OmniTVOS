@@ -1,3 +1,4 @@
+#if OMNI_X
 import Foundation
 
 /// Resolves a torrent through Premiumize's `transfer/directdl` endpoint, which
@@ -68,3 +69,4 @@ private struct DirectDownload: Decodable {
         }
     }
 }
+#endif

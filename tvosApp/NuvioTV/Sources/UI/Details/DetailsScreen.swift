@@ -7192,6 +7192,8 @@ private struct TvStreamPickerOverlay: View {
             return L10n.format("details_no_streams_from_addon", fallback: "No streams from %@", selectedGroup.displayName)
         }
         switch emptyReason {
+        case .noAddonsConfigured where AppEdition.isPublic, .noCompatibleAddons where AppEdition.isPublic:
+            return L10n.string("details_no_sources_found", fallback: "Nothing to play yet")
         case .noAddonsConfigured:
             return L10n.string("details_no_stream_addons_configured", fallback: "No stream add-ons configured")
         case .noCompatibleAddons:
@@ -7208,6 +7210,8 @@ private struct TvStreamPickerOverlay: View {
             return error
         }
         switch emptyReason {
+        case .noAddonsConfigured where AppEdition.isPublic, .noCompatibleAddons where AppEdition.isPublic:
+            return L10n.string("details_no_sources_detail", fallback: "Add an IPTV, Jellyfin or SMB source in Settings → Integrations, then check this title again.")
         case .noAddonsConfigured:
             return L10n.string("details_enable_stream_addon_settings", fallback: "Enable a stream add-on in Settings.")
         case .noCompatibleAddons:

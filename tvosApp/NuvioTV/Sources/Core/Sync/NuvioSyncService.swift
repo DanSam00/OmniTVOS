@@ -278,7 +278,7 @@ final class NuvioSyncManager: ObservableObject {
     /// final order. The initial account pull must finish first; otherwise a
     /// local snapshot could replace remote settings that tvOS has not loaded.
     private func scheduleHomeCatalogPush() {
-        guard !isApplyingRemote,
+        guard AppEdition.isOmniX, !isApplyingRemote,
               AuthConfig.isConfigured,
               authManager?.isAuthenticated == true,
               let key = currentSyncKey(),
@@ -305,7 +305,7 @@ final class NuvioSyncManager: ObservableObject {
     }
 
     private func pushHomeCatalogSettings() async {
-        guard let target = await currentSyncTarget(),
+        guard AppEdition.isOmniX, let target = await currentSyncTarget(),
               let key = currentSyncKey(),
               completedInitialPullKeys.contains(key) else { return }
         let items = TVHomeCatalogOrder.syncItems()
@@ -1151,93 +1151,98 @@ final class NuvioSyncManager: ObservableObject {
                 print("Nuvio profile settings sync failed: \(error.localizedDescription)")
             }
 
-            do {
-                var remoteAddons = try await client.pullAddons(
-                    session: session,
-                    remoteProfileId: addonProfileId
-                )
-                try ensureStillSyncing(profileId: activeProfile.id)
-                // An account signed in on this device gets Omni's default
-                // add-ons beside its own, once per profile. Pushed in full —
-                // the RPC replaces the set — and re-read so the local list is
-                // what the account now holds.
-                let getsDefaults = OmniDefaultAddons.appliesTo(userId: session.userId)
-                if getsDefaults,
-                   !OmniDefaultAddons.isDone(.addons, userId: session.userId, remoteProfileId: addonProfileId) {
-                    if try await seedDefaultAddons(
-                        remoteAddons,
+            // Add-ons, collections and Home row order belong to Omni X's account
+            // data. Omni's are fixed in code (CuratedLibrary) and never read or
+            // overwritten here.
+            if AppEdition.isOmniX {
+                do {
+                    var remoteAddons = try await client.pullAddons(
                         session: session,
                         remoteProfileId: addonProfileId
-                    ) {
-                        remoteAddons = try await client.pullAddons(
+                    )
+                    try ensureStillSyncing(profileId: activeProfile.id)
+                    // An account signed in on this device gets Omni's default
+                    // add-ons beside its own, once per profile. Pushed in full —
+                    // the RPC replaces the set — and re-read so the local list is
+                    // what the account now holds.
+                    let getsDefaults = OmniDefaultAddons.appliesTo(userId: session.userId)
+                    if getsDefaults,
+                       !OmniDefaultAddons.isDone(.addons, userId: session.userId, remoteProfileId: addonProfileId) {
+                        if try await seedDefaultAddons(
+                            remoteAddons,
                             session: session,
                             remoteProfileId: addonProfileId
-                        )
-                        try ensureStillSyncing(profileId: activeProfile.id)
+                        ) {
+                            remoteAddons = try await client.pullAddons(
+                                session: session,
+                                remoteProfileId: addonProfileId
+                            )
+                            try ensureStillSyncing(profileId: activeProfile.id)
+                        }
+                        OmniDefaultAddons.markDone(.addons, userId: session.userId, remoteProfileId: addonProfileId)
                     }
-                    OmniDefaultAddons.markDone(.addons, userId: session.userId, remoteProfileId: addonProfileId)
-                }
-                if getsDefaults,
-                   !OmniDefaultAddons.isDone(.homeRows, userId: session.userId, remoteProfileId: remoteProfileId) {
-                    // Rotten Tomatoes' rows go on this profile's Home once.
-                    TVHomeCatalogOrder.showOnHome(OmniDefaultAddons.homeCatalogKeys)
-                    OmniDefaultAddons.markDone(.homeRows, userId: session.userId, remoteProfileId: remoteProfileId)
-                }
-                lastPulledAddonRows = remoteAddons
-                let (appliedCount, didChange) = client.applyAddons(remoteAddons, localProfileId: activeProfile.id)
-                if didChange {
-                    homeCatalogRevision &+= 1
-                }
-                Self.addonSyncDiagnostic = "remote \(remoteAddons.count), enabled \(appliedCount)"
-                print("Nuvio sync pulled \(appliedCount) enabled add-on(s).")
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                pullFailures += 1
-                Self.addonSyncDiagnostic = "failed: \(error.localizedDescription)"
-                print("Nuvio add-on sync failed: \(error.localizedDescription)")
-            }
-
-            do {
-                if let collectionsBlob = try await client.pullCollections(
-                    session: session,
-                    remoteProfileId: remoteProfileId
-                ) {
-                    try ensureStillSyncing(profileId: activeProfile.id)
-                    CollectionsStore.applyRemote(collectionsBlob)
-                    let count = CollectionsStore.collections().count
-                    print("Nuvio sync pulled collections (\(collectionsBlob.count) bytes, \(count) collection(s)).")
-                } else {
-                    print("Nuvio sync pulled collections: server returned none.")
-                }
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                pullFailures += 1
-                print("Nuvio collections sync failed: \(error.localizedDescription)")
-            }
-
-            do {
-                if let catalogSettings = try await client.pullHomeCatalogSettings(
-                    session: session,
-                    remoteProfileId: remoteProfileId
-                ) {
-                    try ensureStillSyncing(profileId: activeProfile.id)
-                    let didChange = client.applyHomeCatalogSettings(catalogSettings, localProfileId: activeProfile.id)
+                    if getsDefaults,
+                       !OmniDefaultAddons.isDone(.homeRows, userId: session.userId, remoteProfileId: remoteProfileId) {
+                        // Rotten Tomatoes' rows go on this profile's Home once.
+                        TVHomeCatalogOrder.showOnHome(OmniDefaultAddons.homeCatalogKeys)
+                        OmniDefaultAddons.markDone(.homeRows, userId: session.userId, remoteProfileId: remoteProfileId)
+                    }
+                    lastPulledAddonRows = remoteAddons
+                    let (appliedCount, didChange) = client.applyAddons(remoteAddons, localProfileId: activeProfile.id)
                     if didChange {
                         homeCatalogRevision &+= 1
                     }
-                    Self.catalogSettingsSyncDiagnostic = "pulled \(catalogSettings.items.count) item(s)"
-                    print("Nuvio sync pulled home catalog settings (\(catalogSettings.items.count) item(s)).")
-                } else {
-                    Self.catalogSettingsSyncDiagnostic = "server returned none"
+                    Self.addonSyncDiagnostic = "remote \(remoteAddons.count), enabled \(appliedCount)"
+                    print("Nuvio sync pulled \(appliedCount) enabled add-on(s).")
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    pullFailures += 1
+                    Self.addonSyncDiagnostic = "failed: \(error.localizedDescription)"
+                    print("Nuvio add-on sync failed: \(error.localizedDescription)")
                 }
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                pullFailures += 1
-                Self.catalogSettingsSyncDiagnostic = "failed: \(error.localizedDescription)"
-                print("Nuvio home catalog sync failed: \(error.localizedDescription)")
+
+                do {
+                    if let collectionsBlob = try await client.pullCollections(
+                        session: session,
+                        remoteProfileId: remoteProfileId
+                    ) {
+                        try ensureStillSyncing(profileId: activeProfile.id)
+                        CollectionsStore.applyRemote(collectionsBlob)
+                        let count = CollectionsStore.collections().count
+                        print("Nuvio sync pulled collections (\(collectionsBlob.count) bytes, \(count) collection(s)).")
+                    } else {
+                        print("Nuvio sync pulled collections: server returned none.")
+                    }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    pullFailures += 1
+                    print("Nuvio collections sync failed: \(error.localizedDescription)")
+                }
+
+                do {
+                    if let catalogSettings = try await client.pullHomeCatalogSettings(
+                        session: session,
+                        remoteProfileId: remoteProfileId
+                    ) {
+                        try ensureStillSyncing(profileId: activeProfile.id)
+                        let didChange = client.applyHomeCatalogSettings(catalogSettings, localProfileId: activeProfile.id)
+                        if didChange {
+                            homeCatalogRevision &+= 1
+                        }
+                        Self.catalogSettingsSyncDiagnostic = "pulled \(catalogSettings.items.count) item(s)"
+                        print("Nuvio sync pulled home catalog settings (\(catalogSettings.items.count) item(s)).")
+                    } else {
+                        Self.catalogSettingsSyncDiagnostic = "server returned none"
+                    }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    pullFailures += 1
+                    Self.catalogSettingsSyncDiagnostic = "failed: \(error.localizedDescription)"
+                    print("Nuvio home catalog sync failed: \(error.localizedDescription)")
+                }
             }
 
             // Pull each watch-state collection independently so one failing
@@ -1458,7 +1463,7 @@ final class NuvioSyncManager: ObservableObject {
     /// version (see `CollectionsStore.mergeLocalEdit`).
     private func pushCollectionsEdit(_ edit: CollectionsStore.LocalEdit) {
         let raw = edit.rows
-        guard AuthConfig.isConfigured else { return }
+        guard AppEdition.isOmniX, AuthConfig.isConfigured else { return }
         guard let authManager, authManager.isAuthenticated else { return }
         guard let profileViewModel,
               let activeProfile = profileViewModel.activeProfile ?? profileViewModel.profiles.first else { return }
@@ -1607,7 +1612,7 @@ final class NuvioSyncManager: ObservableObject {
     /// allowed to delete their remote counterparts.
     private func pushAddonPreferences(_ preferences: [StreamAddonPreference]) {
         let normalizedPreferences = Self.normalizedAddonPreferences(preferences)
-        guard AuthConfig.isConfigured else { return }
+        guard AppEdition.isOmniX, AuthConfig.isConfigured else { return }
         guard let authManager, authManager.isAuthenticated else { return }
         guard let profileViewModel,
               let activeProfile = profileViewModel.activeProfile ?? profileViewModel.profiles.first else { return }
@@ -2756,7 +2761,9 @@ fileprivate final class NuvioAPIClient {
             importSettings(tvosFeature, localProfileId: localProfileId)
         }
         // Android TV stores debrid keys in a sibling feature on the same "tv" blob.
+        #if OMNI_X
         importDebridSettings(debridFeature, localProfileId: localProfileId)
+        #endif
         importTmdbSettings(tmdbFeature, localProfileId: localProfileId)
         importStreamBadgeSettings(streamBadgeFeature, localProfileId: localProfileId)
         importPosterCardStyleSettings(posterCardStyleFeature, localProfileId: localProfileId)
@@ -2818,11 +2825,14 @@ fileprivate final class NuvioAPIClient {
         features[Self.settingsFeature] = exportSettings(localProfileId: localProfileId)
         features[Self.streamBadgeSettingsFeature] = exportStreamBadgeSettings(localProfileId: localProfileId)
         // Keep Android stream-filter keys; overlay API keys + preferred resolver.
+        // Omni leaves the account's debrid settings exactly as Omni X wrote them.
+        #if OMNI_X
         let existingDebrid = features[Self.debridSettingsFeature] as? [String: Any]
         features[Self.debridSettingsFeature] = exportDebridSettings(
             localProfileId: localProfileId,
             existing: existingDebrid
         )
+        #endif
         let existingTmdb = features[Self.tmdbSettingsFeature] as? [String: Any]
         features[Self.tmdbSettingsFeature] = exportTmdbSettings(
             localProfileId: localProfileId,
@@ -3365,6 +3375,7 @@ fileprivate final class NuvioAPIClient {
 
     // MARK: - Android-compatible debrid_settings feature
 
+    #if OMNI_X
     /// Preference names written by Android TV `DebridSettingsDataStore` (and
     /// compose mobile variants with a `debrid_` prefix).
     private enum AndroidDebridKey {
@@ -3381,6 +3392,7 @@ fileprivate final class NuvioAPIClient {
         static let realDebridPrefixed = "debrid_real_debrid_api_key"
         static let preferredPrefixed = "debrid_preferred_resolver_provider_id"
     }
+    #endif
 
     private enum AndroidTmdbKey {
         static let enabled = "tmdb_enabled"
@@ -3470,6 +3482,7 @@ fileprivate final class NuvioAPIClient {
         }
     }
 
+    #if OMNI_X
     private func exportDebridSettings(
         localProfileId: String,
         existing: [String: Any]?
@@ -3512,7 +3525,9 @@ fileprivate final class NuvioAPIClient {
 
         return feature
     }
+    #endif
 
+    #if OMNI_X
     private func importDebridSettings(_ remote: [String: Any]?, localProfileId: String) {
         guard let remote, !remote.isEmpty else { return }
         let defaults = ProfileSettings.store(for: localProfileId)
@@ -3567,6 +3582,7 @@ fileprivate final class NuvioAPIClient {
             defaults.set(token, forKey: SettingsKey.debridApiKey)
         }
     }
+    #endif
 
     private func exportPosterCardStyleSettings(
         localProfileId: String,

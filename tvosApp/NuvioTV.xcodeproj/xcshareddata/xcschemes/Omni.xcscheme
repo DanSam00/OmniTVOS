@@ -14,7 +14,7 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "MACID0000000000000000004"
+               BlueprintIdentifier = "OSTRTARGET000000000000004"
                BuildableName = "Omni.app"
                BlueprintName = "Omni"
                ReferencedContainer = "container:NuvioTV.xcodeproj">
@@ -43,7 +43,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "MACID0000000000000000004"
+            BlueprintIdentifier = "OSTRTARGET000000000000004"
             BuildableName = "Omni.app"
             BlueprintName = "Omni"
             ReferencedContainer = "container:NuvioTV.xcodeproj">

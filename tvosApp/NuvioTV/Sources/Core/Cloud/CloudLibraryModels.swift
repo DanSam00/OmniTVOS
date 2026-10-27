@@ -9,8 +9,10 @@ import Foundation
 
 /// The kind of cloud entry, which decides how its download link is requested.
 enum CloudItemType: String, CaseIterable, Identifiable {
+    #if OMNI_X
     case torrent
     case usenet
+    #endif
     case webDownload
     case file
 
@@ -18,10 +20,12 @@ enum CloudItemType: String, CaseIterable, Identifiable {
 
     var localizedTitle: String {
         switch self {
+        #if OMNI_X
         case .torrent:
             return L10n.string("cloud_library_type_torrents", fallback: "Torrents")
         case .usenet:
             return L10n.string("cloud_library_type_usenet", fallback: "Usenet")
+        #endif
         case .webDownload:
             return L10n.string("cloud_library_type_web", fallback: "Web")
         case .file:

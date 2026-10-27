@@ -1271,7 +1271,9 @@ struct AddProfileView: View {
     private static let pluginsID = "setup.plugins"
     private static let copySettingsID = "setup.copySettings"
     private static let copyKeysID = "setup.copyKeys"
-    private static let toggleIDs = [kidsID, addonsID, pluginsID, copySettingsID, copyKeysID]
+    private static let toggleIDs = AppEdition.isOmniX
+        ? [kidsID, addonsID, pluginsID, copySettingsID, copyKeysID]
+        : [kidsID, copySettingsID, copyKeysID]
     private static let teamFieldID = "setup.teamField"
     private static let teamAddID = "setup.teamAdd"
     private static let teamPrefix = "team:"
@@ -1325,6 +1327,8 @@ struct AddProfileView: View {
     /// Kids profiles: nuvio.tv searched for kids, family and children;
     /// others the most popular.
     private func loadCommunity() async {
+        // Omni's collections are fixed (CuratedLibrary); nothing to pick.
+        guard AppEdition.isOmniX else { return }
         communityLoading = true
         communityError = nil
         defer { communityLoading = false }
@@ -1368,12 +1372,16 @@ struct AddProfileView: View {
                         }
 
                         setupSection("Setup from \(primaryName)") {
-                            AddProfileToggleRow(title: "Use primary profile add-ons", isOn: $setup.usesPrimaryAddons, macIsFocused: macFocused(Self.addonsID)).id(Self.addonsID)
-                            AddProfileToggleRow(title: "Use primary profile plugins", isOn: $setup.usesPrimaryPlugins, macIsFocused: macFocused(Self.pluginsID)).id(Self.pluginsID)
+                            if AppEdition.isOmniX {
+                                AddProfileToggleRow(title: "Use primary profile add-ons", isOn: $setup.usesPrimaryAddons, macIsFocused: macFocused(Self.addonsID)).id(Self.addonsID)
+                                AddProfileToggleRow(title: "Use primary profile plugins", isOn: $setup.usesPrimaryPlugins, macIsFocused: macFocused(Self.pluginsID)).id(Self.pluginsID)
+                            }
                             AddProfileToggleRow(title: "Copy primary settings", isOn: $setup.copiesSettings, macIsFocused: macFocused(Self.copySettingsID)).id(Self.copySettingsID)
                             AddProfileToggleRow(
                                 title: "Also copy API keys and linked services",
-                                subtitle: "Trakt, Simkl, TMDB, MDBList and your debrid service. Copied once; the two profiles change independently after.",
+                                subtitle: AppEdition.isOmniX
+                                    ? "Trakt, Simkl, TMDB, MDBList and your debrid service. Copied once; the two profiles change independently after."
+                                    : "Trakt, Simkl, TMDB and MDBList. Copied once; the two profiles change independently after.",
                                 isOn: $setup.copiesCredentials,
                                 enabled: setup.copiesSettings,
                                 macIsFocused: macFocused(Self.copyKeysID)
@@ -1419,28 +1427,30 @@ struct AddProfileView: View {
                             }
                         }
 
-                        setupSection(
-                            "Collections",
-                            subtitle: isKids
-                                ? "Kids and family collections shared on nuvio.tv. From a big library only its children's sections are added."
-                                : "Popular collections shared on nuvio.tv, added when this profile is first opened."
-                        ) {
-                            if communityLoading && community.isEmpty {
-                                ProgressView().tint(.white)
-                            } else if let communityError, community.isEmpty {
-                                Text(communityError)
-                                    .font(.system(size: 20))
-                                    .foregroundColor(.white.opacity(0.6))
-                            } else {
-                                ForEach(shownCommunity) { item in
-                                    AddProfileCollectionRow(
-                                        item: item,
-                                        picked: setup.communityPicks[item.id] != nil,
-                                        macIsFocused: macFocused(Self.collectionPrefix + item.id)
-                                    ) {
-                                        togglePick(item)
+                        if AppEdition.isOmniX {
+                            setupSection(
+                                "Collections",
+                                subtitle: isKids
+                                    ? "Kids and family collections shared on nuvio.tv. From a big library only its children's sections are added."
+                                    : "Popular collections shared on nuvio.tv, added when this profile is first opened."
+                            ) {
+                                if communityLoading && community.isEmpty {
+                                    ProgressView().tint(.white)
+                                } else if let communityError, community.isEmpty {
+                                    Text(communityError)
+                                        .font(.system(size: 20))
+                                        .foregroundColor(.white.opacity(0.6))
+                                } else {
+                                    ForEach(shownCommunity) { item in
+                                        AddProfileCollectionRow(
+                                            item: item,
+                                            picked: setup.communityPicks[item.id] != nil,
+                                            macIsFocused: macFocused(Self.collectionPrefix + item.id)
+                                        ) {
+                                            togglePick(item)
+                                        }
+                                        .id(Self.collectionPrefix + item.id)
                                     }
-                                    .id(Self.collectionPrefix + item.id)
                                 }
                             }
                         }

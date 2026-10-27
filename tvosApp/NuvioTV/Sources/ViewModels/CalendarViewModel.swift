@@ -486,7 +486,26 @@ final class CalendarViewModel: ObservableObject {
 
         let catalogs = await repository.availableAddonCatalogs()
             .filter { $0.type.lowercased() == "sport" || $0.type.lowercased() == "sports" }
-        guard !catalogs.isEmpty else { hasLoadedSports = true; return }
+        // Omni has no sports add-ons: its fixtures come from TheSportsDB, and
+        // each page offers the viewer's own matching IPTV channels.
+        var scheduled: [CalendarEntry] = []
+        if AppEdition.isPublic {
+            scheduled = await SportsSchedule.fixtures().compactMap { item in
+                Self.sportEntry(
+                    from: item.meta,
+                    catalog: AddonCatalogOption(
+                        addonId: "omni.sports", addonName: "Fixtures", type: "sport",
+                        catalogId: item.league.id, catalogName: item.league.name
+                    )
+                )
+            }
+        }
+        guard !catalogs.isEmpty else {
+            sportsDays = Self.group(scheduled)
+            rebuildEntries()
+            hasLoadedSports = true
+            return
+        }
 
         let repository = self.repository
         let collected: [CalendarEntry] = await withTaskGroup(of: [CalendarEntry].self) { group in
@@ -516,7 +535,7 @@ final class CalendarViewModel: ObservableObject {
             return out
         }
 
-        sportsDays = Self.group(collected)
+        sportsDays = Self.group(collected + scheduled)
         rebuildEntries()
         hasLoadedSports = true
     }
