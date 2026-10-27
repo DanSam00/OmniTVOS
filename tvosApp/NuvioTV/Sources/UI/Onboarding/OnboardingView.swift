@@ -59,13 +59,16 @@ struct OnboardingView: View {
         var list: [Step] = []
         if vaultOnly { return isSignedIn ? [.vault] : [] }
         if AppEdition.isPublic {
-            // Omni: sign-in comes first (the login screen), then your IPTV,
-            // collections, teams, and last the passphrase that links or
-            // creates the encrypted sign-in box for the account.
-            list.append(.iptv)
+            // Omni: sign-in comes first (the login screen), then the passphrase
+            // (create for a new account, link for an existing one), so an
+            // existing account's IPTV sources arrive before the IPTV step and
+            // it is skipped; then collections and teams.
+            if isSignedIn { list.append(.vault) }
+            // Stays while it is the current step, so adding a source does not
+            // remove the step being shown.
+            if step == .iptv || IPTVSourceStore.sources().isEmpty { list.append(.iptv) }
             if isSignedIn { list.append(.collections) }
             list.append(.teams)
-            if isSignedIn { list.append(.vault) }
             #if os(iOS) || os(macOS)
             list.append(.alerts)
             #endif
@@ -122,9 +125,6 @@ struct OnboardingView: View {
     private var iptvStep: some View {
         title("Add your IPTV")
         text("Omni plays what you already subscribe to. Enter the Xtream login or M3U playlist link your provider gave you. You can add more later in Settings.")
-        if vault.status == .locked {
-            hint("Already set up on this account? Your sources come over when you link this device in the last step, so you can skip this.")
-        }
         if let iptvChannels {
             Label("\(iptvName) added · \(iptvChannels) channels", systemImage: "checkmark.circle.fill").font(Metrics.body)
             primary("Continue", id: "onboard.iptvnext", enabled: true) { advance() }

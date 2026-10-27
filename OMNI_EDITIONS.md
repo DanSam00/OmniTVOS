@@ -34,10 +34,10 @@ Where shared code needs a symbol from that code, `Core/Streams/PublicEditionStub
 ## Omni onboarding order
 
 1. Nuvio sign-in or account creation (the login screen; Skip continues as a guest)
-2. IPTV setup (Xtream login or M3U link, checked by loading the channels)
-3. Collections (signed-in only; the defaults are already added)
-4. Favourite teams (fixtures come from `SportsSchedule`, so a team must be in one of its leagues)
-5. Passphrase: create for a new account, link/unlock for an existing one (signed-in only)
+2. Passphrase: create for a new account, link/unlock for an existing one (signed-in only), so existing sources arrive first
+3. IPTV setup (Xtream login or M3U link, checked by loading the channels); skipped if a source already exists
+4. Collections (signed-in only; the defaults are already added)
+5. Favourite teams (fixtures come from `SportsSchedule`, so a team must be in one of its leagues)
 
 Then notifications (optional) and done. Omni X keeps its original order. The Home layout step is not part of Omni's onboarding; it stays in Settings.
 
