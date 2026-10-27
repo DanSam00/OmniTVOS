@@ -3628,14 +3628,11 @@ private struct LayoutDiscoverySettingsView: View {
                 .disabled(!trailersEnabled)
             }
 
-            // Omni's catalogs and collections are fixed (see CuratedLibrary).
-            #if OMNI_X
             HomeCatalogOrderSection(accentColor: accentColor)
 
             HomeCatalogAddSection(accentColor: accentColor)
 
             CollectionsSettingsSection(accentColor: accentColor)
-            #endif
 
             SettingsGroup(
                 title: L10n.string("tvos_layout_discovery", fallback: "Discovery"),

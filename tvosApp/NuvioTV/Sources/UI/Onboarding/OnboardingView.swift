@@ -52,7 +52,7 @@ struct OnboardingView: View {
         if vaultOnly { return list }
         list.append(.layout)
         // The community list needs a Nuvio sign-in.
-        if isSignedIn, AppEdition.isOmniX { list.append(.collections) }
+        if isSignedIn { list.append(.collections) }
         #if os(iOS) || os(macOS)
         list.append(.alerts)
         #endif

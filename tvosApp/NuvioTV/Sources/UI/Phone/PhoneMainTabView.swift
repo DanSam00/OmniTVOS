@@ -95,8 +95,8 @@ struct PhoneMainTabView: View {
                     // Picked in Add Profile, else a kids profile's starter set.
                     // A kids profile never starts with 18+ switched on.
                     if PhoneKidsMode.isActive { NSFWVisibility.shared.showsInSearch = false }
-                    #if OMNI_X
                     await CommunityCollections.installPendingIfNeeded()
+                    #if OMNI_X
                     guard PhoneKidsMode.isActive else { return }
                     await CommunityCollections.seedKidsProfileIfNeeded()
                     #else

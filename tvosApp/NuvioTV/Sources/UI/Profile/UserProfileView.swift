@@ -1327,8 +1327,6 @@ struct AddProfileView: View {
     /// Kids profiles: nuvio.tv searched for kids, family and children;
     /// others the most popular.
     private func loadCommunity() async {
-        // Omni's collections are fixed (CuratedLibrary); nothing to pick.
-        guard AppEdition.isOmniX else { return }
         communityLoading = true
         communityError = nil
         defer { communityLoading = false }
@@ -1427,30 +1425,28 @@ struct AddProfileView: View {
                             }
                         }
 
-                        if AppEdition.isOmniX {
-                            setupSection(
-                                "Collections",
-                                subtitle: isKids
-                                    ? "Kids and family collections shared on nuvio.tv. From a big library only its children's sections are added."
-                                    : "Popular collections shared on nuvio.tv, added when this profile is first opened."
-                            ) {
-                                if communityLoading && community.isEmpty {
-                                    ProgressView().tint(.white)
-                                } else if let communityError, community.isEmpty {
-                                    Text(communityError)
-                                        .font(.system(size: 20))
-                                        .foregroundColor(.white.opacity(0.6))
-                                } else {
-                                    ForEach(shownCommunity) { item in
-                                        AddProfileCollectionRow(
-                                            item: item,
-                                            picked: setup.communityPicks[item.id] != nil,
-                                            macIsFocused: macFocused(Self.collectionPrefix + item.id)
-                                        ) {
-                                            togglePick(item)
-                                        }
-                                        .id(Self.collectionPrefix + item.id)
+                        setupSection(
+                            "Collections",
+                            subtitle: isKids
+                                ? "Kids and family collections shared on nuvio.tv. From a big library only its children's sections are added."
+                                : "Popular collections shared on nuvio.tv, added when this profile is first opened."
+                        ) {
+                            if communityLoading && community.isEmpty {
+                                ProgressView().tint(.white)
+                            } else if let communityError, community.isEmpty {
+                                Text(communityError)
+                                    .font(.system(size: 20))
+                                    .foregroundColor(.white.opacity(0.6))
+                            } else {
+                                ForEach(shownCommunity) { item in
+                                    AddProfileCollectionRow(
+                                        item: item,
+                                        picked: setup.communityPicks[item.id] != nil,
+                                        macIsFocused: macFocused(Self.collectionPrefix + item.id)
+                                    ) {
+                                        togglePick(item)
                                     }
+                                    .id(Self.collectionPrefix + item.id)
                                 }
                             }
                         }

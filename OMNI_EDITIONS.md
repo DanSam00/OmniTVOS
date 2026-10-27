@@ -9,7 +9,7 @@ One codebase, two apps.
 | iOS / tvOS | not split yet — those targets still build as Omni X | `Omni iOS`, `NuvioTV` |
 | What plays | the viewer's own IPTV (Xtream / M3U), Jellyfin, SMB, local downloads | everything, including stream add-ons and debrid |
 | Add-ons | fixed in code (`CuratedLibrary`), metadata/catalogs only, never asked for streams | user-installed, as before |
-| Collections | fixed in code (`CuratedLibrary`), no editor, no community browser | user-managed, as before |
+| Collections | defaults from `CuratedLibrary` installed on a new profile; the viewer can enable/disable, edit, create and add community ones | user-managed, as before |
 
 Code that must not exist in Omni is wrapped in `#if OMNI_X`, so it is absent from the Omni binary rather than hidden.
 Where shared code needs a symbol from that code, `Core/Streams/PublicEditionStubs.swift` provides an inert stand-in.
@@ -17,9 +17,9 @@ Where shared code needs a symbol from that code, `Core/Streams/PublicEditionStub
 ## What Omni does not contain
 
 - `Core/Debrid/*`, `Core/Cloud/{Torbox,Premiumize}CloudLibrary`, `Core/Stremio/StremioAccountService` — compiled out.
-- Settings → Integrations: Add-ons, Stremio import and Debrid sections; Layout: Home catalog order / add catalogs / Collections.
+- Settings → Integrations: Add-ons, Stremio import and Debrid sections. (Collections and Home-row settings are available in Omni.)
 - The community-add-on store, `nuvio://addon` installs, Torrentio / Comet / MediaFusion lists, the sports/stream add-on defaults.
-- Add Profile's "use primary add-ons / plugins" and community-collection picker; onboarding's collections step.
+- Add Profile's "use primary add-ons / plugins".
 - Sign-up in the Nuvio login (sign-in only; Omni X keeps it).
 - Torrent / debrid / Stremio strings in the language catalog (removed from the built bundle by the "Strip Public Catalog" phase; the source file is untouched).
 
@@ -29,6 +29,7 @@ Where shared code needs a symbol from that code, `Core/Streams/PublicEditionStub
 
 - `catalogAddonURLs` / `kidsCatalogAddonURLs`: catalog and metadata add-ons. `CinemetaCatalogRepository.configuredStreamAddonPreferences` returns these whatever is stored or synced, and `set…` is a no-op. `StreamsRepository` asks no add-on for streams.
 - `regularCollections` / `kidsCollections`: nuvio.tv community-collection ids. On a profile's first use `installCollectionsIfNeeded()` adds the three built-in TMDB rows (Streaming Services, Studios & Franchises, Genres) plus these, through the same kids filter as before. Bump `version` to re-install after changing the lists.
+- Collections stay on the device in Omni (not synced to the Nuvio account) and the defaults are installed once per `version`; a removed default comes back only if `version` is bumped.
 - Sync: Omni never reads or writes add-ons, collections, Home row order or debrid settings on the Nuvio account, so it cannot disturb an Omni X account that shares the login.
 
 ## Live and on-demand
@@ -52,7 +53,7 @@ The Omni target runs `python3 scripts/strip_public_catalog.py` after copying res
 ## Verify before submitting
 
 1. Build both macOS schemes. **This change was made without a Swift compiler available — expect to fix a few compile errors on the first build.**
-2. In the Omni build: Settings has no Add-ons, Stremio, Debrid, Collections or Home-catalog pages; Library has no Cloud tab; a title with no IPTV source says "Nothing to play yet".
+2. In the Omni build: Settings has no Add-ons, Stremio or Debrid sections but does have Collections, and a new profile already has the default collections; Library has no Cloud tab; a title with no IPTV source says "Nothing to play yet".
 3. `strings Omni.app/Contents/MacOS/Omni | grep -iE 'torrent|magnet|debrid|premiumize|torbox|real-?debrid'` — remaining hits are the `SettingsKey` names and a few comments in shared code (`infoHash` on `NuvioStream`, `DebridStreamQuality`); remove if a reviewer scan is a concern.
 4. With the same Nuvio login on Omni X and Omni, change nothing in Omni and confirm Omni X's add-ons and collections are unchanged afterwards.
 

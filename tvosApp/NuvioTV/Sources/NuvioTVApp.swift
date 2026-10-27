@@ -483,11 +483,13 @@ struct ContentView: View {
         // does this in PhoneMainTabView).
         .task(id: isOnMainScreen ? profileViewModel.activeProfile?.id : nil) {
             guard isOnMainScreen, profileViewModel.activeProfile != nil else { return }
-            #if OMNI_X
             await CommunityCollections.installPendingIfNeeded()
+            #if OMNI_X
             guard ProfileSettings.current.bool(forKey: SettingsKey.kidsProfile) else { return }
             await CommunityCollections.seedKidsProfileIfNeeded()
             #else
+            // Omni's defaults: always there on a new profile; the viewer can
+            // turn them off or remove them like any other collection.
             await CuratedLibrary.installCollectionsIfNeeded()
             #endif
         }
