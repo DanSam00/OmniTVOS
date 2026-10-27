@@ -16,6 +16,12 @@ enum AuthConfig {
 
     static var apiKey: String { publishableKey }
 
+    /// The backend function that deletes the signed-in user and everything
+    /// stored under the account (called as `/rest/v1/rpc/<name>` with the
+    /// user's token). Must exist on the Nuvio backend; if it does not, the
+    /// in-app delete reports that deletion is unavailable and nothing changes.
+    static let deleteAccountFunction = "delete_my_account"
+
     /// Base URL the phone opens to approve a TV login. Matches the Android
     /// `TV_LOGIN_WEB_BASE_URL` default; the backend ultimately returns the real
     /// `web_url` to encode in the QR code, so this is only a fallback hint.

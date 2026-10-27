@@ -1890,7 +1890,36 @@ private struct AccountSettingsView: View {
     @AppStorage(SettingsKey.iCloudSyncEnabled) private var iCloudSyncEnabled = false
     @State private var editableProfileName = ""
     @State private var showingAvatarPicker = false
+    @State private var confirmingDelete = false
+    @State private var isDeleting = false
+    @State private var deleteError: String?
     @Environment(\.openURL) private var openURL
+
+    /// Deleting the primary profile deletes the account; any other profile
+    /// is deleted on its own.
+    private var deletingPrimary: Bool { NuvioSyncManager.current?.activeProfileIsPrimary ?? true }
+
+    private func deleteAccountOrProfile() {
+        guard !isDeleting, let manager = NuvioSyncManager.current else { return }
+        isDeleting = true
+        Task { @MainActor in
+            defer { isDeleting = false }
+            if deletingPrimary {
+                if let failure = await manager.deleteAccountOnServer() {
+                    deleteError = failure
+                    return
+                }
+                CredentialVault.shared.lockThisDevice()
+                onSignOut?()
+            } else if let profile = activeProfile {
+                if let failure = await manager.deleteProfile(profile) {
+                    deleteError = failure
+                    return
+                }
+                NotificationCenter.default.post(name: NuvioSyncManager.homeContentSyncedNotification, object: nil)
+            }
+        }
+    }
 
     private var accountStatusText: String {
         guard isAuthenticated else {
@@ -2140,6 +2169,22 @@ private struct AccountSettingsView: View {
                     }
                     .opacity(onSignOut != nil ? 1 : 0.46)
                     .disabled(onSignOut == nil)
+
+                    SettingsActionRow(
+                        title: deletingPrimary
+                            ? L10n.string("account_delete", fallback: "Delete Account")
+                            : L10n.string("account_delete_profile", fallback: "Delete This Profile"),
+                        subtitle: deletingPrimary
+                            ? L10n.string("account_delete_subtitle", fallback: "Permanently delete this account and all of its profiles")
+                            : L10n.string("account_delete_profile_subtitle", fallback: "Permanently delete this profile and its data. Your other profiles stay"),
+                        value: isDeleting
+                            ? L10n.string("tvos_common_working", fallback: "Working…")
+                            : L10n.string("account_delete_action", fallback: "Delete"),
+                        accentColor: Color(red: 1.0, green: 0.27, blue: 0.27)
+                    ) {
+                        confirmingDelete = true
+                    }
+                    .disabled(isDeleting)
                 } else {
                     SettingsActionRow(
                         title: L10n.string("tvos_account_sign_in", fallback: "Sign In"),
@@ -2159,6 +2204,32 @@ private struct AccountSettingsView: View {
         }
         .onAppear { refreshEditableName() }
         .onChange(of: activeProfile) { _, _ in refreshEditableName() }
+        .alert(
+            L10n.string("account_delete_confirm_title", fallback: "Are you sure?"),
+            isPresented: $confirmingDelete
+        ) {
+            Button(
+                deletingPrimary
+                    ? L10n.string("account_delete_confirm_account", fallback: "Delete Account and All Profiles")
+                    : L10n.string("account_delete_confirm_profile", fallback: "Delete Profile"),
+                role: .destructive
+            ) {
+                deleteAccountOrProfile()
+            }
+            Button(L10n.string("action_cancel", fallback: "Cancel"), role: .cancel) {}
+        } message: {
+            Text(deletingPrimary
+                ? L10n.string("account_delete_confirm_account_message", fallback: "This is the primary profile, so this deletes your whole Nuvio account: every profile on it, with its library, watch history, collections and settings, in Omni and in any other app that uses this account. This cannot be undone.")
+                : L10n.string("account_delete_confirm_profile_message", fallback: "This permanently deletes this profile and its library, watch history and settings. Your other profiles are not affected. This cannot be undone."))
+        }
+        .alert(
+            L10n.string("account_delete_failed", fallback: "Couldn't delete"),
+            isPresented: Binding(get: { deleteError != nil }, set: { if !$0 { deleteError = nil } })
+        ) {
+            Button(L10n.string("action_ok", fallback: "OK"), role: .cancel) {}
+        } message: {
+            Text(deleteError ?? "")
+        }
         .sheet(isPresented: $showingAvatarPicker) {
             Group {
             if let profile = activeProfile {

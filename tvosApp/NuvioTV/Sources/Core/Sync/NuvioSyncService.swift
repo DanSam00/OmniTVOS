@@ -609,6 +609,31 @@ final class NuvioSyncManager: ObservableObject {
         return nil
     }
 
+    /// Whether the active profile is the account's primary one, whose
+    /// deletion is the deletion of the whole account.
+    var activeProfileIsPrimary: Bool {
+        guard let profileViewModel, let active = profileViewModel.activeProfile else { return true }
+        return active.id == profileViewModel.primaryProfile?.id
+    }
+
+    /// Deletes the Nuvio account with every profile and everything stored
+    /// under it. Returns an error message, or nil once it is gone. The caller
+    /// then signs out to clear this device.
+    func deleteAccountOnServer() async -> String? {
+        guard AuthConfig.isConfigured, let authManager,
+              let session = await authManager.validSessionForSync() else {
+            return "Couldn't reach your Nuvio account."
+        }
+        do {
+            try await client.deleteAccount(session: session)
+            return nil
+        } catch let error as AuthError where error.statusCode == 404 {
+            return "Account deletion isn't available from the Nuvio service yet. Nothing was deleted."
+        } catch {
+            return "Couldn't delete the account: \(error.localizedDescription)"
+        }
+    }
+
     func syncProfilesAfterLocalEdit() {
         guard AuthConfig.isConfigured, authManager?.isAuthenticated == true else { return }
         guard let profileViewModel else { return }
@@ -2664,6 +2689,11 @@ fileprivate final class NuvioAPIClient {
             session: session,
             params: ["p_profile_id": remoteProfileId]
         )
+    }
+
+    /// Deletes the signed-in user and all of the account's data.
+    func deleteAccount(session: AuthSession) async throws {
+        try await rpcVoid(AuthConfig.deleteAccountFunction, session: session, params: [:])
     }
 
     func pushProfiles(session: AuthSession, profiles: [Profile]) async throws {
