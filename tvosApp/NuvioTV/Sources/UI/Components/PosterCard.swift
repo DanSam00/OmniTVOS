@@ -192,6 +192,7 @@ struct PosterCard: View {
     var onPlayManually: (() -> Void)? = nil
     var onStartFromBeginning: (() -> Void)? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
+    var onMarkWatched: (() -> Void)? = nil
     var layoutMode: String = "Modern"
     var showPosterLabels: Bool = false
     var smoothFocusAnimations: Bool = true
@@ -257,7 +258,8 @@ struct PosterCard: View {
             continueIsUpNext: continueIsUpNext,
             onPlayManually: onPlayManually,
             onStartFromBeginning: onStartFromBeginning,
-            onRemoveFromContinueWatching: onRemoveFromContinueWatching
+            onRemoveFromContinueWatching: onRemoveFromContinueWatching,
+            onMarkWatched: onMarkWatched
         )
             .onChange(of: isFocused) { _, focused in
                 if focused {
@@ -317,7 +319,8 @@ struct PosterCard: View {
             continueIsUpNext: continueIsUpNext,
             onPlayManually: onPlayManually,
             onStartFromBeginning: onStartFromBeginning,
-            onRemoveFromContinueWatching: onRemoveFromContinueWatching
+            onRemoveFromContinueWatching: onRemoveFromContinueWatching,
+            onMarkWatched: onMarkWatched
         )
         .frame(width: cardWidth, height: totalCardHeight, alignment: .topLeading)
         #endif
@@ -874,6 +877,7 @@ extension PosterCard: Equatable {
             && (lhs.onPlayManually != nil) == (rhs.onPlayManually != nil)
             && (lhs.onStartFromBeginning != nil) == (rhs.onStartFromBeginning != nil)
             && (lhs.onRemoveFromContinueWatching != nil) == (rhs.onRemoveFromContinueWatching != nil)
+            && (lhs.onMarkWatched != nil) == (rhs.onMarkWatched != nil)
             && lhs.layoutMode == rhs.layoutMode
             && lhs.showPosterLabels == rhs.showPosterLabels
             && lhs.smoothFocusAnimations == rhs.smoothFocusAnimations
@@ -2425,6 +2429,7 @@ struct TitleActionsMenuContent: View {
     var onPlayManually: (() -> Void)? = nil
     var onStartFromBeginning: (() -> Void)? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
+    var onMarkWatched: (() -> Void)? = nil
     var body: some View {
         contextMenuContent
     }
@@ -2457,6 +2462,16 @@ struct TitleActionsMenuContent: View {
                     }
                 } label: {
                     Label(L10n.string("action_start_from_beginning", fallback: "Start from beginning"), systemImage: "arrow.counterclockwise")
+                }
+            }
+
+            if let onMarkWatched {
+                Button {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) {
+                        onMarkWatched()
+                    }
+                } label: {
+                    Label(L10n.string("action_mark_watched", fallback: "Mark as Watched"), systemImage: "checkmark.circle")
                 }
             }
 
@@ -2553,6 +2568,7 @@ struct TitleActionsContextMenu: ViewModifier {
     var onPlayManually: (() -> Void)? = nil
     var onStartFromBeginning: (() -> Void)? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
+    var onMarkWatched: (() -> Void)? = nil
 
     func body(content: Content) -> some View {
         content
@@ -2564,7 +2580,8 @@ struct TitleActionsContextMenu: ViewModifier {
                     continueIsUpNext: continueIsUpNext,
                     onPlayManually: onPlayManually,
                     onStartFromBeginning: onStartFromBeginning,
-                    onRemoveFromContinueWatching: onRemoveFromContinueWatching
+                    onRemoveFromContinueWatching: onRemoveFromContinueWatching,
+                    onMarkWatched: onMarkWatched
                 )
             }
     }
@@ -2578,7 +2595,8 @@ extension View {
         continueIsUpNext: Bool = false,
         onPlayManually: (() -> Void)? = nil,
         onStartFromBeginning: (() -> Void)? = nil,
-        onRemoveFromContinueWatching: (() -> Void)? = nil
+        onRemoveFromContinueWatching: (() -> Void)? = nil,
+        onMarkWatched: (() -> Void)? = nil
     ) -> some View {
         modifier(
             TitleActionsContextMenu(
@@ -2588,7 +2606,8 @@ extension View {
                 continueIsUpNext: continueIsUpNext,
                 onPlayManually: onPlayManually,
                 onStartFromBeginning: onStartFromBeginning,
-                onRemoveFromContinueWatching: onRemoveFromContinueWatching
+                onRemoveFromContinueWatching: onRemoveFromContinueWatching,
+                onMarkWatched: onMarkWatched
             )
         )
     }

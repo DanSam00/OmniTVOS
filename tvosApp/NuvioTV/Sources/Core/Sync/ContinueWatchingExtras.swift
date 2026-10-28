@@ -7,8 +7,45 @@ import WidgetKit
 /// profile and synced with the account like the other profile settings, so
 /// one entry reaches every device. Stored as one name per line: the account
 /// sync carries strings, not lists.
+/// "Mark as Watched" on a Continue Watching card or carousel slide: the
+/// episode it shows, the film, the match, or a recommended title as a whole. Saved like any watched mark (the account, Trakt and
+/// Simkl follow), which also takes the card out of the row. A match or a
+/// recommendation isn't built from watch history, so its card is dismissed
+/// as well.
+enum ContinueWatchingActions {
+    static func markWatched(_ item: ContinueWatchingItem) {
+        if item.cardKind == ContinueWatchingItem.recommendationKind {
+            // "Seen it": the whole title, not the first episode it suggested.
+            WatchedStore.markWatched(item.meta)
+        } else if item.meta.isSeries, let numbers = item.episodeNumbers {
+            WatchedStore.markWatched(item.meta, season: numbers.season, episode: numbers.episode)
+        } else if !item.meta.isSeries || item.cardKind == ContinueWatchingItem.fixtureKind {
+            WatchedStore.markWatched(item.meta)
+        }
+        if item.cardKind != nil {
+            ContinueWatchingDismissStore.dismiss(item)
+        }
+    }
+}
+
 enum FavouriteTeamsStore {
     static let changedNotification = Notification.Name("omni.favouriteTeams.changed")
+
+    /// A kids profile made before Add Profile stopped copying teams holds
+    /// exactly the primary's: those are cleared, once. Teams a child's
+    /// profile was given on purpose differ and stay.
+    static func repairInheritedKidsTeamsIfNeeded() {
+        let store = ProfileSettings.current
+        let flag = "omni.favouriteTeams.kidsRepair.v1"
+        guard !store.bool(forKey: flag) else { return }
+        store.set(true, forKey: flag)
+        guard store.bool(forKey: SettingsKey.kidsProfile), ProfileSettings.activeProfileScope != "1",
+              let own = store.string(forKey: SettingsKey.favouriteTeams), !own.isEmpty,
+              own == ProfileSettings.store(for: "1").string(forKey: SettingsKey.favouriteTeams) else { return }
+        store.removeObject(forKey: SettingsKey.favouriteTeams)
+        store.removeObject(forKey: SettingsKey.matchReminders)
+        NotificationCenter.default.post(name: changedNotification, object: nil)
+    }
 
     static func teams() -> [String] {
         let store = ProfileSettings.current
@@ -134,8 +171,11 @@ final class ContinueWatchingExtras {
 
         let present = Set(shown.map(\.meta.id))
         let liveFixtures = fixtures.filter { Self.fixtureIsCurrent($0) && !present.contains($0.meta.id) }
+        // Marked watched since they were fetched: not suggested again.
+        let watchedIDs = Set(WatchedStore.visibleItems().map(\.meta.id))
         let extraRecommendations = recommendations.filter { item in
-            guard !present.contains(item.meta.id), let request = StreamAvailability.request(for: item) else {
+            guard !present.contains(item.meta.id), !watchedIDs.contains(item.meta.id),
+                  let request = StreamAvailability.request(for: item) else {
                 return false
             }
             requests.append(request)
@@ -166,9 +206,10 @@ final class ContinueWatchingExtras {
             recommendationsLoadedAt = nil
         }
         let seeds = items.filter { $0.cardKind == nil }.prefix(3).map(\.meta)
-        // Without the viewer's own titles to go on there is nothing to suggest
-        // from, unless Trakt has recommendations of its own.
-        if recommendationTask == nil, !seeds.isEmpty || TraktAuthStore.state.isAuthenticated,
+        // Without the viewer's own titles or Trakt to go on, popular picks
+        // (for children on a kids profile) stand in, so the row and the
+        // carousel are never empty.
+        if recommendationTask == nil,
            recommendationsLoadedAt.map({ now.timeIntervalSince($0) > Self.recommendationLifetime }) ?? true {
             recommendationTask = Task {
                 let found = await loadRecommendations(seeds: Array(seeds), excluding: Set(items.map(\.meta.id)))
@@ -216,7 +257,10 @@ final class ContinueWatchingExtras {
     /// The account's recommendations when Trakt is connected; otherwise titles
     /// like the ones being watched, from the details page's source.
     private func loadRecommendations(seeds: [NuvioMeta], excluding: Set<String>) async -> [ContinueWatchingItem] {
-        var candidates = await TraktDetailsService.fetchRecommendations(limit: 10)
+        let isKids = ProfileSettings.current.bool(forKey: SettingsKey.kidsProfile)
+        // A kids profile's Trakt is usually the parent's, copied with the
+        // settings: its picks are the parent's, not the child's.
+        var candidates = isKids ? [] : await TraktDetailsService.fetchRecommendations(limit: 10)
         if candidates.isEmpty {
             // Taken in turn from each title, so one film does not supply them all.
             var lists: [[RelatedTitle]] = []
@@ -233,6 +277,9 @@ final class ContinueWatchingExtras {
             for index in 0..<(lists.map(\.count).max() ?? 0) {
                 candidates += lists.compactMap { index < $0.count ? $0[index] : nil }
             }
+        }
+        if candidates.isEmpty {
+            candidates = await Self.starterPicks(forKids: isKids)
         }
 
         let watched = Set(WatchedStore.visibleItems().map(\.meta.id))
@@ -262,7 +309,67 @@ final class ContinueWatchingExtras {
                 ))
             }
         }
+        #if os(iOS)
+        if isKids {
+            let allowed = Set(await KidsContentFilter.filterIfNeeded(result.map(\.meta)).map(\.id))
+            result = result.filter { allowed.contains($0.meta.id) }
+        }
+        #endif
         return result
+    }
+
+    /// For a profile with nothing watched and no Trakt picks: TMDB's popular
+    /// titles this week, or on a kids profile its popular family films up to
+    /// PG and children's shows. Empty without a TMDB key.
+    private static func starterPicks(forKids: Bool) async -> [RelatedTitle] {
+        guard let key = TmdbAccountKey.key() else { return [] }
+        let queries: [(path: String, type: String, extra: [URLQueryItem])] = forKids
+            ? [
+                ("discover/movie", "movie", [
+                    URLQueryItem(name: "with_genres", value: "10751"),
+                    URLQueryItem(name: "certification_country", value: "US"),
+                    URLQueryItem(name: "certification.lte", value: "PG"),
+                    URLQueryItem(name: "sort_by", value: "popularity.desc"),
+                    URLQueryItem(name: "vote_count.gte", value: "50"),
+                ]),
+                ("discover/tv", "series", [
+                    URLQueryItem(name: "with_genres", value: "10762"),
+                    URLQueryItem(name: "sort_by", value: "popularity.desc"),
+                    URLQueryItem(name: "vote_count.gte", value: "20"),
+                ]),
+            ]
+            : [("trending/movie/week", "movie", []), ("trending/tv/week", "series", [])]
+        var lists: [[RelatedTitle]] = []
+        for query in queries {
+            var components = URLComponents(string: "https://api.themoviedb.org/3/\(query.path)")!
+            components.queryItems = [
+                URLQueryItem(name: "api_key", value: key),
+                URLQueryItem(name: "language", value: TmdbDetailsService.preferredLanguage),
+            ] + query.extra
+            guard let url = components.url,
+                  let (data, response) = try? await URLSession.shared.data(from: url),
+                  (response as? HTTPURLResponse)?.statusCode == 200,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let results = json["results"] as? [[String: Any]] else { continue }
+            lists.append(results.compactMap { row in
+                guard let id = row["id"] as? Int else { return nil }
+                let name = (row["title"] as? String) ?? (row["name"] as? String) ?? ""
+                let date = (row["release_date"] as? String) ?? (row["first_air_date"] as? String)
+                return RelatedTitle(
+                    id: "tmdb:\(id)", type: query.type, name: name,
+                    posterURL: (row["poster_path"] as? String).map { "https://image.tmdb.org/t/p/w500\($0)" },
+                    year: date.map { String($0.prefix(4)) },
+                    rating: row["vote_average"] as? Double,
+                    overview: row["overview"] as? String
+                )
+            })
+        }
+        // Films and shows in turn.
+        var mixed: [RelatedTitle] = []
+        for index in 0..<(lists.map(\.count).max() ?? 0) {
+            mixed += lists.compactMap { index < $0.count ? $0[index] : nil }
+        }
+        return mixed
     }
 
     // MARK: Fixtures

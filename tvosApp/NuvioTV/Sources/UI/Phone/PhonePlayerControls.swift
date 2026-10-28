@@ -150,7 +150,18 @@ struct PhonePlayerControls: View {
             let screenHeight = proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom
             ZStack {
                 if portrait {
-                    portraitLayout(size: proxy.size, bottomInset: proxy.safeAreaInsets.bottom)
+                    // Edge to edge: the Duo's outside screen keeps its status
+                    // column down one side, which only the picture's top
+                    // corner reaches; the deck and details go under it too
+                    // rather than leaving a blank strip down that side.
+                    portraitLayout(
+                        size: CGSize(
+                            width: proxy.size.width + proxy.safeAreaInsets.leading + proxy.safeAreaInsets.trailing,
+                            height: proxy.size.height
+                        ),
+                        bottomInset: proxy.safeAreaInsets.bottom
+                    )
+                    .ignoresSafeArea(.container, edges: .horizontal)
                 } else {
                     landscapeLayout
                 }
@@ -167,7 +178,7 @@ struct PhonePlayerControls: View {
             .onChange(of: portrait) { _, now in updateLayout(portrait: now, topInset: proxy.safeAreaInsets.top, screenHeight: screenHeight) }
             .onChange(of: proxy.safeAreaInsets.top) { _, top in updateLayout(portrait: portrait, topInset: top, screenHeight: screenHeight) }
             .onChange(of: screenHeight) { _, height in updateLayout(portrait: portrait, topInset: proxy.safeAreaInsets.top, screenHeight: height) }
-            .onChange(of: hinge.isHalfOpen) { _, _ in
+            .onChange(of: hinge.showsCrease) { _, _ in
                 withAnimation(.smooth(duration: 0.3)) {
                     updateLayout(portrait: portrait, topInset: proxy.safeAreaInsets.top, screenHeight: screenHeight)
                 }
@@ -196,7 +207,7 @@ struct PhonePlayerControls: View {
         PhonePlayerLayout.shared.topInset = topInset
         // Half folded (Duo inside screen, clamshell): the picture fills the
         // top half down to the crease, the controls the bottom half.
-        PhonePlayerLayout.shared.creaseVideoHeight = portrait && hinge.isHalfOpen
+        PhonePlayerLayout.shared.creaseVideoHeight = portrait && hinge.showsCrease
             ? max(0, screenHeight / 2 - topInset)
             : nil
         if portrait { hideTask?.cancel() } else { reveal() }
@@ -246,8 +257,18 @@ struct PhonePlayerControls: View {
     /// Upright: the picture in a 16:9 box under the status bar (placed there
     /// by `PlayerView`, at the top of this safe area), the controls deck below
     /// it on a frosted reflection of the picture, then the title's details.
-    private func portraitLayout(size: CGSize, bottomInset: CGFloat) -> some View {
-        let videoHeight = layout.creaseVideoHeight ?? size.width * 9 / 16
+    private func portraitLayout(
+        size: CGSize,
+        bottomInset: CGFloat,
+        sideInsets: (leading: CGFloat, trailing: CGFloat) = (0, 0)
+    ) -> some View {
+        // The picture spans the whole screen, side safe areas included (the
+        // Duo's outside screen keeps its status column down one side), so its
+        // height comes from that width, not this narrower one: measured here
+        // the deck began short of the picture's bottom and ran up over it.
+        let pictureWidth = size.width + sideInsets.leading + sideInsets.trailing
+        let pictureHeight = pictureWidth * 9 / 16
+        let videoHeight = layout.creaseVideoHeight ?? pictureHeight
         return ZStack(alignment: .top) {
             // The picture mirrored at its own size directly beneath it.
             PhonePlayerReflection(
@@ -256,8 +277,11 @@ struct PhonePlayerControls: View {
                 fallbackURL: viewModel.castableMedia?.backdropURL?.absoluteString
                     ?? viewModel.playingMeta?.backgroundUrl
             )
-            .frame(width: size.width, height: videoHeight)
+            // The picture's own 16:9 and full width, even when the box above
+            // is taller, lined up with the picture across the screen.
+            .frame(width: pictureWidth, height: min(videoHeight, pictureHeight))
             .clipped()
+            .offset(x: (sideInsets.trailing - sideInsets.leading) / 2)
             .padding(.top, videoHeight)
             .frame(width: size.width, height: size.height, alignment: .top)
             .allowsHitTesting(false)
@@ -2043,21 +2067,22 @@ final class PhonePlayerLayout: ObservableObject {
     @Published var creaseVideoHeight: CGFloat?
 }
 
-/// The fold of a foldable iPhone (iPhone Duo): whether it is half open, as
-/// on a table with the inside screen bent like a laptop. UIKit gives the
+/// The fold of a foldable iPhone (iPhone Duo): whether it is open on its
+/// inside screen, bent like a laptop or laid flat; either way the crease is
+/// there. UIKit gives the
 /// hinge's state but not where the crease lies; on the inside screen it runs
 /// across the middle.
 @MainActor
 final class PhoneHinge: ObservableObject {
     static let shared = PhoneHinge()
-    @Published private(set) var isHalfOpen = false
+    @Published private(set) var showsCrease = false
     /// Space kept clear either side of the crease.
-    static let creaseClearance: CGFloat = 18
+    static let creaseClearance: CGFloat = 6
 
-    fileprivate func update(halfOpen: Bool) {
-        guard halfOpen != isHalfOpen else { return }
-        isHalfOpen = halfOpen
-        AetherPlaybackController.PhoneLogFile.log("hinge halfOpen=\(halfOpen)")
+    fileprivate func update(showsCrease open: Bool) {
+        guard open != showsCrease else { return }
+        showsCrease = open
+        AetherPlaybackController.PhoneLogFile.log("hinge showsCrease=\(open)")
     }
 }
 
@@ -2068,7 +2093,11 @@ private struct PhoneHingeObserver: UIViewRepresentable {
         view.isUserInteractionEnabled = false
         if #available(iOS 27.1, *) {
             view.addInteraction(UIHingeInteraction { _, update in
-                PhoneHinge.shared.update(halfOpen: update.hinge?.status == .partiallyOpen)
+                // Open at all, partly or flat, the inside screen is in use and
+                // its crease runs across the middle; closed, the outside
+                // screen has none.
+                let status = update.hinge?.status
+                PhoneHinge.shared.update(showsCrease: status == .partiallyOpen || status == .fullyOpen)
             })
         }
         return view
@@ -2123,8 +2152,17 @@ private struct PhonePortraitBoxLayout: Layout {
             child.place(at: CGPoint(x: bounds.minX, y: bounds.minY), anchor: .topLeading, proposal: ProposedViewSize(size))
             return
         }
-        let size = CGSize(width: bounds.width, height: boxHeight)
-        child.place(at: CGPoint(x: bounds.minX, y: bounds.minY + topInset), anchor: .topLeading, proposal: ProposedViewSize(size))
+        // Folded, the box runs down to the crease and is taller than 16:9:
+        // the picture sits at its bottom, on the crease and against its
+        // reflection, with the spare height black above it rather than a
+        // letterbox strip below.
+        let pictureHeight = min(boxHeight, bounds.width * 9 / 16)
+        let size = CGSize(width: bounds.width, height: pictureHeight)
+        child.place(
+            at: CGPoint(x: bounds.minX, y: bounds.minY + topInset + boxHeight - pictureHeight),
+            anchor: .topLeading,
+            proposal: ProposedViewSize(size)
+        )
     }
 }
 

@@ -77,6 +77,7 @@ final class CredentialVault: ObservableObject {
             SimklAuthStore.changedNotification,
             JellyfinServerStore.changedNotification,
             SMBServerStore.changedNotification,
+            AISubtitleKeyStore.changedNotification,
         ] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { _ in
                 Task { @MainActor in CredentialVault.shared.noteLocalChange() }
@@ -142,6 +143,16 @@ final class CredentialVault: ObservableObject {
         requestPush()
     }
 
+    /// After sign-out wipes this device's profiles: forgets which boxes were
+    /// applied here and when its sign-ins last changed, so the next sign-in
+    /// restores them instead of taking the empty device for the newer one.
+    func forgetLocalHistory() {
+        let stale = state.keys.filter { $0.hasPrefix("omni.vault.modified.") || $0.hasPrefix("omni.vault.applied.") }
+        guard !stale.isEmpty else { return }
+        stale.forEach { state[$0] = nil }
+        saveState()
+    }
+
     /// Forgets the passphrase on this device only.
     func lockThisDevice() {
         guard let accountID else { return }
@@ -200,7 +211,11 @@ final class CredentialVault: ObservableObject {
     }
 
     private func applyIfNewer(_ envelope: Envelope, profileScope: String, force: Bool) {
-        if !force {
+        // A device holding none of the box's sign-ins (just signed in, or
+        // wiped by a sign-out) takes the box whatever the times say: the
+        // times can be left from before the wipe.
+        let deviceIsEmpty = Contents.export(profileScope: profileScope).isEmpty
+        if !force, !deviceIsEmpty {
             if let applied = lastApplied(profileScope), applied >= envelope.updatedAt { return }
             if let local = localModified(profileScope), local > envelope.updatedAt { return }
         }
@@ -225,7 +240,8 @@ final class CredentialVault: ObservableObject {
     }
 
     private func noteLocalChange() {
-        guard !isApplying else { return }
+        // Signed out, a change is the sign-out's own wipe, not new sign-ins.
+        guard !isApplying, accountID != nil else { return }
         setLocalModified(ProfileSettings.activeProfileScope, Date())
         if hasPassphrase { requestPush() }
     }
@@ -416,6 +432,17 @@ private extension CredentialVault {
         var simklRefreshToken: String?
         var jellyfinTokens: [String: String] = [:]
         var smbPasswords: [String: String] = [:]
+        /// AI subtitle translation keys, by provider (absent in older boxes).
+        var aiSubtitleKeys: [String: String]? = nil
+
+        /// Nothing worth restoring: no sign-in, source or key.
+        var isEmpty: Bool {
+            let meaningful = settings.keys.filter {
+                $0 != SettingsKey.traktClientID && $0 != SettingsKey.traktClientSecret && $0 != SettingsKey.simklClientID
+            }
+            return meaningful.isEmpty && (simklAccessToken ?? "").isEmpty && jellyfinTokens.isEmpty
+                && smbPasswords.isEmpty && (aiSubtitleKeys ?? [:]).isEmpty
+        }
 
         static var settingKeys: [String] {
             TraktAuthStore.credentialKeys + SimklAuthStore.credentialKeys + [
@@ -445,6 +472,13 @@ private extension CredentialVault {
                 let password = SMBCredentialStore.password(forServerID: server, profileScope: profileScope)
                 if !password.isEmpty { contents.smbPasswords[server] = password }
             }
+            var aiKeys: [String: String] = [:]
+            for provider in AISubtitleProvider.allCases {
+                if let key = AISubtitleKeyStore.storedKey(for: provider, profileScope: profileScope), !key.isEmpty {
+                    aiKeys[provider.rawValue] = key
+                }
+            }
+            contents.aiSubtitleKeys = aiKeys.isEmpty ? nil : aiKeys
             return contents
         }
 
@@ -479,6 +513,13 @@ private extension CredentialVault {
             }
             for (server, password) in smbPasswords {
                 SMBCredentialStore.save(password, forServerID: server, profileScope: profileScope)
+            }
+            for provider in AISubtitleProvider.allCases {
+                if let key = aiSubtitleKeys?[provider.rawValue], !key.isEmpty {
+                    AISubtitleKeyStore.save(key, for: provider, profileScope: profileScope)
+                } else if !merging, aiSubtitleKeys != nil {
+                    AISubtitleKeyStore.remove(for: provider, profileScope: profileScope)
+                }
             }
             if profileScope == ProfileSettings.activeProfileScope {
                 JellyfinServerStore.shared.reload()

@@ -406,6 +406,7 @@ enum CommunityCollections {
     @MainActor
     @discardableResult
     static func seedKidsProfileIfNeeded() async -> Int {
+        FavouriteTeamsStore.repairInheritedKidsTeamsIfNeeded()
         let store = ProfileSettings.current
         guard store.bool(forKey: SettingsKey.kidsProfile), !store.bool(forKey: kidsTemplateAppliedKey) else { return 0 }
         let isNew = store.bool(forKey: kidsSeedPendingKey)

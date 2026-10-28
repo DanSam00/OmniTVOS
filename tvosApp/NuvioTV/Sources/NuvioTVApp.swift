@@ -10290,6 +10290,17 @@ private struct TVFeatureHeroView: View {
                     }
                 }
 
+                if onRemove != nil {
+                    Button {
+                        ContinueWatchingActions.markWatched(activeItem)
+                    } label: {
+                        Label(
+                            L10n.string("action_mark_watched", fallback: "Mark as Watched"),
+                            systemImage: "checkmark.circle"
+                        )
+                    }
+                }
+
                 if let onRemove {
                     Button(role: .destructive) {
                         onRemove(activeItem)

@@ -51,117 +51,9 @@ struct PhoneMainTabView: View {
     }
 
     var body: some View {
-        ZStack {
-            page(.home) {
-                NavigationStack {
-                    ZStack(alignment: .topTrailing) {
-                        PhoneHomeView(
-                            loader: homeLoader,
-                            onOpenDetails: { onOpenDetails($0.id, $0.type) },
-                            onResume: onResume,
-                            onStartOver: onStartOver,
-                            onRemoveContinueWatching: onRemoveContinueWatching
-                        )
-                        // Who's watching, as Settings has it; out of the way
-                        // once the page is scrolled down.
-                        Button(action: onSwitchProfile) {
-                            ProfileAvatarView(
-                                avatarId: activeProfile?.avatarId ?? ProfileAvatarCatalog.defaultId,
-                                size: 36,
-                                profileId: activeProfile?.id
-                            )
-                            .padding(3)
-                            .background(.ultraThinMaterial, in: Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Switch Profile")
-                        .padding(.trailing, 16)
-                        .padding(.top, 4)
-                        .opacity(tabBar.isCollapsed ? 0 : 1)
-                        .animation(.easeInOut(duration: 0.2), value: tabBar.isCollapsed)
-                    }
-                }
-            }
-            page(.search) {
-                NavigationStack {
-                    PhoneSearchView { onOpenDetails($0.id, $0.type) }
-                }
-            }
-            #if os(iOS)
-            // A new kids profile's starter collections (see CommunityCollections).
-            Color.clear
-                .frame(width: 0, height: 0)
-                .task(id: activeProfile?.id) {
-                    // Picked in Add Profile, else a kids profile's starter set.
-                    // A kids profile never starts with 18+ switched on.
-                    if PhoneKidsMode.isActive { NSFWVisibility.shared.showsInSearch = false }
-                    await CommunityCollections.installPendingIfNeeded()
-                    #if OMNI_X
-                    guard PhoneKidsMode.isActive else { return }
-                    await CommunityCollections.seedKidsProfileIfNeeded()
-                    #else
-                    await CuratedLibrary.installCollectionsIfNeeded()
-                    #endif
-                }
-            #endif
-            page(.guide) {
-                NavigationStack {
-                    IPTVGuideView(isActive: true) { onOpenDetails($0, $1) }
-                        .id(activeProfile?.id ?? "none")
-                }
-            }
-            page(.library) {
-                NavigationStack {
-                    PhoneLibraryView(
-                        viewModel: libraryViewModel,
-                        section: $librarySection,
-                        onSelect: { onOpenDetails($0, $1) },
-                        onPlayDownload: onPlayDownload
-                    )
-                }
-            }
-            page(.calendar) {
-                NavigationStack {
-                    PhoneCalendarView { onOpenDetails($0, $1) }
-                        .id(activeProfile?.id ?? "none")
-                }
-            }
-            page(.settings) {
-                NavigationStack {
-                    // The full settings, shared with tvOS and macOS.
-                    SettingsView(
-                        activeProfile: activeProfile,
-                        accountEmail: authManager.currentEmail,
-                        isAuthenticated: authManager.isAuthenticated,
-                        sessionNeedsReauthentication: authManager.sessionNeedsReauthentication,
-                        onChangeProfileName: onChangeProfileName,
-                        onChangeProfileAvatar: onChangeProfileAvatar,
-                        onChangeProfilePin: onChangeProfilePin,
-                        onVerifyProfilePin: onVerifyProfilePin,
-                        onSignIn: onSignIn,
-                        onSignOut: onSignOut
-                    )
-                    .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            // The current profile's own picture, which is
-                            // also the way to switch to another.
-                            Button(action: onSwitchProfile) {
-                                ProfileAvatarView(
-                                    avatarId: activeProfile?.avatarId ?? ProfileAvatarCatalog.defaultId,
-                                    size: 32,
-                                    profileId: activeProfile?.id
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Switch Profile")
-                        }
-                    }
-                    .id(activeProfile?.id ?? "none")
-                }
-            }
-        }
+        pageContainer
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if !isKeyboardShown {
+            if !isKeyboardShown, !PhoneDevice.usesSystemTabBar {
                 PhoneTabBar(
                     tabs: barTabs,
                     selection: $selection,
@@ -196,8 +88,20 @@ struct PhoneMainTabView: View {
         .onReceive(iptv.$hasSources) { has in
             if !has, selection == .guide { selection = .home }
         }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-            isKeyboardShown = true
+        // Judged by the keyboard's frame, not by which notification came:
+        // turning an iPhone Duo sends "will show" for a keyboard of no
+        // height, with no "will hide" after it, which hid the bar until the
+        // phone switched screens. A hardware keyboard's slim shortcut bar
+        // doesn't count either.
+        .onReceive(
+            NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)
+                .merge(with: NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification))
+        ) { note in
+            let frame = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue ?? .zero
+            let screen = (note.object as? UIScreen)?.bounds
+                ?? UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.screen.bounds }.first
+                ?? .zero
+            isKeyboardShown = frame.height > 80 && frame.intersection(screen).height > 80
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             isKeyboardShown = false
@@ -220,6 +124,143 @@ struct PhoneMainTabView: View {
         // Cast devices can take a while to answer; looking from launch means
         // the player's Cast button already lists them.
         .task { PhoneCastController.shared.startDiscovery() }
+    }
+
+    /// iPhone Duo: the system tab bar, which the Duo draws as a pill down the
+    /// screen's side, as its own apps have it. Elsewhere Omni's own floating
+    /// bar along the bottom (`PhoneTabBar`).
+    @ViewBuilder
+    private var pageContainer: some View {
+        if PhoneDevice.usesSystemTabBar {
+            TabView(selection: $selection) {
+                ForEach(barTabs + [.search]) { tab in
+                    Tab(tab.title, systemImage: tab.symbol, value: tab, role: tab == .search ? .search : nil) {
+                        pageContent(tab)
+                    }
+                }
+            }
+            .background(starterCollectionsTask)
+        } else {
+            ZStack {
+                page(.home) { pageContent(.home) }
+                page(.search) { pageContent(.search) }
+                page(.guide) { pageContent(.guide) }
+                page(.library) { pageContent(.library) }
+                page(.calendar) { pageContent(.calendar) }
+                page(.settings) { pageContent(.settings) }
+                starterCollectionsTask
+            }
+        }
+    }
+
+    /// A new kids profile's starter collections (see CommunityCollections).
+    private var starterCollectionsTask: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .task(id: activeProfile?.id) {
+                // Picked in Add Profile, else a kids profile's starter set.
+                // A kids profile never starts with 18+ switched on.
+                if PhoneKidsMode.isActive { NSFWVisibility.shared.showsInSearch = false }
+                await CommunityCollections.installPendingIfNeeded()
+                #if OMNI_X
+                guard PhoneKidsMode.isActive else { return }
+                await CommunityCollections.seedKidsProfileIfNeeded()
+                #else
+                await CuratedLibrary.installCollectionsIfNeeded()
+                #endif
+            }
+    }
+
+    @ViewBuilder
+    private func pageContent(_ tab: TVTab) -> some View {
+        switch tab {
+        case .home:
+            NavigationStack {
+                ZStack(alignment: .topTrailing) {
+                    PhoneHomeView(
+                        loader: homeLoader,
+                        onOpenDetails: { onOpenDetails($0.id, $0.type) },
+                        onResume: onResume,
+                        onStartOver: onStartOver,
+                        onRemoveContinueWatching: onRemoveContinueWatching
+                    )
+                    // Who's watching, as Settings has it; out of the way
+                    // once the page is scrolled down.
+                    Button(action: onSwitchProfile) {
+                        ProfileAvatarView(
+                            avatarId: activeProfile?.avatarId ?? ProfileAvatarCatalog.defaultId,
+                            size: 36,
+                            profileId: activeProfile?.id
+                        )
+                        .padding(3)
+                        .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Switch Profile")
+                    .padding(.trailing, 16)
+                    .padding(.top, 4)
+                    .opacity(tabBar.isCollapsed ? 0 : 1)
+                    .animation(.easeInOut(duration: 0.2), value: tabBar.isCollapsed)
+                }
+            }
+        case .search:
+            NavigationStack {
+                PhoneSearchView { onOpenDetails($0.id, $0.type) }
+            }
+        case .guide:
+            NavigationStack {
+                IPTVGuideView(isActive: true) { onOpenDetails($0, $1) }
+                    .id(activeProfile?.id ?? "none")
+            }
+        case .library:
+            NavigationStack {
+                PhoneLibraryView(
+                    viewModel: libraryViewModel,
+                    section: $librarySection,
+                    onSelect: { onOpenDetails($0, $1) },
+                    onPlayDownload: onPlayDownload
+                )
+            }
+        case .calendar:
+            NavigationStack {
+                PhoneCalendarView { onOpenDetails($0, $1) }
+                    .id(activeProfile?.id ?? "none")
+            }
+        case .settings:
+            NavigationStack {
+                // The full settings, shared with tvOS and macOS.
+                SettingsView(
+                    activeProfile: activeProfile,
+                    accountEmail: authManager.currentEmail,
+                    isAuthenticated: authManager.isAuthenticated,
+                    sessionNeedsReauthentication: authManager.sessionNeedsReauthentication,
+                    onChangeProfileName: onChangeProfileName,
+                    onChangeProfileAvatar: onChangeProfileAvatar,
+                    onChangeProfilePin: onChangeProfilePin,
+                    onVerifyProfilePin: onVerifyProfilePin,
+                    onSignIn: onSignIn,
+                    onSignOut: onSignOut
+                )
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        // The current profile's own picture, which is
+                        // also the way to switch to another.
+                        Button(action: onSwitchProfile) {
+                            ProfileAvatarView(
+                                avatarId: activeProfile?.avatarId ?? ProfileAvatarCatalog.defaultId,
+                                size: 32,
+                                profileId: activeProfile?.id
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Switch Profile")
+                    }
+                }
+                .id(activeProfile?.id ?? "none")
+            }
+        default:
+            EmptyView()
+        }
     }
 
     @ViewBuilder
@@ -300,7 +341,7 @@ private struct PhoneTabBarFold: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .contentMargins(.bottom, 72, for: .scrollContent)
+            .contentMargins(.bottom, PhoneDevice.usesSystemTabBar ? 0 : 72, for: .scrollContent)
             .scrollPosition($position)
             .onScrollGeometryChange(for: CGFloat.self) { geometry in
                 geometry.contentOffset.y + geometry.contentInsets.top
@@ -856,4 +897,24 @@ struct PhoneNestedTabBar: View {
         // drawn for a moment over the tab's own, and must not take its taps.
         .allowsHitTesting(state.nestedPageActive)
     }
+}
+
+
+/// The phone this runs on, where it changes the layout.
+enum PhoneDevice {
+    /// iPhone Duo: its own vertical tab bar down the side, rather than Omni's
+    /// floating one along the bottom, which the Duo's tall inside screen left
+    /// far from the hand.
+    static let usesSystemTabBar: Bool = {
+        let duoModels: Set<String> = ["iPhone19,4"]
+        if let simulated = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] {
+            return duoModels.contains(simulated)
+        }
+        var info = utsname()
+        uname(&info)
+        let model = withUnsafeBytes(of: &info.machine) { raw in
+            String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+        }
+        return duoModels.contains(model)
+    }()
 }

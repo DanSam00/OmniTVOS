@@ -806,7 +806,13 @@ public class ProfileViewModel: ObservableObject {
                 // A new kids profile starts with a couple of the community's
                 // collections for children, added the first time it is used.
                 let newStore = ProfileSettings.store(for: newProfile.id)
-                if !setup.favouriteTeams.isEmpty {
+                // Only the teams chosen for this profile: copied settings
+                // carried the primary's, which put its matches on a child's
+                // carousel.
+                if setup.favouriteTeams.isEmpty {
+                    newStore.removeObject(forKey: SettingsKey.favouriteTeams)
+                    newStore.removeObject(forKey: SettingsKey.matchReminders)
+                } else {
                     newStore.set(setup.favouriteTeams.joined(separator: "\n"), forKey: SettingsKey.favouriteTeams)
                 }
                 if !setup.communityPicks.isEmpty {
@@ -1117,6 +1123,8 @@ public class ProfileViewModel: ObservableObject {
         // list, so suites left behind by previously deleted profiles go too.
         ProfileSettings.eraseAll(profileIds: previousIds + (1...6).map(String.init) + [guest.id])
         NuvioSyncManager.eraseProfileIndexBindings()
+        // The vault must not take this wiped device for the newer copy.
+        CredentialVault.shared.forgetLocalHistory()
 
         ContinueWatchingStore.setActiveProfile(guest.id)
         LibraryStore.setActiveProfile(guest.id)

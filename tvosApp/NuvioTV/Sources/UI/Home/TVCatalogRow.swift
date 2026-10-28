@@ -493,6 +493,9 @@ struct TVCatalogRow: View {
                         onRemoveFromContinueWatching: ((id == TVHomeSection.continueWatchingId || id == TVHomeSection.upcomingId) && progressItem != nil) ? {
                             if let p = progressItem { onRemoveFromContinueWatching?(p) }
                         } : nil,
+                        onMarkWatched: (id == TVHomeSection.continueWatchingId && progressItem != nil) ? {
+                            if let p = progressItem { ContinueWatchingActions.markWatched(p) }
+                        } : nil,
                         layoutMode: rowHomeLayout,
                         showPosterLabels: rowPosterLabels,
                         smoothFocusAnimations: rowCardFocusAnimations,

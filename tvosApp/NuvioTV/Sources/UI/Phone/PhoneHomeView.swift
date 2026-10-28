@@ -350,6 +350,7 @@ struct PhoneHomeView: View {
     @State private var browsingSection: TVHomeSection?
     @State private var browsingFolder: PhoneFolderRoute?
 
+    @ObservedObject private var kidsFolderAudit = PhoneKidsFolderAudit.shared
     private var style: PhoneHomeStyle { PhoneHomeStyle(layout: homeLayout) }
 
     /// Continue Watching takes the hero whenever there is something in it.
@@ -772,6 +773,9 @@ struct PhoneHomeView: View {
         Button { onResume(item) } label: { Label("Resume", systemImage: "play.fill") }
         Button { onStartOver(item) } label: { Label("Start Over", systemImage: "gobackward") }
         Button { onOpenDetails(item.meta) } label: { Label("Details", systemImage: "info.circle") }
+        Button { ContinueWatchingActions.markWatched(item) } label: {
+            Label("Mark as Watched", systemImage: "checkmark.circle")
+        }
         Button(role: .destructive) { onRemoveContinueWatching(item) } label: {
             Label("Remove", systemImage: "xmark")
         }
@@ -796,12 +800,23 @@ struct PhoneHomeView: View {
     }
 
     /// A collection: its folders as cards, each opening the folder's catalogs.
+    /// On a kids profile, without the folders that would open empty
+    /// (`PhoneKidsFolderAudit`); the row goes when none are left.
+    @ViewBuilder
     private func collectionRow(_ section: TVHomeSection) -> some View {
+        let folders = section.collectionFolders.filter { !kidsFolderAudit.hidden.contains($0.id) }
+        if !folders.isEmpty {
+            collectionRow(section, folders: folders)
+                .task(id: section.collectionFolders.map(\.id)) { kidsFolderAudit.check(section.collectionFolders) }
+        }
+    }
+
+    private func collectionRow(_ section: TVHomeSection, folders: [TVCollectionFolderItem]) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionHeader(section)
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: style.cardSpacing) {
-                    ForEach(section.collectionFolders) { folder in
+                    ForEach(folders) { folder in
                         Button { browsingFolder = PhoneFolderRoute(folder: folder) } label: {
                             // Grid View's poster width is 0 (its grids size
                             // their own cells), which drew every card empty.

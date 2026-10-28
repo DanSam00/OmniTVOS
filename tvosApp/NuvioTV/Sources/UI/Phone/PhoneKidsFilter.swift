@@ -180,6 +180,89 @@ extension RelatedTitle {
     }
 }
 
+/// Kids profiles: collection folders with nothing a child may watch (every
+/// title rated above PG, or nothing loading at all), found by loading each
+/// folder's first page in the background, so Home hides them rather than
+/// showing a folder that opens empty. Each answer is kept for a day.
+@MainActor
+final class PhoneKidsFolderAudit: ObservableObject {
+    static let shared = PhoneKidsFolderAudit()
+    /// Folder ids (`TVCollectionFolderItem.id`) to hide on this profile.
+    @Published private(set) var hidden: Set<String> = []
+
+    private static let storageKey = "omni.kids.folderAudit.v1"
+    private static let lifetime: TimeInterval = 24 * 3600
+    private var profile: String?
+    /// Folder id -> [checked at, 1 if empty].
+    private var results: [String: [Double]] = [:]
+    private var queue: [TVCollectionFolderItem] = []
+    private var running = 0
+    private let repository: CatalogRepository = CinemetaCatalogRepository()
+
+    func check(_ folders: [TVCollectionFolderItem]) {
+        guard PhoneKidsMode.isActive else {
+            if !hidden.isEmpty { hidden = [] }
+            return
+        }
+        loadIfProfileChanged()
+        let now = Date().timeIntervalSince1970
+        let pending = Set(queue.map(\.id))
+        for folder in folders where !pending.contains(folder.id) {
+            if let result = results[folder.id], now - result[0] < Self.lifetime { continue }
+            queue.append(folder)
+        }
+        pump()
+    }
+
+    private func loadIfProfileChanged() {
+        let scope = ProfileSettings.activeProfileScope
+        guard scope != profile else { return }
+        profile = scope
+        queue = []
+        results = ProfileSettings.current.dictionary(forKey: Self.storageKey) as? [String: [Double]] ?? [:]
+        hidden = Set(results.filter { $0.value.count > 1 && $0.value[1] == 1 }.keys)
+    }
+
+    private func pump() {
+        while running < 3, !queue.isEmpty {
+            let folder = queue.removeFirst()
+            running += 1
+            let scope = profile
+            Task {
+                let empty = await Self.isEmptyForKids(folder, repository: repository)
+                running -= 1
+                if let empty, scope == profile {
+                    results[folder.id] = [Date().timeIntervalSince1970, empty ? 1 : 0]
+                    ProfileSettings.current.set(results, forKey: Self.storageKey)
+                    if empty { hidden.insert(folder.id) } else { hidden.remove(folder.id) }
+                }
+                pump()
+            }
+        }
+    }
+
+    /// True when the first page of up to three of its catalogs holds nothing
+    /// a child may watch; nil when it couldn't be asked (offline), so it is
+    /// asked again rather than hidden.
+    private static func isEmptyForKids(_ folder: TVCollectionFolderItem, repository: CatalogRepository) async -> Bool? {
+        var answered = false
+        for source in folder.sources.prefix(3) {
+            do {
+                let page = try await CollectionSourceResolver(repository: repository, folderTitle: folder.title).browse(source)
+                answered = true
+                if await !KidsContentFilter.filterIfNeeded(page.items).isEmpty { return false }
+            } catch let error as URLError where [.notConnectedToInternet, .timedOut, .networkConnectionLost, .cancelled].contains(error.code) {
+                continue
+            } catch {
+                // A source that cannot load (a missing add-on, a key it needs)
+                // gives a child nothing either.
+                answered = true
+            }
+        }
+        return answered ? true : nil
+    }
+}
+
 /// Hands `content` the list a Kids profile may see (the list itself
 /// otherwise), filtering in the background as the list changes. While a
 /// longer list (another page) is checked, the titles already allowed stay.

@@ -813,6 +813,8 @@ enum AISubtitleProvider: String, CaseIterable, Identifiable {
 /// preferences remain per-profile in UserDefaults, while keys stay in Keychain.
 enum AISubtitleKeyStore {
     private static let service = "com.nuvio.tv.ai-subtitles"
+    /// Posted when a key is saved or removed, for the credential vault.
+    static let changedNotification = Notification.Name("omni.aiSubtitles.keyChanged")
 
     static func apiKey(
         for provider: AISubtitleProvider,
@@ -858,6 +860,7 @@ enum AISubtitleKeyStore {
         addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         addQuery[kSecValueData as String] = data
         let status = SecItemAdd(addQuery as CFDictionary, nil)
+        defer { NotificationCenter.default.post(name: changedNotification, object: nil) }
         if status == errSecDuplicateItem {
             return SecItemUpdate(
                 keychainQuery(for: provider, profileScope: profileScope) as CFDictionary,
@@ -873,6 +876,7 @@ enum AISubtitleKeyStore {
         profileScope: String = ProfileSettings.activeProfileScope
     ) -> Bool {
         let status = SecItemDelete(keychainQuery(for: provider, profileScope: profileScope) as CFDictionary)
+        if status == errSecSuccess { NotificationCenter.default.post(name: changedNotification, object: nil) }
         return status == errSecSuccess || status == errSecItemNotFound
     }
 
@@ -881,6 +885,11 @@ enum AISubtitleKeyStore {
         AISubtitleProvider.allCases.reduce(true) { result, provider in
             remove(for: provider, profileScope: profileScope) && result
         }
+    }
+
+    /// A profile's stored key, for the credential vault.
+    static func storedKey(for provider: AISubtitleProvider, profileScope: String) -> String? {
+        read(for: provider, profileScope: profileScope)
     }
 
     private static func read(for provider: AISubtitleProvider, profileScope: String) -> String? {
@@ -5001,7 +5010,7 @@ private struct AISubtitleOptionsSheet: View {
                         }
 
                         if selectedProvider == .gemini {
-                            SettingsOptionRow(
+                            SettingsChoiceRow(
                                 title: L10n.string("settings_ai_subtitles_gemini_model", fallback: "Gemini Model"),
                                 subtitle: L10n.string(
                                     "settings_ai_subtitles_gemini_model_subtitle",
@@ -5041,7 +5050,7 @@ private struct AISubtitleOptionsSheet: View {
                             title: L10n.string("settings_ai_subtitles_group_translation", fallback: "Translation"),
                             subtitle: L10n.string("settings_ai_subtitles_group_translation_subtitle", fallback: "Choose how live translated subtitles behave")
                         ) {
-                            SettingsOptionRow(
+                            SettingsChoiceRow(
                                 title: L10n.string("settings_ai_subtitles_translate_to", fallback: "Translate To"),
                                 subtitle: L10n.string(
                                     "settings_ai_subtitles_translate_to_subtitle",
