@@ -6,7 +6,8 @@ One codebase, two apps.
 | --- | --- | --- |
 | Compilation condition | none | `OMNI_X` |
 | macOS scheme / target | `Omni` (`com.saminaden.omnistore.mac`, sandboxed) | `Omni X` (`com.saminaden.omni.mac`) |
-| iOS / tvOS | not split yet (on hold) | `Omni iOS`, `NuvioTV` — shown as "Omni X" on the home screen; bundle ids unchanged |
+| iOS scheme / target | `Omni Store iOS` (`com.saminaden.omnistore.ios`, product "Omni Store.app", shown as "Omni") | `Omni iOS` (`com.saminaden.omni.ios`, shown as "Omni X") |
+| tvOS scheme / target | `Omni Store tvOS` (`com.saminaden.omnistore.tv`, product "Omni Store.app", shown as "Omni") | `NuvioTV` (`com.saminaden.omni`, shown as "Omni X") |
 | What plays | the viewer's own IPTV (Xtream / M3U), Jellyfin, SMB, local downloads | everything, including stream add-ons and debrid |
 | Add-ons | fixed in code (`CuratedLibrary`), metadata/catalogs only, never asked for streams | user-installed, as before |
 | Collections | defaults from `CuratedLibrary` installed on a new profile; the viewer can enable/disable, edit, create and add community ones | user-managed, as before |
@@ -72,6 +73,6 @@ The Omni target runs `python3 scripts/strip_public_catalog.py` after copying res
 - **API keys**: TheSportsDB free key "3" is for development (set `TheSportsDBKey` in `Info-Store-macOS.plist`); TMDB currently needs a per-user key (a built-in key would make the TMDB-built rows work out of the box).
 - **League ids** in `SportsSchedule.leagues` are TheSportsDB ids from memory — confirm them.
 - Widgets, Google Cast and Bonjour are not in the Omni Mac target yet (Cast needs the sandbox `network.server` entitlement).
-- iOS / tvOS Omni targets, App Store Connect record, privacy policy, age rating, screenshots, and App Review notes (state that Omni ships no content and no content sources; users supply their own IPTV / Jellyfin / SMB).
+- iOS widgets and the Top Shelf for Omni (its iOS/tvOS targets have no extensions and no App Group yet; `topShelfAppGroupID` derives `group.<bundle id>` when they are added). App Store Connect record, privacy policy, age rating, screenshots, and App Review notes (state that Omni ships no content and no content sources; users supply their own IPTV / Jellyfin / SMB).
 - **Account deletion**: Settings → Account → Delete Account (below Sign Out) asks "Are you sure?" and deletes either the active non-primary profile, or — on the primary profile, with an explicit warning — the whole Nuvio account. The account case calls `AuthConfig.deleteAccountFunction` (`delete_my_account`) on Nuvio's backend; **that function must exist there** (it is a guess at the name) or the button reports that deletion is unavailable and Apple will reject the app.
 - Nuvio sign-in: optional (Skip works). It is still a third-party service; a bundled offline copy of the curated collections would remove Review's dependence on it.

@@ -454,21 +454,8 @@ struct PhoneTabBar: View {
         }
     }
 
-    /// Without labels, a plain TV could be anything, so Live TV's says LIVE
-    /// on its screen.
-    @ViewBuilder
     private func icon(for tab: TVTab) -> some View {
-        if tab == .guide {
-            Image(systemName: "tv")
-                .overlay {
-                    Text("LIVE")
-                        .font(.system(size: 6.5, weight: .heavy))
-                        .kerning(0.2)
-                        .offset(y: -1.5)
-                }
-        } else {
-            Image(systemName: tab.symbol)
-        }
+        PhoneTabIcon(tab: tab)
     }
 
     private var items: some View {
@@ -508,6 +495,26 @@ struct PhoneTabBar: View {
                 .accessibilityLabel(isCollapsed ? "\(tab.title), show all sections" : tab.title)
                 .accessibilityAddTraits(selection == tab ? .isSelected : [])
             }
+        }
+    }
+}
+
+/// A section's icon in the tab bars. Without labels, a plain TV could be
+/// anything, so Live TV's says LIVE on its screen.
+struct PhoneTabIcon: View {
+    let tab: TVTab
+
+    var body: some View {
+        if tab == .guide {
+            Image(systemName: "tv")
+                .overlay {
+                    Text("LIVE")
+                        .font(.system(size: 6.5, weight: .heavy))
+                        .kerning(0.2)
+                        .offset(y: -1.5)
+                }
+        } else {
+            Image(systemName: tab.symbol)
         }
     }
 }
@@ -876,6 +883,31 @@ struct PhoneNestedTabBar: View {
     @State private var isExpanded = false
 
     var body: some View {
+        GeometryReader { proxy in
+            // iPhone Duo, outside screen: the system bar beneath is a pill
+            // down the side, so this one is too.
+            if PhoneDevice.usesSystemTabBar, proxy.size.height > proxy.size.width {
+                PhoneSideTabBar(
+                    tabs: state.tabs,
+                    selection: state.currentTab,
+                    onSelect: onSelect,
+                    onScrollToTop: { state.scrollToTop() },
+                    showsScrollToTop: state.nestedScrolledFar,
+                    trailingInset: proxy.safeAreaInsets.trailing,
+                    bottomInset: proxy.safeAreaInsets.bottom
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+            } else {
+                bottomBar
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            }
+        }
+        // Only while a nested page is up: on the way back this bar is still
+        // drawn for a moment over the tab's own, and must not take its taps.
+        .allowsHitTesting(state.nestedPageActive)
+    }
+
+    private var bottomBar: some View {
         PhoneTabBar(
             tabs: state.tabs,
             selection: Binding(
@@ -893,9 +925,76 @@ struct PhoneNestedTabBar: View {
             },
             showsScrollToTop: !isExpanded && state.nestedScrolledFar
         )
-        // Only while a nested page is up: on the way back this bar is still
-        // drawn for a moment over the tab's own, and must not take its taps.
-        .allowsHitTesting(state.nestedPageActive)
+    }
+}
+
+/// The iPhone Duo's side bar, drawn over nested pages: the sections and
+/// Search in one pill down the outside screen's status column, where the
+/// system draws its own over the tab pages. Always open — it takes no room
+/// from the page there.
+struct PhoneSideTabBar: View {
+    let tabs: [TVTab]
+    let selection: TVTab
+    let onSelect: (TVTab) -> Void
+    let onScrollToTop: () -> Void
+    let showsScrollToTop: Bool
+    /// The screen's insets: the pill sits centred in the trailing one (the
+    /// status column) and as far from the bottom edge as the system's.
+    let trailingInset: CGFloat
+    let bottomInset: CGFloat
+    @Namespace private var glass
+
+    private static let width: CGFloat = 48
+    private static let bottomGap: CGFloat = 25
+
+    /// From the safe area's trailing edge to the pill's centre, which the
+    /// system sets a little inside the column's middle.
+    private var offsetX: CGFloat {
+        trailingInset >= Self.width + 8 ? trailingInset / 2 + Self.width / 2 - 6 : -12
+    }
+
+    var body: some View {
+        VStack(spacing: 10) {
+            if showsScrollToTop {
+                Button(action: onScrollToTop) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 20, weight: .semibold))
+                        .frame(width: Self.width, height: Self.width)
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+                .phoneBarGlass(Circle(), id: "top", in: glass)
+                .accessibilityLabel("Back to Top")
+                .transition(.scale(scale: 0.6).combined(with: .opacity))
+            }
+            VStack(spacing: 2) {
+                ForEach(tabs + [.search]) { tab in
+                    Button {
+                        onSelect(tab)
+                    } label: {
+                        PhoneTabIcon(tab: tab)
+                            .font(.system(size: 21, weight: .semibold))
+                            .foregroundStyle(selection == tab ? Color.white : Color.white.opacity(0.8))
+                            .frame(width: Self.width - 8, height: 46)
+                            .background {
+                                if selection == tab { Capsule().fill(Color.white.opacity(0.16)) }
+                            }
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(tab.title)
+                    .accessibilityAddTraits(selection == tab ? .isSelected : [])
+                }
+            }
+            .padding(4)
+            .phoneBarGlass(Capsule(), id: "tabs", in: glass)
+        }
+        .animation(.smooth(duration: 0.25), value: showsScrollToTop)
+        // Measured from the screen's edge, not the safe area's: the home
+        // indicator's inset would lift it above the system's.
+        .offset(x: offsetX, y: max(bottomInset - Self.bottomGap, 0))
+        .padding(.bottom, max(Self.bottomGap - bottomInset, 0))
+        .sensoryFeedback(.selection, trigger: selection)
     }
 }
 
