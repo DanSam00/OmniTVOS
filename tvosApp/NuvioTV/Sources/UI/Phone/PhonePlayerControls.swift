@@ -9,6 +9,8 @@ import SwiftUI
 /// its Siri Remote catchers and the TV-sized overlays (skip HUD, pause sheet,
 /// settings panel, side panels), which `PlayerView` leaves out on iOS.
 struct PhonePlayerControls: View {
+    @ObservedObject private var hinge = PhoneHinge.shared
+    @ObservedObject private var layout = PhonePlayerLayout.shared
     @ObservedObject var viewModel: PlayerViewModel
     let isReady: Bool
     var autoPlayNextEnabled: Bool = true
@@ -145,6 +147,7 @@ struct PhonePlayerControls: View {
     private var localControls: some View {
         GeometryReader { proxy in
             let portrait = proxy.size.height > proxy.size.width
+            let screenHeight = proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom
             ZStack {
                 if portrait {
                     portraitLayout(size: proxy.size, bottomInset: proxy.safeAreaInsets.bottom)
@@ -159,9 +162,16 @@ struct PhonePlayerControls: View {
                     .transition(.opacity)
                 }
             }
-            .onAppear { updateLayout(portrait: portrait, topInset: proxy.safeAreaInsets.top) }
-            .onChange(of: portrait) { _, now in updateLayout(portrait: now, topInset: proxy.safeAreaInsets.top) }
-            .onChange(of: proxy.safeAreaInsets.top) { _, top in updateLayout(portrait: portrait, topInset: top) }
+            .background(PhoneHingeObserver().allowsHitTesting(false))
+            .onAppear { updateLayout(portrait: portrait, topInset: proxy.safeAreaInsets.top, screenHeight: screenHeight) }
+            .onChange(of: portrait) { _, now in updateLayout(portrait: now, topInset: proxy.safeAreaInsets.top, screenHeight: screenHeight) }
+            .onChange(of: proxy.safeAreaInsets.top) { _, top in updateLayout(portrait: portrait, topInset: top, screenHeight: screenHeight) }
+            .onChange(of: screenHeight) { _, height in updateLayout(portrait: portrait, topInset: proxy.safeAreaInsets.top, screenHeight: height) }
+            .onChange(of: hinge.isHalfOpen) { _, _ in
+                withAnimation(.smooth(duration: 0.3)) {
+                    updateLayout(portrait: portrait, topInset: proxy.safeAreaInsets.top, screenHeight: screenHeight)
+                }
+            }
         }
         .animation(.easeInOut(duration: 0.2), value: isVisible)
         .animation(.easeInOut(duration: 0.2), value: panel)
@@ -170,7 +180,7 @@ struct PhonePlayerControls: View {
         .animation(.easeInOut(duration: 0.2), value: viewModel.showNextEpisodeCard)
     }
 
-    private func updateLayout(portrait: Bool, topInset: CGFloat) {
+    private func updateLayout(portrait: Bool, topInset: CGFloat, screenHeight: CGFloat) {
         // Shrinking to the mini bar, the controls measure the bar's frame
         // (wider than tall) once on their way out. That is not the phone
         // turning: keep the layout, or the picture grows back full-frame
@@ -184,6 +194,11 @@ struct PhonePlayerControls: View {
         isPortrait = portrait
         PhonePlayerLayout.shared.isPortrait = portrait
         PhonePlayerLayout.shared.topInset = topInset
+        // Half folded (Duo inside screen, clamshell): the picture fills the
+        // top half down to the crease, the controls the bottom half.
+        PhonePlayerLayout.shared.creaseVideoHeight = portrait && hinge.isHalfOpen
+            ? max(0, screenHeight / 2 - topInset)
+            : nil
         if portrait { hideTask?.cancel() } else { reveal() }
     }
 
@@ -232,7 +247,7 @@ struct PhonePlayerControls: View {
     /// by `PlayerView`, at the top of this safe area), the controls deck below
     /// it on a frosted reflection of the picture, then the title's details.
     private func portraitLayout(size: CGSize, bottomInset: CGFloat) -> some View {
-        let videoHeight = size.width * 9 / 16
+        let videoHeight = layout.creaseVideoHeight ?? size.width * 9 / 16
         return ZStack(alignment: .top) {
             // The picture mirrored at its own size directly beneath it.
             PhonePlayerReflection(
@@ -286,7 +301,8 @@ struct PhonePlayerControls: View {
                         portraitDetails
                     }
                     .padding(.horizontal, 14)
-                    .padding(.top, 14)
+                    // Folded, clear of the crease itself.
+                    .padding(.top, layout.creaseVideoHeight == nil ? 14 : PhoneHinge.creaseClearance)
                     .padding(.bottom, 24)
                     .frame(width: size.width)
                 }
@@ -2022,14 +2038,51 @@ final class PhonePlayerLayout: ObservableObject {
     @Published var isPortrait = false
     /// The status bar's height: the video box starts below it.
     @Published var topInset: CGFloat = 0
+    /// Set while the phone is half folded: the video box's height, from the
+    /// status bar down to the crease, in place of 16:9.
+    @Published var creaseVideoHeight: CGFloat?
+}
+
+/// The fold of a foldable iPhone (iPhone Duo): whether it is half open, as
+/// on a table with the inside screen bent like a laptop. UIKit gives the
+/// hinge's state but not where the crease lies; on the inside screen it runs
+/// across the middle.
+@MainActor
+final class PhoneHinge: ObservableObject {
+    static let shared = PhoneHinge()
+    @Published private(set) var isHalfOpen = false
+    /// Space kept clear either side of the crease.
+    static let creaseClearance: CGFloat = 18
+
+    fileprivate func update(halfOpen: Bool) {
+        guard halfOpen != isHalfOpen else { return }
+        isHalfOpen = halfOpen
+        AetherPlaybackController.PhoneLogFile.log("hinge halfOpen=\(halfOpen)")
+    }
+}
+
+/// Hosts the `UIHingeInteraction` that feeds `PhoneHinge`.
+private struct PhoneHingeObserver: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.isUserInteractionEnabled = false
+        if #available(iOS 27.1, *) {
+            view.addInteraction(UIHingeInteraction { _, update in
+                PhoneHinge.shared.update(halfOpen: update.hinge?.status == .partiallyOpen)
+            })
+        }
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {}
 }
 
 extension View {
     /// Upright, the video in a 16:9 box under the status bar; otherwise the
     /// whole screen. One layout either way: swapping the view for another on
     /// rotation rebuilt the video surface, which left the picture black.
-    func phonePortraitVideoBox(_ portrait: Bool, topInset: CGFloat) -> some View {
-        PhonePortraitBoxLayout(portrait: portrait, topInset: topInset) { self }
+    func phonePortraitVideoBox(_ portrait: Bool, topInset: CGFloat, height: CGFloat? = nil) -> some View {
+        PhonePortraitBoxLayout(portrait: portrait, topInset: topInset, boxHeight: height) { self }
     }
 
     /// The video box grown up to the top of the screen, for what stands in
@@ -2037,10 +2090,10 @@ extension View {
     /// Applied to a view laid out inside the safe area, as the player's
     /// overlays are: it reaches out past it itself, rather than adding the
     /// inset a second time.
-    func phonePortraitTopArea(_ portrait: Bool, topInset: CGFloat) -> some View {
+    func phonePortraitTopArea(_ portrait: Bool, topInset: CGFloat, height: CGFloat? = nil) -> some View {
         // Filling the box centres what it holds: a fixed-size view (the
         // mid-playback spinner) was otherwise placed at its top-left corner.
-        PhonePortraitBoxLayout(portrait: portrait, topInset: topInset, extendsToTop: true) {
+        PhonePortraitBoxLayout(portrait: portrait, topInset: topInset, extendsToTop: true, boxHeight: height) {
             self.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
             .ignoresSafeArea()
@@ -2051,6 +2104,8 @@ private struct PhonePortraitBoxLayout: Layout {
     var portrait: Bool
     var topInset: CGFloat
     var extendsToTop = false
+    /// In place of 16:9 (half folded: down to the crease).
+    var boxHeight: CGFloat?
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         proposal.replacingUnspecifiedDimensions()
@@ -2062,7 +2117,7 @@ private struct PhonePortraitBoxLayout: Layout {
             child.place(at: CGPoint(x: bounds.midX, y: bounds.midY), anchor: .center, proposal: ProposedViewSize(bounds.size))
             return
         }
-        let boxHeight = bounds.width * 9 / 16
+        let boxHeight = self.boxHeight ?? bounds.width * 9 / 16
         if extendsToTop {
             let size = CGSize(width: bounds.width, height: topInset + boxHeight)
             child.place(at: CGPoint(x: bounds.minX, y: bounds.minY), anchor: .topLeading, proposal: ProposedViewSize(size))

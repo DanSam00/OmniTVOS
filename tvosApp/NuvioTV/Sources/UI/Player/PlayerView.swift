@@ -299,7 +299,7 @@ struct PlayerView: View {
                 #if os(iOS)
                 // Upright, the loader sits where the video will be, not in the
                 // middle of the screen under the controls and episode list.
-                .phonePortraitTopArea(phoneLayout.isPortrait && !viewModel.postPlayState.isVisible, topInset: phoneLayout.topInset)
+                .phonePortraitTopArea(phoneLayout.isPortrait && !viewModel.postPlayState.isVisible, topInset: phoneLayout.topInset, height: phoneLayout.creaseVideoHeight)
                 #endif
 
             if let toast = viewModel.playerToast {
@@ -1085,7 +1085,11 @@ struct PlayerView: View {
         #if os(iOS)
         // In the mini bar the box is the whole slot, so the picture flies
         // from the top of the screen into the bar's video space.
-        .phonePortraitVideoBox(!isMini && phoneLayout.isPortrait, topInset: phoneMini.isMini ? 0 : phoneLayout.topInset)
+        .phonePortraitVideoBox(
+            !isMini && phoneLayout.isPortrait,
+            topInset: phoneMini.isMini ? 0 : phoneLayout.topInset,
+            height: phoneMini.isMini ? nil : phoneLayout.creaseVideoHeight
+        )
         #endif
         .frame(
             width: isMini ? 580 : nil,
