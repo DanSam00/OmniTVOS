@@ -7,8 +7,10 @@ import Foundation
 /// page offers the live channels in the viewer's IPTV playlists whose names
 /// match its teams or competition.
 ///
-/// TheSportsDB's free key ("3") is meant for development; set `TheSportsDBKey`
-/// in Info.plist to the project's own key before shipping.
+/// TheSportsDB's free test key ("123"; the older "3" is switched off and
+/// answers 403) gives only the next match of each competition and about 30
+/// requests a minute. Set `TheSportsDBKey` in Info.plist to the project's own
+/// key before shipping.
 enum SportsSchedule {
     struct League: Hashable {
         let id: String
@@ -35,12 +37,31 @@ enum SportsSchedule {
     ]
 
     private static let apiKey: String = {
-        (Bundle.main.object(forInfoDictionaryKey: "TheSportsDBKey") as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "3"
+        (Bundle.main.object(forInfoDictionaryKey: "TheSportsDBKey") as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "123"
     }()
 
     private static let lock = NSLock()
-    private static var cache: (fetchedAt: Date, metas: [NuvioMeta])?
     private static var metasByID: [String: NuvioMeta] = [:]
+    /// Each competition's last answer, kept on disk: the free key allows
+    /// about 30 requests a minute, so a launch reuses fresh ones and a
+    /// refused request (429) falls back to the last good list instead of
+    /// leaving the Calendar empty.
+    private static var stored: [String: StoredLeague]?
+    /// One fetch at a time: the Calendar and Continue Watching both ask at
+    /// launch, and two rounds would spend the minute's requests twice.
+    private static var inFlight: Task<[NuvioMeta], Never>?
+
+    private static let freshFor: TimeInterval = 30 * 60
+
+    private struct StoredLeague: Codable {
+        let fetchedAt: Date
+        let events: [Event]
+    }
+
+    private static var storeURL: URL? {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("SportsSchedule.json")
+    }
 
     static let idPrefix = "omnisport:"
 
@@ -52,37 +73,67 @@ enum SportsSchedule {
         return metasByID[id]
     }
 
-    /// Fixtures for the coming fortnight, newest fetch cached for 30 minutes.
+    /// The next fixtures of each competition, each refreshed when 30 minutes old.
     static func fixtures() async -> [(meta: NuvioMeta, league: League)] {
-        let held: [NuvioMeta]? = {
+        let task: Task<[NuvioMeta], Never> = {
             lock.lock(); defer { lock.unlock() }
-            if let cache, Date().timeIntervalSince(cache.fetchedAt) < 30 * 60 { return cache.metas }
-            return nil
+            if let inFlight { return inFlight }
+            let task = Task { await load() }
+            inFlight = task
+            return task
         }()
-        if let held { return pair(held) }
-
-        let fetched: [NuvioMeta] = await withTaskGroup(of: [NuvioMeta].self) { group in
-            var index = 0
-            var out: [NuvioMeta] = []
-            func add(_ league: League) {
-                group.addTask { await events(in: league) }
-            }
-            while index < min(4, leagues.count) { add(leagues[index]); index += 1 }
-            for await metas in group {
-                out += metas
-                if index < leagues.count { add(leagues[index]); index += 1 }
-            }
-            return out
-        }
-        remember(fetched)
-        return pair(fetched)
+        let metas = await task.value
+        lock.lock()
+        if inFlight == task { inFlight = nil }
+        lock.unlock()
+        return pair(metas)
     }
 
-    private static func remember(_ metas: [NuvioMeta]) {
-        guard !metas.isEmpty else { return }
-        lock.lock(); defer { lock.unlock() }
-        cache = (Date(), metas)
+    private static func load() async -> [NuvioMeta] {
+        var leagueEvents: [String: StoredLeague] = {
+            lock.lock(); defer { lock.unlock() }
+            if stored == nil {
+                stored = storeURL
+                    .flatMap { try? Data(contentsOf: $0) }
+                    .flatMap { try? JSONDecoder().decode([String: StoredLeague].self, from: $0) } ?? [:]
+            }
+            return stored ?? [:]
+        }()
+        let due = leagues.filter { league in
+            guard let held = leagueEvents[league.id] else { return true }
+            return Date().timeIntervalSince(held.fetchedAt) >= freshFor
+        }
+        if !due.isEmpty {
+            let answers: [(String, [Event])] = await withTaskGroup(of: (String, [Event]?).self) { group in
+                var index = 0
+                var out: [(String, [Event])] = []
+                func add(_ league: League) {
+                    group.addTask { (league.id, await events(in: league)) }
+                }
+                while index < min(2, due.count) { add(due[index]); index += 1 }
+                for await (id, events) in group {
+                    if let events { out.append((id, events)) }
+                    if index < due.count { add(due[index]); index += 1 }
+                }
+                return out
+            }
+            for (id, events) in answers {
+                leagueEvents[id] = StoredLeague(fetchedAt: Date(), events: events)
+            }
+            if !answers.isEmpty {
+                lock.lock(); stored = leagueEvents; lock.unlock()
+                if let url = storeURL, let data = try? JSONEncoder().encode(leagueEvents) {
+                    try? data.write(to: url, options: .atomic)
+                }
+            }
+        }
+        let metas = leagues.flatMap { league in
+            (leagueEvents[league.id]?.events ?? []).compactMap { meta(from: $0, league: league) }
+        }
+        lock.lock()
         for meta in metas { metasByID[meta.id] = meta }
+        lock.unlock()
+        return metas
     }
 
     private static func pair(_ metas: [NuvioMeta]) -> [(meta: NuvioMeta, league: League)] {
@@ -98,7 +149,7 @@ enum SportsSchedule {
         let events: [Event]?
     }
 
-    private struct Event: Decodable {
+    private struct Event: Codable {
         let idEvent: String
         let strHomeTeam: String?
         let strAwayTeam: String?
@@ -112,14 +163,16 @@ enum SportsSchedule {
         let strPoster: String?
     }
 
-    private static func events(in league: League) async -> [NuvioMeta] {
-        guard let url = URL(string: "https://www.thesportsdb.com/api/v1/json/\(apiKey)/eventsnextleague.php?id=\(league.id)") else { return [] }
+    /// The competition's next fixtures, or nil when the request failed (so
+    /// the last good answer is kept).
+    private static func events(in league: League) async -> [Event]? {
+        guard let url = URL(string: "https://www.thesportsdb.com/api/v1/json/\(apiKey)/eventsnextleague.php?id=\(league.id)") else { return nil }
         var request = URLRequest(url: url)
         request.timeoutInterval = 15
         guard let (data, response) = try? await URLSession.shared.data(for: request),
               (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? false,
-              let decoded = try? JSONDecoder().decode(Response.self, from: data) else { return [] }
-        return (decoded.events ?? []).compactMap { meta(from: $0, league: league) }
+              let decoded = try? JSONDecoder().decode(Response.self, from: data) else { return nil }
+        return decoded.events ?? []
     }
 
     private static let releaseFormatter: DateFormatter = {
@@ -127,6 +180,14 @@ enum SportsSchedule {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "UTC")
         formatter.dateFormat = "dd MMM yyyy · HH:mm"
+        return formatter
+    }()
+
+    /// The kick-off in the viewer's own time zone, for the description;
+    /// `releaseInfo` keeps the UTC form other code reads back.
+    private static let localKickOffFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("EEE d MMM jmm")
         return formatter
     }()
 
@@ -160,7 +221,8 @@ enum SportsSchedule {
         return NuvioMeta(
             id: idPrefix + event.idEvent,
             name: title,
-            description: "\(league.name) · \(when)",
+            // The Calendar already names the competition beside it.
+            description: localKickOffFormatter.string(from: start),
             posterUrl: art,
             backgroundUrl: art,
             logoUrl: nil,
