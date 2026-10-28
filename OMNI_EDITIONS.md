@@ -6,7 +6,7 @@ One codebase, two apps.
 | --- | --- | --- |
 | Compilation condition | none | `OMNI_X` |
 | macOS scheme / target | `Omni` (`com.saminaden.omnistore.mac`, sandboxed) | `Omni X` (`com.saminaden.omni.mac`) |
-| iOS / tvOS | not split yet — those targets still build as Omni X | `Omni iOS`, `NuvioTV` |
+| iOS / tvOS | not split yet (on hold) | `Omni iOS`, `NuvioTV` — shown as "Omni X" on the home screen; bundle ids unchanged |
 | What plays | the viewer's own IPTV (Xtream / M3U), Jellyfin, SMB, local downloads | everything, including stream add-ons and debrid |
 | Add-ons | fixed in code (`CuratedLibrary`), metadata/catalogs only, never asked for streams | user-installed, as before |
 | Collections | defaults from `CuratedLibrary` installed on a new profile; the viewer can enable/disable, edit, create and add community ones | user-managed, as before |
