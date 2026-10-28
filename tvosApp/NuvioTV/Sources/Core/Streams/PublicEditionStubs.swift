@@ -8,6 +8,13 @@ struct DebridResolver {
     var isEnabled: Bool { false }
 
     func resolvedURL(for stream: NuvioStream, season: Int?, episode: Int?) async -> DebridResult? { nil }
+    /// Shared playback code names the provider a stream came through.
+    var selectedKind: PublicDebridKind { .none }
+}
+
+/// Stands in for `DebridProviderKind`, which Omni does not contain.
+enum PublicDebridKind: String {
+    case none = ""
 }
 
 enum DebridResult: Equatable {
