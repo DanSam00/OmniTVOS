@@ -28,7 +28,9 @@ struct PhoneLoginView: View {
                 VStack(spacing: 6) {
                     Text(isSignUp ? "Create account" : "Sign in")
                         .font(.title.weight(.bold))
-                    Text("Sync add-ons, profiles and progress across your devices.")
+                    Text(AppEdition.isPublic
+                         ? "Sync your profiles, library and watch progress across your devices."
+                         : "Sync add-ons, profiles and progress across your devices.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)

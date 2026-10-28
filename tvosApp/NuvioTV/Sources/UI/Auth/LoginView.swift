@@ -83,9 +83,15 @@ struct LoginView: View {
                 .font(.system(size: 40, weight: .bold))
                 .foregroundColor(.white)
 
+            // Omni's add-ons are fixed in the app and never synced, so its
+            // copy leaves them out.
             Text(auth.isAuthenticated
-                 ? "Your account is connected on this TV. Your library, addons and progress will sync."
-                 : "Scan a QR code with your phone or sign in with your email to sync your library, addons and watch progress.")
+                 ? (AppEdition.isPublic
+                    ? "Your account is connected on this TV. Your profiles, library and progress will sync."
+                    : "Your account is connected on this TV. Your library, addons and progress will sync.")
+                 : (AppEdition.isPublic
+                    ? "Scan a QR code with your phone or sign in with your email to sync your profiles, library and watch progress."
+                    : "Scan a QR code with your phone or sign in with your email to sync your library, addons and watch progress."))
                 .font(.system(size: 24, weight: .regular))
                 .foregroundColor(.white.opacity(0.6))
                 .frame(maxWidth: 560, alignment: .leading)

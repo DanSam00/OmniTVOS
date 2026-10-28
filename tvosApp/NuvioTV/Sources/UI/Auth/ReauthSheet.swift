@@ -40,10 +40,12 @@ struct ReauthSheet: View {
                         .foregroundColor(.white)
                 }
 
-                Text(L10n.string(
-                    "reauth_subtitle",
-                    fallback: "Your session expired. Scan the QR code or sign in to resume syncing your library, addons, and watch progress."
-                ))
+                Text(AppEdition.isPublic
+                     ? "Your session expired. Scan the QR code or sign in to resume syncing your profiles, library and watch progress."
+                     : L10n.string(
+                        "reauth_subtitle",
+                        fallback: "Your session expired. Scan the QR code or sign in to resume syncing your library, addons, and watch progress."
+                     ))
                 .font(.system(size: 20, weight: .medium))
                 .foregroundColor(.white.opacity(0.68))
                 .multilineTextAlignment(.center)
