@@ -64,7 +64,7 @@ enum JellyfinCredentialStore {
     private static func keychainQuery(for serverID: String, profileScope: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
+            kSecAttrService as String: KeychainItem.scoped(service),
             kSecAttrAccount as String: "\(serverID).\(profileScope)"
         ]
     }

@@ -575,6 +575,75 @@ private extension CredentialVault {
 
 /// One device-only keychain string.
 enum KeychainItem {
+    /// The service name an item is stored under. On the Mac every app shares
+    /// the login keychain, and an item's access list names only the app that
+    /// created it: Omni X and Omni both used `com.nuvio.tv.simkl.auth`, and
+    /// as each saves by deleting and re-adding, every save took the item from
+    /// the other, which then asked for the keychain password again however
+    /// often "Always Allow" was chosen. Each Mac app now keeps its own items,
+    /// named with its bundle id. iOS and tvOS keychains are per app already.
+    static func scoped(_ service: String) -> String {
+        #if os(macOS)
+        _ = migrateMacItemsIfNeeded
+        return "\(service).\(Bundle.main.bundleIdentifier ?? "omni")"
+        #else
+        return service
+        #endif
+    }
+
+    #if os(macOS)
+    /// Every service the app keeps items under.
+    private static let macServices = [
+        "com.nuvio.app.tv.auth", "com.nuvio.tv.simkl.auth", "com.nuvio.tv.smb",
+        "com.nuvio.tv.jellyfin", "com.nuvio.tv.profile-pin", "com.nuvio.tv.ai-subtitles",
+        "com.saminaden.omni.vault",
+    ]
+
+    /// Omni X copies the items it kept under the shared names into its own,
+    /// once, before anything reads them. It created them, so this asks for
+    /// nothing. Omni (new, and the reason for the change) does not, as
+    /// reading Omni X's items would ask for the password once per item: its
+    /// Simkl sign-in comes back from the profile's settings copy.
+    private static let migrateMacItemsIfNeeded: Void = {
+        let doneKey = "omni.keychain.scopedServices.v1"
+        guard AppEdition.isOmniX, !UserDefaults.standard.bool(forKey: doneKey) else { return }
+        defer { UserDefaults.standard.set(true, forKey: doneKey) }
+        let suffix = "." + (Bundle.main.bundleIdentifier ?? "omni")
+        for service in macServices {
+            let listQuery: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecMatchLimit as String: kSecMatchLimitAll,
+                kSecReturnAttributes as String: kCFBooleanTrue as Any,
+            ]
+            var found: CFTypeRef?
+            guard SecItemCopyMatching(listQuery as CFDictionary, &found) == errSecSuccess,
+                  let items = found as? [[String: Any]] else { continue }
+            for attributes in items {
+                guard let account = attributes[kSecAttrAccount as String] as? String else { continue }
+                var read: [String: Any] = [
+                    kSecClass as String: kSecClassGenericPassword,
+                    kSecAttrService as String: service,
+                    kSecAttrAccount as String: account,
+                    kSecReturnData as String: kCFBooleanTrue as Any,
+                    kSecMatchLimit as String: kSecMatchLimitOne,
+                ]
+                var data: CFTypeRef?
+                guard SecItemCopyMatching(read as CFDictionary, &data) == errSecSuccess,
+                      let value = data as? Data else { continue }
+                read = [
+                    kSecClass as String: kSecClassGenericPassword,
+                    kSecAttrService as String: service + suffix,
+                    kSecAttrAccount as String: account,
+                    kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+                    kSecValueData as String: value,
+                ]
+                SecItemAdd(read as CFDictionary, nil)   // errSecDuplicateItem leaves a newer copy alone
+            }
+        }
+    }()
+    #endif
+
     static func read(service: String, account: String) -> String? {
         var query = base(service: service, account: account)
         query[kSecReturnData as String] = kCFBooleanTrue
@@ -600,7 +669,7 @@ enum KeychainItem {
     private static func base(service: String, account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
+            kSecAttrService as String: scoped(service),
             kSecAttrAccount as String: account,
         ]
     }

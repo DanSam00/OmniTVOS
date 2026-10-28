@@ -417,7 +417,7 @@ private enum ProfilePinStore {
         guard !UserDefaults.standard.bool(forKey: initializedKey) else { return }
         SecItemDelete([
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service
+            kSecAttrService as String: KeychainItem.scoped(service)
         ] as CFDictionary)
         UserDefaults.standard.set(true, forKey: initializedKey)
     }
@@ -465,7 +465,7 @@ private enum ProfilePinStore {
     private static func keychainQuery(for profileId: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
+            kSecAttrService as String: KeychainItem.scoped(service),
             kSecAttrAccount as String: profileId
         ]
     }

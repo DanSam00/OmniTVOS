@@ -909,7 +909,7 @@ enum AISubtitleKeyStore {
     ) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
+            kSecAttrService as String: KeychainItem.scoped(service),
             kSecAttrAccount as String: "\(provider.rawValue.lowercased()).\(profileScope)"
         ]
     }

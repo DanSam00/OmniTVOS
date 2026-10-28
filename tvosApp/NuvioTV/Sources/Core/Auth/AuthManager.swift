@@ -506,7 +506,7 @@ struct SessionStore {
     private var keychainQuery: [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
+            kSecAttrService as String: KeychainItem.scoped(keychainService),
             kSecAttrAccount as String: keychainAccount
         ]
     }

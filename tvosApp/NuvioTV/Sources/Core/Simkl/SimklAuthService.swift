@@ -143,7 +143,7 @@ final class SimklKeychainTokenStorage: SimklTokenStorage {
     private func keychainQuery(for profileScope: String, kind: String = "accessToken") -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
+            kSecAttrService as String: KeychainItem.scoped(service),
             kSecAttrAccount as String: "\(kind).\(profileScope)"
         ]
     }
