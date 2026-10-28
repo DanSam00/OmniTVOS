@@ -9190,6 +9190,28 @@ enum TVHomeCatalogOrder {
     /// The first call records everything already known — Home's rows and
     /// everything deleted or disabled — so nothing currently on Home moves.
     /// - Returns: the keys held back by this call.
+    /// Until this time (seconds since 1970, in the profile's settings) every
+    /// catalog counts as already seen: a new profile's add-ons often arrive
+    /// after its Home first loads, and would otherwise all be held back.
+    static let acceptNewCatalogsUntilKey = "omni.home.acceptNewCatalogsUntil"
+
+    /// A profile's first day: nothing it is offered is held back.
+    static func acceptNewCatalogs(in store: UserDefaults, for seconds: TimeInterval = 86_400) {
+        store.set(Date().addingTimeInterval(seconds).timeIntervalSince1970, forKey: acceptNewCatalogsUntilKey)
+    }
+
+    /// Starts the current profile's Home rows afresh: nothing held back or
+    /// removed, and its first day of catalogs accepted as they arrive.
+    static func resetHeldBackCatalogs() {
+        holdBackLock.lock()
+        let store = ProfileSettings.current
+        [SettingsKey.homeCatalogRemoved, SettingsKey.homeCatalogKnown, SettingsKey.homeCatalogRemovedMigrated]
+            .forEach(store.removeObject(forKey:))
+        acceptNewCatalogs(in: store)
+        holdBackLock.unlock()
+        NotificationCenter.default.post(name: changedNotification, object: nil)
+    }
+
     @discardableResult
     static func holdBackNewCatalogs(_ keys: [String]) -> Set<String> {
         // Omni's catalogs are fixed and all on Home; nothing waits to be added.
@@ -9217,6 +9239,10 @@ enum TVHomeCatalogOrder {
         }
         let fresh = Set(keys).subtracting(known).subtracting(shownOnHomeKeys())
         guard !fresh.isEmpty else { return [] }
+        if Date().timeIntervalSince1970 < store.double(forKey: acceptNewCatalogsUntilKey) {
+            persist(known.union(fresh), forKey: SettingsKey.homeCatalogKnown)
+            return []
+        }
         // Removed first: a key recorded as known but not removed is a catalog
         // that goes straight onto Home next launch, which is the one outcome
         // this exists to prevent.

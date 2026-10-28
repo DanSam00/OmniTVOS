@@ -52,9 +52,10 @@ enum CuratedLibrary {
         ("kaptain-s-mega-collection-v0-4", "Kaptain's Mega Collection"),
     ]
 
-    /// Kids profiles get these, filtered through the kids rules in
-    /// `CommunityCollections.forKids`.
-    static var kidsCollections: [(id: String, title: String)] { CommunityCollections.kidsStarter }
+    /// Kids profiles fetch none: they get `KidsStarterTemplate`, the
+    /// approved kids set built into the app, so a new kids profile has its
+    /// collections even when nuvio.tv does not answer.
+    static let kidsCollections: [(id: String, title: String)] = []
 
     /// Bump when the lists above change so profiles re-install them.
     static let version = 1
@@ -86,7 +87,7 @@ extension CuratedLibrary {
             StreamingServicesCollectionTemplate.payload(logoURLs: StreamingServicesCollectionTemplate.fallbackLogoURLs))
         add("omni.curated.studios-franchises", StudiosFranchisesCollectionTemplate.payload())
         add("omni.curated.genres", DiscoverGenresCollectionTemplate.payload())
-        if kids { rows = CommunityCollections.forKids(rows) }
+        if kids { rows = CommunityCollections.forKids(rows) + KidsStarterTemplate.collections }
 
         var communityComplete = true
         for entry in (kids ? kidsCollections : regularCollections) {

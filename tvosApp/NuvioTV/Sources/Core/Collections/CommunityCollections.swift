@@ -393,50 +393,32 @@ enum CommunityCollections {
     /// Set on a kids profile when it is created; the first time it is in use
     /// it gets the kids starter collections, then this is cleared.
     static let kidsSeedPendingKey = "omni.collections.kidsSeedPending"
+    /// Set once a kids profile has had `KidsStarterTemplate`, so one made
+    /// before it was built in, whose starter download came back empty, gets
+    /// it once too.
+    static let kidsTemplateAppliedKey = "omni.collections.kidsTemplate.v1"
 
-    /// A new kids profile's Home, in this order: films, cartoons, kids'
-    /// streaming and decades; kids and family discovery; studios and
-    /// universes; and the children's part of the Mega library (its
-    /// channels, genres, film collections and anime).
-    static let kidsStarter: [(id: String, title: String)] = [
-        ("simple-kids-profile", "Simple Kids Profile"),
-        ("kaptain-s-kids-and-family-collection-easy-install-no-addons", "Kaptain's Kids and Family Collection"),
-        ("kids", "Kids"),
-        ("kaptain-s-mega-collection-v0-4", "Kaptain's Mega Collection"),
-    ]
-
-    /// Adds the kids starter collections to the current profile, once, if it
-    /// is a new kids profile; the two most popular child-friendly entries if
-    /// none of those can be had. Returns how many it added.
+    /// Gives the current profile the kids starter collections, once: a new
+    /// kids profile, or an existing one with no collections that never had
+    /// them. Built in (`KidsStarterTemplate`), so nothing has to be fetched.
+    /// Also puts back the add-on rows a kids profile's Home held back when it
+    /// first loaded before its add-ons. Returns how many collections it added.
     @MainActor
     @discardableResult
     static func seedKidsProfileIfNeeded() async -> Int {
         let store = ProfileSettings.current
-        guard store.bool(forKey: kidsSeedPendingKey) else { return 0 }
-        var added: [[String: Any]] = []
-        var picks = kidsStarter.map {
-            Item(id: $0.id, title: $0.title, description: "", tags: [], imageURL: nil, likes: 0, installs: 0, isPack: false)
-        }
-        var usedStarter = true
-        while true {
-            for item in picks {
-                if let rows = try? await collections(for: item) {
-                    added += forKids(rows, madeForKids: entryIsMadeForKids(title: item.title, tags: item.tags))
-                    await recordInstall(item)
-                }
-            }
-            guard added.isEmpty, usedStarter, let page = try? await list(sort: .popular, limit: 48) else { break }
-            picks = Array(page.items.filter(\.isKidFriendly).prefix(2))
-            usedStarter = false
-        }
-        // Cleared even when nothing suitable was found, so it does not retry forever.
+        guard store.bool(forKey: SettingsKey.kidsProfile), !store.bool(forKey: kidsTemplateAppliedKey) else { return 0 }
+        let isNew = store.bool(forKey: kidsSeedPendingKey)
+        // A new profile's Home is exactly the template.
+        var current = isNew ? [] : CollectionsStore.rawCollections()
+        store.set(true, forKey: kidsTemplateAppliedKey)
         store.set(false, forKey: kidsSeedPendingKey)
-        guard !added.isEmpty else { return 0 }
-        var current = CollectionsStore.rawCollections()
-        // Entries can share a row id; the first one's row is kept, as two
-        // rows with one id break Home.
+        TVHomeCatalogOrder.resetHeldBackCatalogs()
+        guard isNew || current.isEmpty else { return 0 }
+        // Rows with one id break Home; one already here stays.
         var seen = Set(current.compactMap { $0["id"] as? String })
-        let fresh = added.filter { ($0["id"] as? String).map { seen.insert($0).inserted } ?? true }
+        let fresh = KidsStarterTemplate.collections.filter { ($0["id"] as? String).map { seen.insert($0).inserted } ?? true }
+        guard !fresh.isEmpty else { return 0 }
         current += fresh
         CollectionsStore.saveLocalEdit(current)
         return fresh.count

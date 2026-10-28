@@ -3605,6 +3605,17 @@ enum CollectionsStore {
         return "\(lastPulledIdsKey).\(id)"
     }
 
+    /// A profile slot's saved collections, when that profile is deleted or a
+    /// new one takes the slot: otherwise the next profile there inherits the
+    /// last one's rows (and pushes them to the account as its own).
+    static func removeLocalData(forProfile profileId: String) {
+        guard !profileId.isEmpty else { return }
+        for key in [storageKey(for: profileId), lastPulledIdsStorageKey(for: profileId)] {
+            LargePayloadStore.remove(key: key, directory: storageDirectoryName)
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
+
     private static func readData(forKey key: String) -> Data? {
         if let data = LargePayloadStore.read(key: key, directory: storageDirectoryName) {
             return data

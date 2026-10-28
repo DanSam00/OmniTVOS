@@ -781,6 +781,9 @@ public class ProfileViewModel: ObservableObject {
         Task {
             do {
                 let newProfile = try manager.createProfile(input: input)
+                // A profile deleted on another device can leave its rows in
+                // this slot; a new profile starts with none.
+                CollectionsStore.removeLocalData(forProfile: newProfile.id)
                 if setup.usesPrimaryAddons || setup.usesPrimaryPlugins {
                     try manager.updateProfileSharing(
                         id: newProfile.id,
@@ -812,6 +815,13 @@ public class ProfileViewModel: ObservableObject {
                 } else if isKids {
                     newStore.set(true, forKey: CommunityCollections.kidsSeedPendingKey)
                 }
+                if !setup.communityPicks.isEmpty {
+                    // Picked by hand instead: the built-in kids set is not added.
+                    newStore.set(true, forKey: CommunityCollections.kidsTemplateAppliedKey)
+                }
+                // Its add-ons arrive after its Home first loads; none of
+                // their rows should be taken for new and held back.
+                TVHomeCatalogOrder.acceptNewCatalogs(in: newStore)
                 if let customAvatarPhoto {
                     OmniCustomAvatar.set(customAvatarPhoto, forProfile: newProfile.id)
                 }
@@ -845,6 +855,7 @@ public class ProfileViewModel: ObservableObject {
                 try? manager.switchProfile(id: primary.id)
             }
             ProfileSettings.removeProfileData(id)
+            CollectionsStore.removeLocalData(forProfile: id)
             loadProfiles()
             if activeProfile?.id == id { loadActiveProfile() }
             return true
