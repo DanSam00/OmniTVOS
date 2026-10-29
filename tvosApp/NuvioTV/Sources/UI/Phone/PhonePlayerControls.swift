@@ -17,6 +17,9 @@ struct PhonePlayerControls: View {
     let onClose: () -> Void
 
     @State private var isVisible = true
+    /// The portrait layout's frame on screen, to line the reflection up
+    /// under the picture (`PhonePlayerLayout.pictureFrame`).
+    @State private var deckFrame: CGRect = .zero
     @State private var scrubValue: Double?
     @State private var hideTask: Task<Void, Never>?
     @State private var panel: PhonePlayerPanel?
@@ -162,6 +165,9 @@ struct PhonePlayerControls: View {
                         bottomInset: proxy.safeAreaInsets.bottom
                     )
                     .ignoresSafeArea(.container, edges: .horizontal)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                        if deckFrame != frame { deckFrame = frame }
+                    }
                 } else {
                     landscapeLayout
                 }
@@ -266,9 +272,19 @@ struct PhonePlayerControls: View {
         // Duo's outside screen keeps its status column down one side), so its
         // height comes from that width, not this narrower one: measured here
         // the deck began short of the picture's bottom and ran up over it.
-        let pictureWidth = size.width + sideInsets.leading + sideInsets.trailing
-        let pictureHeight = pictureWidth * 9 / 16
+        let computedWidth = size.width + sideInsets.leading + sideInsets.trailing
+        // The picture as measured on screen, when it has been; the screen's
+        // full width otherwise. Opened, the Duo keeps the picture inside its
+        // side safe areas, and a reflection sized to the screen came out
+        // larger than the picture and off to one side.
+        let measured = layout.pictureFrame
+        let pictureWidth = measured.width > 1 ? measured.width : computedWidth
+        let pictureHeight = computedWidth * 9 / 16
+        let reflectionHeight = measured.height > 1 ? measured.height : pictureHeight
         let videoHeight = layout.creaseVideoHeight ?? pictureHeight
+        let reflectionOffset = measured.width > 1 && deckFrame.width > 1
+            ? measured.midX - deckFrame.midX
+            : (sideInsets.trailing - sideInsets.leading) / 2
         return ZStack(alignment: .top) {
             // The picture mirrored at its own size directly beneath it.
             PhonePlayerReflection(
@@ -280,9 +296,9 @@ struct PhonePlayerControls: View {
             )
             // The picture's own 16:9 and full width, even when the box above
             // is taller, lined up with the picture across the screen.
-            .frame(width: pictureWidth, height: min(videoHeight, pictureHeight))
+            .frame(width: pictureWidth, height: min(videoHeight, reflectionHeight))
             .clipped()
-            .offset(x: (sideInsets.trailing - sideInsets.leading) / 2)
+            .offset(x: reflectionOffset)
             .padding(.top, videoHeight)
             .frame(width: size.width, height: size.height, alignment: .top)
             .allowsHitTesting(false)
@@ -2066,6 +2082,11 @@ final class PhonePlayerLayout: ObservableObject {
     /// Set while the phone is half folded: the video box's height, from the
     /// status bar down to the crease, in place of 16:9.
     @Published var creaseVideoHeight: CGFloat?
+    /// The picture's frame on screen, measured from the video surface.
+    @Published var pictureFrame: CGRect = .zero
+    /// Width over height of what is playing, on the Duo (nil elsewhere, or
+    /// before it is known): wider than 16:9, the picture is sized to it.
+    @Published var contentAspect: CGFloat?
 }
 
 /// The fold of a foldable iPhone (iPhone Duo): whether it is open on its
@@ -2111,8 +2132,8 @@ extension View {
     /// Upright, the video in a 16:9 box under the status bar; otherwise the
     /// whole screen. One layout either way: swapping the view for another on
     /// rotation rebuilt the video surface, which left the picture black.
-    func phonePortraitVideoBox(_ portrait: Bool, topInset: CGFloat, height: CGFloat? = nil) -> some View {
-        PhonePortraitBoxLayout(portrait: portrait, topInset: topInset, boxHeight: height) { self }
+    func phonePortraitVideoBox(_ portrait: Bool, topInset: CGFloat, height: CGFloat? = nil, contentAspect: CGFloat? = nil) -> some View {
+        PhonePortraitBoxLayout(portrait: portrait, topInset: topInset, boxHeight: height, contentAspect: contentAspect) { self }
     }
 
     /// The video box grown up to the top of the screen, for what stands in
@@ -2136,6 +2157,10 @@ private struct PhonePortraitBoxLayout: Layout {
     var extendsToTop = false
     /// In place of 16:9 (half folded: down to the crease).
     var boxHeight: CGFloat?
+    /// The picture's width over height, when known. Wider than 16:9 it is
+    /// laid out at its own height on the bottom of the box, so its black
+    /// bar is above it rather than between it and its reflection.
+    var contentAspect: CGFloat? = nil
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         proposal.replacingUnspecifiedDimensions()
@@ -2157,7 +2182,8 @@ private struct PhonePortraitBoxLayout: Layout {
         // the picture sits at its bottom, on the crease and against its
         // reflection, with the spare height black above it rather than a
         // letterbox strip below.
-        let pictureHeight = min(boxHeight, bounds.width * 9 / 16)
+        let aspect = max(contentAspect ?? 16 / 9, 16 / 9)
+        let pictureHeight = min(boxHeight, bounds.width / aspect)
         let size = CGSize(width: bounds.width, height: pictureHeight)
         child.place(
             at: CGPoint(x: bounds.minX, y: bounds.minY + topInset + boxHeight - pictureHeight),

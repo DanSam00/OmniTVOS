@@ -974,6 +974,15 @@ final class MPVPlayerViewController: UIViewController, PlaybackEngineControlling
         currentSpeed = speed
     }
 
+    /// The picture's shape as shown (pixel aspect applied); zero until the
+    /// first frame reports it.
+    var videoDisplaySize: CGSize {
+        let w = getInt("video-params/dw")
+        let h = getInt("video-params/dh")
+        guard w > 1, h > 1 else { return videoFrameSize }
+        return CGSize(width: w, height: h)
+    }
+
     /// Decoded video dimensions (0 until the first frame reports params).
     var videoFrameSize: CGSize {
         let w = getInt("video-params/w")

@@ -431,9 +431,14 @@ final class CinemetaCatalogRepository: CatalogRepository {
             return result
         }
 
+        // The Example Test streams lead Home while that playlist is set up
+        // (the signed-out guest starts with it), ahead of everything else.
+        let exampleTest = await ExampleTestShelf.catalog()
+        try Task.checkCancellation()
+
         // Publish the base rows now. Add-on catalogs can be slow or numerous;
         // they must not hold already-loaded rows off Home.
-        var catalogs = builtInCatalogs()
+        var catalogs = (exampleTest.map { [$0] } ?? []) + builtInCatalogs()
         if !catalogs.isEmpty {
             onUpdate?(catalogs)
         }
@@ -466,7 +471,7 @@ final class CinemetaCatalogRepository: CatalogRepository {
             try Task.checkCancellation()
         }
 
-        let retriedBuiltIns = builtInCatalogs()
+        let retriedBuiltIns = (exampleTest.map { [$0] } ?? []) + builtInCatalogs()
         if retriedBuiltIns.count != catalogs.count {
             catalogs = retriedBuiltIns
             onUpdate?(catalogs)
@@ -729,7 +734,7 @@ final class CinemetaCatalogRepository: CatalogRepository {
         }
         let sources = group.variants.count == 1 ? "1 source" : "\(group.variants.count) sources"
         lines.append("Live · \(group.category) · \(sources)")
-        return group.meta(description: lines.joined(separator: "\n"))
+        return ExampleTestShelf.decorated(group.meta(description: lines.joined(separator: "\n")))
     }
 
     private func loadMetadata(id: String, type: String, cachedIsSeriesHint: Bool? = nil) async throws -> NuvioMeta {
@@ -1448,6 +1453,10 @@ final class CinemetaCatalogRepository: CatalogRepository {
         skip: Int,
         genre: String?
     ) async throws -> CatalogPage {
+        if addonId == ExampleTestShelf.addonId {
+            let items = await ExampleTestShelf.metas()
+            return CatalogPage(items: skip == 0 ? items : [], hasMore: false, page: 1, nextSkip: items.count)
+        }
         let sourceBaseURL: URL
         if let addonId, !addonId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             guard let resolved = await baseURL(

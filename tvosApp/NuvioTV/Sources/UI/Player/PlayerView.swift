@@ -1070,6 +1070,24 @@ struct PlayerView: View {
     }
     }
 
+    #if os(iOS)
+    /// Width over height of what is playing, from whichever engine has it;
+    /// nil before the first frame says.
+    private func currentVideoAspect() -> CGFloat? {
+        let size: CGSize
+        if viewModel.activeEngineKind == .mpv {
+            size = viewModel.playerController.videoDisplaySize
+        } else if let software = viewModel.aetherController.engine.softwareDisplaySize {
+            size = software
+        } else {
+            size = viewModel.aetherController.engine.currentAVPlayerItem?.presentationSize ?? .zero
+        }
+        guard size.width > 1, size.height > 1 else { return nil }
+        // Rounded, so a frame or two of jitter does not move the picture.
+        return (size.width / size.height * 100).rounded() / 100
+    }
+    #endif
+
     /// The video, full screen or as the post-play mini window.
     ///
     /// Extracted from `body`, and the mini-window flag hoisted into a local:
@@ -1083,13 +1101,28 @@ struct PlayerView: View {
         (!viewModel.postPlayState.isVisible || viewModel.postPlayState.canReturnToPlayer) {
         videoSurfaceStack
         #if os(iOS)
+        // Where the picture really is, for the reflection under it: the
+        // video box keeps to the side safe areas on some screens (the Duo
+        // opened) and not others, so it is measured, not worked out.
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+            if phoneLayout.pictureFrame != frame { phoneLayout.pictureFrame = frame }
+        }
         // In the mini bar the box is the whole slot, so the picture flies
         // from the top of the screen into the bar's video space.
         .phonePortraitVideoBox(
             !isMini && phoneLayout.isPortrait,
             topInset: phoneMini.isMini ? 0 : phoneLayout.topInset,
-            height: phoneMini.isMini ? nil : phoneLayout.creaseVideoHeight
+            height: phoneMini.isMini ? nil : phoneLayout.creaseVideoHeight,
+            contentAspect: phoneMini.isMini ? nil : phoneLayout.contentAspect
         )
+        // The picture's own shape, so on the Duo a film wider than 16:9 can
+        // sit on the bottom of its box, against its reflection, rather than
+        // centred with a black bar between them. Read twice a second: the
+        // engines publish it in different ways, and a stream can change it.
+        .onReceive(Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()) { _ in
+            let aspect = PhoneDevice.usesSystemTabBar ? currentVideoAspect() : nil
+            if phoneLayout.contentAspect != aspect { phoneLayout.contentAspect = aspect }
+        }
         #endif
         .frame(
             width: isMini ? 580 : nil,

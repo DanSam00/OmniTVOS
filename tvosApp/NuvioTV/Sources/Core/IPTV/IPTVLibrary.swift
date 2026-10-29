@@ -503,6 +503,10 @@ final class IPTVLibrary: @unchecked Sendable {
     private static func request(_ url: URL) -> URLRequest {
         var request = URLRequest(url: url)
         request.setValue("Omni/\(SimklConfig.appVersion)", forHTTPHeaderField: "User-Agent")
+        // A refresh means the provider's current list: a host's cache
+        // headers (GitHub's five minutes) kept an edited playlist's old copy.
+        // The app keeps its own copy on disk for when the provider is down.
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         return request
     }
 
@@ -1183,5 +1187,109 @@ enum LogRedaction {
             )
         }
         return text
+    }
+}
+
+// MARK: - Example Test shelf
+
+/// The Example Test playlist's channels (the signed-out guest's test streams)
+/// as a Home row and, once, in the guest's Library, so they are a tap away
+/// rather than only in Live TV. Shown whenever that playlist is set up and on.
+enum ExampleTestShelf {
+    static let addonId = "omni.example-test"
+    static let catalogId = "example-test"
+
+    static func source() -> IPTVSource? {
+        IPTVSourceStore.sources().first { $0.url == IPTVSourceStore.guestPlaylist.url && $0.enabled }
+    }
+
+    /// Its channels, in playlist order, loading the playlist if needed.
+    static func metas() async -> [NuvioMeta] {
+        guard let source = source() else { return [] }
+        _ = await IPTVLibrary.shared.allChannels()
+        let metas = IPTVLibrary.shared.visibleGroups()
+            .filter { group in group.variants.contains { $0.sourceID == source.id } }
+            .map { decorated($0.meta()) }
+        addToGuestLibraryIfNeeded(metas)
+        return metas
+    }
+
+    /// Posters and backgrounds made for the test channels (from a frame of
+    /// each), in `public/example-test/` beside the playlist; the playlist's
+    /// own logos stay for the guide.
+    private static let artBase = "https://raw.githubusercontent.com/DanSam00/OmniTVOS/omni-macos-port/public/example-test/"
+    /// Bumped when the art is redrawn: the file names stay, and image caches
+    /// key on the address, so without it the old picture stayed up.
+    private static let artVersion = 2
+    private static let artSlugs = [
+        "Example Test Live": "live",
+        "Big Buck Bunny": "big-buck-bunny",
+        "Tears of Steel": "tears-of-steel",
+        "Apple Advanced Stream": "apple-advanced-stream",
+    ]
+
+    /// A test channel's page and card with its own art; any other unchanged.
+    static func decorated(_ meta: NuvioMeta) -> NuvioMeta {
+        guard let slug = artSlugs[meta.name],
+              let source = source(),
+              IPTVLibrary.shared.group(forContentID: meta.id)?.variants.contains(where: { $0.sourceID == source.id }) ?? false
+        else { return meta }
+        return meta.withArtwork(
+            poster: artBase + slug + "-poster.jpg?v=\(artVersion)",
+            background: artBase + slug + "-backdrop.jpg?v=\(artVersion)",
+            dropsLogo: true
+        )
+    }
+
+    static func catalog() async -> NuvioCatalog? {
+        guard let source = source() else { return nil }
+        let items = await metas()
+        guard !items.isEmpty else { return nil }
+        return NuvioCatalog(
+            id: "example_test",
+            name: source.name,
+            description: source.name,
+            itemIds: items.map(\.id),
+            items: items,
+            contentType: "tv",
+            catalogId: catalogId,
+            addonId: addonId,
+            addonName: "IPTV"
+        )
+    }
+
+    /// The guest's Library holds the channels and follows the playlist:
+    /// channels it drops go, new ones arrive, changed art is picked up. One
+    /// the guest removed stays removed. Sign-out wipes the record with the
+    /// rest of the guest's settings, so each signed-out session starts full.
+    private static func addToGuestLibraryIfNeeded(_ metas: [NuvioMeta]) {
+        guard ProfileSettings.activeProfileID == "guest", !metas.isEmpty else { return }
+        let key = "omni.iptv.exampleTestLibrary.ids"
+        let store = ProfileSettings.current
+        let seeded = Set(store.stringArray(forKey: key) ?? [])
+        let current = Set(metas.map(\.id))
+        let saved = Dictionary(
+            LibraryStore.items().filter { $0.meta.type == "tv" }.map { ($0.meta.id, $0.meta) },
+            uniquingKeysWith: { a, _ in a }
+        )
+        // Channels the playlist no longer has, and its first version's by name.
+        for id in seeded.subtracting(current) where saved[id] != nil {
+            LibraryStore.remove(metaId: id, type: "tv")
+        }
+        for (id, meta) in saved where ["Dark Truths", "Angel One"].contains(meta.name) && !current.contains(id) {
+            LibraryStore.remove(metaId: id, type: "tv")
+        }
+        // `add` puts each at the front, so add the last first; one already
+        // saved is only rewritten when its name or art changed.
+        for meta in metas.reversed() {
+            if let old = saved[meta.id] {
+                if old.name != meta.name || old.posterUrl != meta.posterUrl || old.backgroundUrl != meta.backgroundUrl {
+                    LibraryStore.add(meta)
+                }
+            } else if !seeded.contains(meta.id) {
+                LibraryStore.add(meta)
+            }
+        }
+        store.set(metas.map(\.id), forKey: key)
     }
 }
