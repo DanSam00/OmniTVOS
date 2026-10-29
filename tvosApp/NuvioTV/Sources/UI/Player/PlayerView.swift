@@ -485,6 +485,10 @@ struct PlayerView: View {
                 autoPlayNextEnabled: autoPlayNextEnabled,
                 onClose: onBack
             )
+            // The post-play card has its own controls; these drew on top of
+            // it (the upright deck over its middle) and took its taps.
+            .opacity(viewModel.postPlayState.isVisible ? 0 : 1)
+            .allowsHitTesting(!viewModel.postPlayState.isVisible)
             .zIndex(5)
             #else
             PlayerControls(
@@ -1125,8 +1129,8 @@ struct PlayerView: View {
         }
         #endif
         .frame(
-            width: isMini ? 580 : nil,
-            height: isMini ? 326 : nil
+            width: isMini ? Self.postPlayMiniSize.width : nil,
+            height: isMini ? Self.postPlayMiniSize.height : nil
         )
         // Only clip for the rounded mini window. A zero-radius
         // `clipShape` still antialiases its own edge, and that blend
@@ -1157,12 +1161,22 @@ struct PlayerView: View {
             maxHeight: .infinity,
             alignment: isMini ? .topTrailing : .center
         )
-        .padding(.top, isMini ? 50 : 0)
-        .padding(.trailing, isMini ? 60 : 0)
+        .padding(.top, isMini ? Self.postPlayMiniInset.height : 0)
+        .padding(.trailing, isMini ? Self.postPlayMiniInset.width : 0)
         .zIndex(isMini ? 5 : 0)
         .ignoresSafeArea(edges: isMini ? [] : .all)
     }
     }
+
+    /// The post-play mini window and its gap from the top-right corner. The
+    /// TV size filled most of a phone screen, over the card's own text.
+    #if os(iOS)
+    private static let postPlayMiniSize = CGSize(width: 208, height: 117)
+    private static let postPlayMiniInset = CGSize(width: 16, height: 12)
+    #else
+    private static let postPlayMiniSize = CGSize(width: 580, height: 326)
+    private static let postPlayMiniInset = CGSize(width: 60, height: 50)
+    #endif
 
     /// The video surface, its subtitle overlay and, during post-play, the mini
     /// player's click target.

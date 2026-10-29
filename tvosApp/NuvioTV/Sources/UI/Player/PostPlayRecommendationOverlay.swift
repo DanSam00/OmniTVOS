@@ -139,6 +139,20 @@ struct PostPlayRecommendationOverlay: View {
                     .frame(width: size.width / scale, alignment: .bottomLeading)
                     .scaleEffect(scale, anchor: .bottomLeading)
                     .frame(width: size.width, height: size.height, alignment: .bottomLeading)
+                // No Menu button on a phone: this is the way out of the card
+                // (or out of its trailer).
+                Button(action: onBack) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundColor(.white)
+                        .frame(width: 40, height: 40)
+                        .background(.ultraThinMaterial, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, 16 + sideInset)
+                .padding(.top, 12 + Self.windowSafeArea.top)
+                .frame(width: size.width, height: size.height, alignment: .topLeading)
+                .accessibilityLabel("Close")
             }
         }
         #else
@@ -497,6 +511,10 @@ struct PostPlayRecommendationOverlay: View {
         let item = AVPlayerItem(asset: asset)
         item.preferredForwardBufferDuration = 2.0
         trailerPlayer.replaceCurrentItem(with: item)
+        #if os(iOS)
+        // The phone's own preview, never sent on to an AirPlay TV.
+        trailerPlayer.allowsExternalPlayback = false
+        #endif
         trailerPlayer.isMuted = !trailerPreviewSound
         trailerPlayer.volume = trailerPreviewSound ? 1.0 : 0.0
         trailerPlayer.play()

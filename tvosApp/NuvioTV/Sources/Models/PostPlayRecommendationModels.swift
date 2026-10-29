@@ -204,7 +204,7 @@ struct PostPlayRecommendationUiState: Equatable {
 enum PostPlayRecommendationRules {
     static let prefetchProgress: Double = 0.90
     static let prefetchRemainingSeconds: Double = 600.0 // 10 minutes
-    static let creditsLeadSeconds: Double = 120.0 // 2 minutes lead-time fallback for credits
+    static let creditsLeadSeconds: Double = 30.0 // lead-time fallback when the credits' start is unknown
     static let trailerCountdownSeconds: Int = 5
     static let maxRecommendations: Int = 4
     static let transitionDurationSeconds: Double = 0.42
@@ -259,7 +259,7 @@ enum PostPlayRecommendationRules {
             }
         }
 
-        // 2. Lead-time fallback: 2 minutes (120s) before file end, provided progress >= 80%
+        // 2. Lead-time fallback: the last 30s of the file, provided progress >= 80%
         let progress = position / durationSeconds
         if progress >= 0.80 && remaining <= creditsLeadSeconds {
             return true

@@ -38,7 +38,13 @@ final class PostPlayRecommendationController: ObservableObject {
         self.currentContentId = contentId
         self.currentContentType = contentType
         self.currentMeta = meta
+        #if os(iOS)
+        // On the phone the trailer is only ever started by a tap: started on
+        // its own it replaced the film's last minutes without being asked.
+        self.autoPlayTrailerEnabled = false
+        #else
         self.autoPlayTrailerEnabled = ProfileSettings.current.object(forKey: SettingsKey.trailersEnabled) as? Bool ?? true
+        #endif
     }
 
     func stop() {
@@ -107,7 +113,7 @@ final class PostPlayRecommendationController: ObservableObject {
 
         guard let recommendation = uiState.recommendation else { return }
 
-        // 2. Evaluate visibility threshold (IntroDB credits start, 2 min lead-time fallback, or ended)
+        // 2. Evaluate visibility threshold (IntroDB credits start, 30s lead-time fallback, or ended)
         let shouldTrigger = PostPlayRecommendationRules.shouldTriggerPostPlayRecommendation(
             positionSeconds: position,
             durationSeconds: effectiveDuration,

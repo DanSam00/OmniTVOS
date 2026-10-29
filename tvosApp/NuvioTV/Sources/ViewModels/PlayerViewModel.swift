@@ -202,8 +202,9 @@ class PlayerViewModel: ObservableObject {
     private var autoPlayNextCountdownSeconds = 10
     /// Fallback when IntroDB has no ending marker: show the Next Episode card
     /// this many seconds before the end. When an ending skip exists, the card
-    /// arms at the same moment as Skip Ending instead.
-    private static let nextCardLeadSeconds: Double = 120
+    /// arms at the same moment as Skip Ending instead. Two minutes was too
+    /// early for most titles, which were still mid-scene.
+    private static let nextCardLeadSeconds: Double = 30
     private static let nextEpisodeAutoHideSeconds = 5
     /// Same lead-in used by skip-segment detection so both cards arm together.
     private static let skipSegmentStartLead: Double = 0.35
@@ -1795,7 +1796,8 @@ class PlayerViewModel: ObservableObject {
         }
 
         if !isLiveStream {
-            let postPlayEnabled = ProfileSettings.current.object(forKey: SettingsKey.postPlayRecommendationsEnabled) as? Bool ?? true
+            let postPlayEnabled = (ProfileSettings.current.object(forKey: SettingsKey.postPlayRecommendationsEnabled) as? Bool ?? true)
+                && !isPlayingOnAnotherScreen
             let hasBlockingOverlay = showSettingsPanel || sidePanel != nil || isScrubbing || showPauseOverlay
             let endingStartTime = skipIntervals.first(where: \.isEnding)?.startTime
             postPlayController.updateTimeline(
@@ -2166,6 +2168,18 @@ class PlayerViewModel: ObservableObject {
         clock.duration = snapshot.duration
         lastStablePlaybackTime = snapshot
         saveProgress(force: true)
+    }
+
+    /// The picture is on a TV over AirPlay or Chromecast. The post-play card
+    /// stays off then: it took over the phone (and its trailer the TV), with
+    /// nothing on the TV to stop it from.
+    private var isPlayingOnAnotherScreen: Bool {
+        #if os(iOS)
+        return PhoneCastController.shared.isConnected
+            || aetherController.engine.currentAVPlayer?.isExternalPlaybackActive == true
+        #else
+        return false
+        #endif
     }
 
     func skipActiveInterval() {

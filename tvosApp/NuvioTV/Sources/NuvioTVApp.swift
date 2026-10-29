@@ -2269,14 +2269,19 @@ struct ContentView: View {
         guard let raw = UserDefaults.standard.string(forKey: "OmniDebugPlayURL"),
               let url = URL(string: raw) else { return }
         UserDefaults.standard.removeObject(forKey: "OmniDebugPlayURL")
+        // `-OmniDebugPlayIMDB tt…` plays it as that film, so the post-play
+        // card has something to recommend; `-OmniDebugPlayFrom <seconds>`
+        // starts it there, to reach the end card without waiting.
+        let imdbId = UserDefaults.standard.string(forKey: "OmniDebugPlayIMDB")
+        let startAt = UserDefaults.standard.double(forKey: "OmniDebugPlayFrom")
         let meta = NuvioMeta(
-            id: "debug-playback", name: "Debug Playback", description: nil,
-            posterUrl: nil, backgroundUrl: nil, logoUrl: nil, imdbId: nil, tmdbId: nil,
+            id: imdbId ?? "debug-playback", name: "Debug Playback", description: nil,
+            posterUrl: nil, backgroundUrl: nil, logoUrl: nil, imdbId: imdbId, tmdbId: nil,
             type: "movie", year: nil, genres: nil, rating: nil, releaseInfo: nil,
             runtime: nil, cast: nil, director: nil, writer: nil, certification: nil,
             country: nil, released: nil
         )
-        presentPlayback(url: url, meta: meta, subtitle: "", externalSubtitles: [], resumeFrom: nil)
+        presentPlayback(url: url, meta: meta, subtitle: "", externalSubtitles: [], resumeFrom: startAt > 0 ? startAt : nil)
     }
     #endif
 
