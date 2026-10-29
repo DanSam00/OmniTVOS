@@ -105,6 +105,36 @@ enum IPTVSourceStore {
         save(sources().filter { $0.id != id })
         IPTVLibrary.shared.forget(sourceID: id)
     }
+
+    /// A playlist the signed-out guest starts with, so Live TV and the
+    /// guide can be tried without an account: Google's Shaka Player test
+    /// streams (one live), listed in `public/example-test.m3u` in this repo.
+    static let guestPlaylist = IPTVSource(
+        name: "Example Test",
+        kind: .m3u,
+        url: "https://raw.githubusercontent.com/DanSam00/OmniTVOS/omni-macos-port/public/example-test.m3u"
+    )
+
+    /// What the guest was given before: iptv-org's index, which can list
+    /// channels carrying copyrighted programmes. Taken out again.
+    private static let retiredGuestPlaylistURLs = ["https://iptv-org.github.io/iptv/index.m3u"]
+
+    /// Adds `guestPlaylist` to the guest profile once. Sign-out wipes the
+    /// guest's settings, so each signed-out session starts with it again;
+    /// one the guest removed stays removed until then.
+    static func addGuestPlaylistIfNeeded(in defaults: UserDefaults) {
+        let flag = "omni.iptv.guestPlaylist.v2"
+        guard !defaults.bool(forKey: flag) else { return }
+        defaults.set(true, forKey: flag)
+        let existing = sources(in: defaults)
+        var kept = existing.filter { !retiredGuestPlaylistURLs.contains($0.url) }
+        if !kept.contains(where: { $0.url == guestPlaylist.url }) { kept.append(guestPlaylist) }
+        guard kept != existing else { return }
+        for retired in existing where retiredGuestPlaylistURLs.contains(retired.url) {
+            IPTVLibrary.shared.forget(sourceID: retired.id)
+        }
+        save(kept, in: defaults)
+    }
 }
 
 // MARK: - Channels

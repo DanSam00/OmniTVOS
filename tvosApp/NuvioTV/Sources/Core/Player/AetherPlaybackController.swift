@@ -1676,6 +1676,7 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
     var onTerminalError: ((String) -> Void)?
     /// Pending "is this stream actually showing a picture?" probe.
     private var silentVideoCheck: DispatchWorkItem?
+    private var blackVideoCheck: DispatchWorkItem?
 
     let engine: AetherEngine
     let playerView = AetherPlayerView()
@@ -2122,6 +2123,41 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
         // Tracks populate asynchronously after the item is ready, so sample
         // once playback has actually settled rather than on the phase edge.
         DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+
+        // The other silent failure: a video track whose frames the decoder
+        // rejects. AVFoundation keeps the clock and the sound running, logs
+        // VideoToolbox errors (-8969) and reports nothing, so the viewer
+        // gets a black picture with the pause button showing. Seen with
+        // IPTV sports channels on the iOS Simulator's software decoder.
+        blackVideoCheck?.cancel()
+        let black = DispatchWorkItem { [weak self] in
+            guard let self, self.isNativeVideoNeverShown() else { return }
+            print("[Aether] native video never reached the screen — handing off to MPV")
+            #if os(macOS)
+            MacDiagnostics.log("player.blackVideo handing off to MPV")
+            #endif
+            self.onTerminalError?("This stream's video needs the compatibility player.")
+        }
+        blackVideoCheck = black
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: black)
+    }
+
+    /// Playing, with a video track, yet no first frame ready for display:
+    /// the decoder is refusing the picture. Not while AirPlay holds the
+    /// picture, where the local layer never gets one.
+    private func isNativeVideoNeverShown() -> Bool {
+        guard !engine.hasFirstFrameReadyForDisplay,
+              let playerLayer = surfaceSublayers.compactMap({ $0 as? AVPlayerLayer }).first,
+              let player = playerLayer.player,
+              let item = player.currentItem,
+              item.status == .readyToPlay,
+              item.error == nil,
+              player.timeControlStatus == .playing
+        else { return false }
+        #if !os(macOS)
+        if player.isExternalPlaybackActive { return false }
+        #endif
+        return item.tracks.contains { $0.assetTrack?.mediaType == .video }
     }
 
     /// `UIView.layer` is non-optional and `NSView.layer` is not, so the two
@@ -2160,6 +2196,7 @@ final class AetherPlaybackController: UIViewController, PlaybackEngineControllin
 
     deinit {
         silentVideoCheck?.cancel()
+        blackVideoCheck?.cancel()
         foregroundReloadTask?.cancel()
         NotificationCenter.default.removeObserver(self)
     }

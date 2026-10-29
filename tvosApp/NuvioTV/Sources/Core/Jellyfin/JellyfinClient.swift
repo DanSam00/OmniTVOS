@@ -7,6 +7,21 @@ struct JellyfinLibrary: Identifiable, Equatable {
     let collectionType: String?
 }
 
+/// One entry of a folder listing (`JellyfinClient.children`): a sub-folder,
+/// box set or season to open, or a movie or show to show on its own page.
+struct JellyfinBrowseItem: Identifiable, Hashable {
+    let id: String
+    let name: String
+    /// `"Folder"`, `"CollectionFolder"`, `"BoxSet"`, `"Movie"`, `"Series"`, …
+    let type: String
+    let isFolder: Bool
+    let year: Int?
+    let primaryImageTag: String?
+
+    /// A movie or show opens its page; anything else that holds items opens.
+    var isTitle: Bool { type == "Movie" || type == "Series" }
+}
+
 /// One item returned by a library items query. Jellyfin returns `Movie`,
 /// `Series`, and `Episode` items through the same shape, with type-dependent
 /// fields left `nil` — a `Series` carries the poster/overview/rating shown on
@@ -120,6 +135,47 @@ struct JellyfinClient {
         }
         let payload = try JSONDecoder().decode(Payload.self, from: data)
         return payload.Items.map { JellyfinLibrary(id: $0.Id, name: $0.Name, collectionType: $0.CollectionType) }
+    }
+
+    /// What one folder holds, one level down, folders first and then by
+    /// name: the Library's Folders browses a server through this.
+    func children(userId: String, parentId: String) async throws -> [JellyfinBrowseItem] {
+        let (data, response) = try await get("Users/\(userId)/Items", query: [
+            "ParentId": parentId,
+            "SortBy": "IsFolder,SortName",
+            "SortOrder": "Descending,Ascending",
+            "Fields": "ProductionYear",
+            "EnableImageTypes": "Primary",
+        ])
+        try Self.validate(response, data: data)
+        struct Payload: Decodable {
+            struct ImageTags: Decodable { let Primary: String? }
+            struct Item: Decodable {
+                let Id: String
+                let Name: String?
+                let kind: String?
+                let IsFolder: Bool?
+                let ProductionYear: Int?
+                let ImageTags: ImageTags?
+
+                enum CodingKeys: String, CodingKey {
+                    case Id, Name, IsFolder, ProductionYear, ImageTags
+                    case kind = "Type"
+                }
+            }
+            let Items: [Item]
+        }
+        let payload = try JSONDecoder().decode(Payload.self, from: data)
+        return payload.Items.map {
+            JellyfinBrowseItem(
+                id: $0.Id,
+                name: $0.Name ?? "",
+                type: $0.kind ?? "",
+                isFolder: $0.IsFolder ?? false,
+                year: $0.ProductionYear,
+                primaryImageTag: $0.ImageTags?.Primary
+            )
+        }
     }
 
     /// Every movie, series, and episode under one library, with every field

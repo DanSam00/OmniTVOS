@@ -669,6 +669,7 @@ final class CinemetaCatalogRepository: CatalogRepository {
             return jellyfinMeta
         }
         if let iptvMeta = await Self.iptvMeta(id) { return iptvMeta }
+        if IPTVVODBrowser.isBrowserID(id), let film = await IPTVVODBrowser.shared.meta(forContentID: id) { return film }
         if let fixture = await Self.fixtureMeta(id) { return fixture }
         let cached = cachedMetadata(for: id)
         if let cached, isCachedFullMetadata(id: id) {
@@ -683,6 +684,7 @@ final class CinemetaCatalogRepository: CatalogRepository {
             return jellyfinMeta
         }
         if let iptvMeta = await Self.iptvMeta(id) { return iptvMeta }
+        if IPTVVODBrowser.isBrowserID(id), let film = await IPTVVODBrowser.shared.meta(forContentID: id) { return film }
         if let fixture = await Self.fixtureMeta(id) { return fixture }
         // A catalog can report `type: movie` while its nonempty videos prove
         // that it is a series. Keep that inference while replacing the cache,
@@ -696,7 +698,11 @@ final class CinemetaCatalogRepository: CatalogRepository {
     private static func fixtureMeta(_ id: String) async -> NuvioMeta? {
         guard SportsSchedule.isFixtureID(id) else { return nil }
         if SportsSchedule.meta(forContentID: id) == nil { _ = await SportsSchedule.fixtures() }
-        return SportsSchedule.meta(forContentID: id)
+        guard let meta = SportsSchedule.meta(forContentID: id) else { return nil }
+        // The schedule has no pictures: the page gets the app's match art,
+        // drawn now if Home hasn't already, as Home's hero shows it.
+        _ = await FixtureArtwork.ensureDrawn(meta)
+        return FixtureArtwork.decorated(meta)
     }
 
     /// An IPTV channel's page comes from its playlists, loading them first

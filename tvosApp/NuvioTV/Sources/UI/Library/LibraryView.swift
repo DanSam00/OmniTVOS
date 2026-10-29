@@ -8,10 +8,13 @@ enum LibraryFocusBand {
     static let controls = "controls"
     /// The Mac's downloads list: each row, then its delete button.
     static let downloads = "downloads"
+    /// Folders: the back chip, then the current level's tiles.
+    static let folderBack = "folders.back"
+    static let folders = "folders"
     static let controlItems = ["sort", "group", "content", "watched", "genre"]
 }
 
-private enum LibraryGridMetrics {
+enum LibraryGridMetrics {
     static let posterWidth: CGFloat = 210
     static let posterHeight: CGFloat = 315
     static let posterGap: CGFloat = 28
@@ -24,6 +27,9 @@ private enum LibraryGridMetrics {
 enum LibrarySourceMode: String, CaseIterable, Identifiable {
     case saved
     case cloud
+    /// An IPTV provider's or Jellyfin server's own folders. Offered only
+    /// when one is set up, so `LibraryView.sourceModes` adds it, not `allCases`.
+    case folders
     #if os(macOS)
     /// Offline downloads. Mac only: the iPhone has its own Library, and the
     /// Apple TV keeps no storage to download into.
@@ -50,6 +56,8 @@ enum LibrarySourceMode: String, CaseIterable, Identifiable {
             return L10n.string("library_source_saved", fallback: "Saved")
         case .cloud:
             return L10n.string("library_source_cloud", fallback: "Cloud")
+        case .folders:
+            return L10n.string("library_source_folders", fallback: "Folders")
         #if os(macOS)
         case .downloads:
             return L10n.string("nav_downloads", fallback: "Downloads")
@@ -66,8 +74,15 @@ public struct LibraryView: View {
     /// Opens the debrid Cloud Library screen; kept for external callers.
     var onOpenCloudLibrary: (() -> Void)? = nil
     var onPlayCloudFile: ((URL, NuvioMeta) -> Void)? = nil
+    /// A title's page or the player is over the tabs. They hide the tabs
+    /// rather than disable them, so this is how Folders knows.
+    var isFullScreenOverlayPresented = false
+    /// Bumped once a title's page has left the screen, when focus can return.
+    var detailsDidDisappearGeneration: UInt = 0
 
     @State private var sourceMode: LibrarySourceMode = .saved
+    @StateObject private var foldersModel = LibraryFoldersModel()
+    @State private var foldersAvailable = LibraryFoldersModel.isAvailable
     @State private var openCloudItem: CloudItem? = nil
     @FocusState private var cloudFocusedKey: String?
     @State private var lastFocusedCloudItemID: String?
@@ -118,7 +133,9 @@ public struct LibraryView: View {
         onContentClick: @escaping (String, String) -> Void,
         onLongPress: ((NuvioMeta) -> Void)? = nil,
         onOpenCloudLibrary: (() -> Void)? = nil,
-        onPlayCloudFile: ((URL, NuvioMeta) -> Void)? = nil
+        onPlayCloudFile: ((URL, NuvioMeta) -> Void)? = nil,
+        isFullScreenOverlayPresented: Bool = false,
+        detailsDidDisappearGeneration: UInt = 0
     ) {
         _viewModel = StateObject(wrappedValue: viewModel)
         _cloudViewModel = StateObject(wrappedValue: CloudLibraryViewModel(store: store))
@@ -126,6 +143,8 @@ public struct LibraryView: View {
         self.onLongPress = onLongPress
         self.onOpenCloudLibrary = onOpenCloudLibrary
         self.onPlayCloudFile = onPlayCloudFile
+        self.isFullScreenOverlayPresented = isFullScreenOverlayPresented
+        self.detailsDidDisappearGeneration = detailsDidDisappearGeneration
     }
 
     private var showsDownloads: Bool {
@@ -134,6 +153,16 @@ public struct LibraryView: View {
         #else
         return false
         #endif
+    }
+
+    /// The source switch: Folders sits before Downloads, and only when there
+    /// is an IPTV login or a Jellyfin server to browse.
+    private var sourceModes: [LibrarySourceMode] {
+        var modes = LibrarySourceMode.allCases
+        if foldersAvailable {
+            modes.insert(.folders, at: modes.firstIndex(where: { $0.rawValue == "downloads" }) ?? modes.endIndex)
+        }
+        return modes
     }
 
     /// Cloud Library is only reachable for the providers that expose one.
@@ -155,7 +184,7 @@ public struct LibraryView: View {
 
                 // Source switch: Saved | Cloud
                 HStack(spacing: 16) {
-                    ForEach(LibrarySourceMode.allCases) { mode in
+                    ForEach(sourceModes) { mode in
                         SourceModeChip(
                             title: mode.localizedTitle,
                             isSelected: sourceMode == mode,
@@ -172,10 +201,10 @@ public struct LibraryView: View {
                         }
                     }
                 }
-                .disabled(overlayRestoreItemID != nil || overlayRestoreCloudItemID != nil)
+                .disabled(overlayRestoreItemID != nil || overlayRestoreCloudItemID != nil || foldersModel.restoringID != nil)
 
-                // Controls row (Dynamic based on Saved vs Cloud; none for Downloads)
-                if !showsDownloads {
+                // Controls row (Dynamic based on Saved vs Cloud; none for Folders or Downloads)
+                if sourceMode == .saved || sourceMode == .cloud {
                 HStack(spacing: 16) {
                     if sourceMode == .saved {
                         FilterMenu(
@@ -243,6 +272,15 @@ public struct LibraryView: View {
 
                 if sourceMode == .saved {
                     savedContent
+                } else if sourceMode == .folders {
+                    LibraryFoldersView(
+                        model: foldersModel,
+                        gridColumns: gridColumns,
+                        macFocusedID: macFoldersFocusedID,
+                        isOverlayPresented: isFullScreenOverlayPresented,
+                        overlayClosedGeneration: detailsDidDisappearGeneration,
+                        onOpen: onContentClick
+                    )
                 } else if showsDownloads {
                     #if os(macOS)
                     MacDownloadsList(
@@ -269,6 +307,14 @@ public struct LibraryView: View {
             if openCloudItem != nil {
                 closeCloudItem()
             }
+        }
+        // An IPTV login or Jellyfin server added or removed: Folders appears,
+        // goes, or starts again from the top.
+        .onReceive(NotificationCenter.default.publisher(for: IPTVSourceStore.changedNotification)) { _ in
+            refreshFolders()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: JellyfinServerStore.changedNotification)) { _ in
+            refreshFolders()
         }
         .onChange(of: focusedItemID) { _, newValue in
             if let newValue {
@@ -339,8 +385,41 @@ public struct LibraryView: View {
         .onChange(of: viewModel.sortOption) { _, _ in macFocus.update(macBands) }
         .onReceive(keyRouter.presses.map(Optional.some)) { press in
             guard let press else { return }
+            // Escape steps back up the folders; the caret model leaves it to us.
+            if press.key == .back, sourceMode == .folders, !foldersModel.isRoot, macFocus.isFront {
+                foldersModel.pop()
+                return
+            }
             macFocus.handle(press.key, activate: macActivate)
         }
+        .onChange(of: foldersModel.tiles?.map(\.id)) { _, _ in macFocus.update(macBands) }
+        .onChange(of: foldersModel.path) { _, _ in macFocus.update(macBands) }
+        .onChange(of: foldersAvailable) { _, _ in macFocus.update(macBands) }
+        .onChange(of: foldersModel.focusRequest) { _, request in
+            guard let request, sourceMode == .folders else { return }
+            macFocus.update(macBands)
+            macFocus.focus(band: LibraryFocusBand.folders, item: request.tileID)
+        }
+        #endif
+    }
+
+    private func refreshFolders() {
+        foldersAvailable = LibraryFoldersModel.isAvailable
+        foldersModel.reset()
+        if !foldersAvailable, sourceMode == .folders {
+            sourceMode = .saved
+        } else if sourceMode == .folders {
+            Task { await foldersModel.loadIfNeeded() }
+        }
+    }
+
+    /// Where the Mac's caret is among the folders; nil on tvOS.
+    private var macFoldersFocusedID: String? {
+        #if os(macOS)
+        guard macFocus.bandID == LibraryFocusBand.folderBack || macFocus.bandID == LibraryFocusBand.folders else { return nil }
+        return macFocus.itemID
+        #else
+        return nil
         #endif
     }
 
@@ -748,8 +827,19 @@ public struct LibraryView: View {
     private var macBands: [MacFocusBand] {
         var bands = [MacFocusBand(
             id: LibraryFocusBand.source,
-            items: LibrarySourceMode.allCases.map(\.rawValue)
+            items: sourceModes.map(\.rawValue)
         )]
+        if sourceMode == .folders {
+            if !foldersModel.isRoot {
+                bands.append(MacFocusBand(id: LibraryFocusBand.folderBack, items: [LibraryFoldersModel.backID]))
+            }
+            bands.append(MacFocusBand(
+                id: LibraryFocusBand.folders,
+                items: (foldersModel.tiles ?? []).map(\.id),
+                columns: foldersModel.usesGrid ? macGridColumns : 1
+            ))
+            return bands
+        }
         if sourceMode == .downloads {
             bands.append(MacFocusBand(
                 id: LibraryFocusBand.downloads,
@@ -804,6 +894,14 @@ public struct LibraryView: View {
                 DownloadManager.shared.delete(record.contentId)
             } else {
                 MacDownloadsList.activate(record, onOpen: onContentClick)
+            }
+            return
+        case LibraryFocusBand.folderBack:
+            foldersModel.pop()
+            return
+        case LibraryFocusBand.folders:
+            if let open = foldersModel.activate(item) {
+                onContentClick(open.contentID, open.type)
             }
             return
         case LibraryFocusBand.source:

@@ -130,6 +130,20 @@ final class StreamsRepository: ObservableObject {
         )
     }
 
+    /// A film or episode opened from the IPTV provider's own categories
+    /// (Library → Folders): its one copy, from that provider.
+    private func iptvBrowsedGroup(videoId: String) async -> AddonStreamGroup? {
+        guard IPTVVODBrowser.isBrowserID(videoId) else { return nil }
+        let streams = await IPTVVODBrowser.shared.streams(videoID: videoId)
+        guard !streams.isEmpty else { return nil }
+        return AddonStreamGroup(
+            addonId: "omni.iptv.browsed",
+            displayName: "IPTV",
+            streams: streams,
+            isLoading: false
+        )
+    }
+
     /// A fixture's live channels from the viewer's own IPTV playlists.
     private func sportsStreamGroup(videoId: String) async -> AddonStreamGroup? {
         guard SportsSchedule.isFixtureID(videoId) else { return nil }
@@ -281,6 +295,9 @@ final class StreamsRepository: ObservableObject {
         if SportsSchedule.isFixtureID(videoId) {
             return await sportsStreamGroup(videoId: videoId) != nil
         }
+        if IPTVVODBrowser.isBrowserID(videoId) {
+            return await iptvBrowsedGroup(videoId: videoId) != nil
+        }
 
         let enabledURLs = Self.streamAddonURLs()
         let manifestsByURL = await Self.loadManifestsConcurrently(urls: enabledURLs)
@@ -336,6 +353,7 @@ final class StreamsRepository: ObservableObject {
             iptvStreamGroup(videoId: videoId),
         ].compactMap { $0 }
         if let sports = await sportsStreamGroup(videoId: videoId) { ownedGroups.append(sports) }
+        if let browsed = await iptvBrowsedGroup(videoId: videoId) { ownedGroups.append(browsed) }
         let iptvVOD: Task<AddonStreamGroup?, Never>? = Self.searchesIPTVLibrary(type: type, videoId: videoId)
             ? Task { await self.iptvVODGroup(type: type, videoId: videoId) }
             : nil

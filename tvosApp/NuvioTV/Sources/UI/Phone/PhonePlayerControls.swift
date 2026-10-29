@@ -272,8 +272,9 @@ struct PhonePlayerControls: View {
         return ZStack(alignment: .top) {
             // The picture mirrored at its own size directly beneath it.
             PhonePlayerReflection(
-                player: viewModel.aetherController.engine.currentAVPlayer,
-                mirrorLayer: viewModel.aetherController.engine.softwareMirrorLayer,
+                player: viewModel.activeEngineKind == .mpv ? nil : viewModel.aetherController.engine.currentAVPlayer,
+                mirrorLayer: viewModel.activeEngineKind == .mpv ? nil : viewModel.aetherController.engine.softwareMirrorLayer,
+                mpvView: viewModel.activeEngineKind == .mpv ? viewModel.playerController.view : nil,
                 fallbackURL: viewModel.castableMedia?.backdropURL?.absoluteString
                     ?? viewModel.playingMeta?.backgroundUrl
             )
@@ -2278,10 +2279,13 @@ private struct PhoneDuoPressStyle: ButtonStyle {
 /// playing. Always live, and never a second download or decode: through
 /// AVPlayer it is a second layer on the same player; on the software path it
 /// is the engine's mirror layer, which is handed the same decoded frames.
-/// The title's backdrop stands in only before either exists.
+/// MPV draws into a Metal layer that cannot be read back, so its picture is
+/// copied by the system's own view snapshots, at the video's frame rate.
+/// The title's backdrop stands in only before any of them exists.
 private struct PhonePlayerReflection: View {
     let player: AVPlayer?
     let mirrorLayer: AVSampleBufferDisplayLayer?
+    var mpvView: UIView? = nil
     let fallbackURL: String?
 
     var body: some View {
@@ -2290,13 +2294,32 @@ private struct PhonePlayerReflection: View {
                 PhoneMirroredPlayerLayer(player: player)
             } else if let mirrorLayer {
                 PhoneMirroredSampleLayer(layer: mirrorLayer)
+            } else if let mpvView {
+                // Snapshots trail the picture by a frame and now and then
+                // skip one, which a sharp reflection shows as judder: blurred
+                // further, and faded out by half its height, it reads as a
+                // glow rather than a second picture.
+                PhoneMirroredSnapshot(source: mpvView)
+                    .blur(radius: 7, opaque: true)
+                    .mask(
+                        LinearGradient(
+                            stops: [
+                                .init(color: .black, location: 0),
+                                .init(color: .black.opacity(0.6), location: 0.25),
+                                .init(color: .clear, location: 0.5)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
             } else if let fallbackURL {
                 PhoneArtwork(url: fallbackURL, kind: .backdrop)
                     .scaleEffect(x: 1, y: -1)
             }
             // Frosted, but less than the full material: the picture should
-            // read through it.
-            Rectangle().fill(.ultraThinMaterial).opacity(0.7)
+            // read through it. MPV's copy is blurred already, so it is
+            // frosted lighter still.
+            Rectangle().fill(.ultraThinMaterial).opacity(mpvView == nil ? 0.7 : 0.5)
             LinearGradient(
                 stops: [
                     .init(color: .black.opacity(0.15), location: 0),
@@ -2337,6 +2360,72 @@ private struct PhoneMirroredPlayerLayer: UIViewRepresentable {
 
     static func dismantleUIView(_ view: MirrorView, coordinator: ()) {
         view.playerLayer.player = nil
+    }
+}
+
+/// MPV's picture, upside down, from render-server snapshots of its view:
+/// they include Metal content and copy no pixels through the app, so a
+/// frosted reflection costs little. Taken at up to 30 a second, a broadcast's
+/// own rate; a display link stops with the view.
+private struct PhoneMirroredSnapshot: UIViewRepresentable {
+    let source: UIView
+
+    final class HostView: UIView {
+        weak var source: UIView?
+        private var link: CADisplayLink?
+        private var current: UIView?
+
+        /// The display link holds its target strongly.
+        private final class Ticker: NSObject {
+            weak var host: HostView?
+            @objc func tick() { host?.refresh() }
+        }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window == nil {
+                link?.invalidate()
+                link = nil
+            } else if link == nil {
+                let ticker = Ticker()
+                ticker.host = self
+                let link = CADisplayLink(target: ticker, selector: #selector(Ticker.tick))
+                link.preferredFrameRateRange = CAFrameRateRange(minimum: 24, maximum: 30, preferred: 30)
+                link.add(to: .main, forMode: .common)
+                self.link = link
+            }
+        }
+
+        func refresh() {
+            guard let source, source.window != nil,
+                  source.bounds.width > 1, source.bounds.height > 1, bounds.width > 1,
+                  let snapshot = source.snapshotView(afterScreenUpdates: false)
+            else { return }
+            snapshot.isUserInteractionEnabled = false
+            // The snapshot is the source's size; scale it onto this one.
+            snapshot.bounds = source.bounds
+            snapshot.center = CGPoint(x: bounds.midX, y: bounds.midY)
+            snapshot.transform = CGAffineTransform(
+                scaleX: bounds.width / source.bounds.width,
+                y: bounds.height / source.bounds.height
+            )
+            addSubview(snapshot)
+            current?.removeFromSuperview()
+            current = snapshot
+        }
+    }
+
+    func makeUIView(context: Context) -> HostView {
+        let view = HostView()
+        view.isUserInteractionEnabled = false
+        view.clipsToBounds = true
+        view.transform = CGAffineTransform(scaleX: 1, y: -1)
+        view.source = source
+        return view
+    }
+
+    func updateUIView(_ view: HostView, context: Context) {
+        view.source = source
     }
 }
 

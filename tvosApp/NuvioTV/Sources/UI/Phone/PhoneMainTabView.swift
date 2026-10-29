@@ -769,6 +769,9 @@ struct PhoneSearchView: View {
 
 enum PhoneLibrarySection: String, CaseIterable {
     case library = "Library"
+    /// The viewer's IPTV and Jellyfin on-demand folders (`PhoneFoldersView`),
+    /// offered only when one is set up.
+    case folders = "Folders"
     case downloads = "Downloads"
 }
 
@@ -780,17 +783,24 @@ struct PhoneLibraryView: View {
     let onPlayDownload: (DownloadRecord) -> Void
 
     private let columns = [GridItem(.adaptive(minimum: 104), spacing: 12, alignment: .top)]
+    @State private var hasFolders = PhoneFoldersView.isAvailable
+
+    private var sections: [PhoneLibrarySection] {
+        PhoneLibrarySection.allCases.filter { $0 != .folders || hasFolders }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             switch section {
             case .library:
                 libraryGrid
+            case .folders:
+                PhoneFoldersView(onSelect: onSelect)
             case .downloads:
                 PhoneDownloadsView(onPlay: onPlayDownload, onOpen: onSelect)
             }
         }
-        .navigationTitle(section == .library ? TVTab.library.title : "Downloads")
+        .navigationTitle(section == .library ? TVTab.library.title : section.rawValue)
         // The Library | Downloads switch is the bar's title, rather than a
         // large title with the switch under it: that took the top quarter of
         // the screen before the first poster.
@@ -798,13 +808,22 @@ struct PhoneLibraryView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Picker("Show", selection: $section) {
-                    ForEach(PhoneLibrarySection.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    ForEach(sections, id: \.self) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
-                .frame(maxWidth: 260)
+                .frame(maxWidth: sections.count > 2 ? 330 : 260)
             }
         }
-        .onAppear { viewModel.loadLibrary() }
+        .onAppear {
+            viewModel.loadLibrary()
+            hasFolders = PhoneFoldersView.isAvailable
+        }
+        .onReceive(NotificationCenter.default.publisher(for: IPTVSourceStore.changedNotification)) { _ in
+            hasFolders = PhoneFoldersView.isAvailable
+        }
+        .onChange(of: hasFolders) { _, available in
+            if !available, section == .folders { section = .library }
+        }
     }
 
     private var libraryGrid: some View {

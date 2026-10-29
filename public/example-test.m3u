@@ -1,7 +1,7 @@
 #EXTM3U
 #EXTINF:-1 tvg-id="example-test-live" group-title="Example Test",Example Test Live
 https://storage.googleapis.com/shaka-live-assets/player-source.m3u8
-#EXTINF:-1 tvg-id="example-test-bbb" group-title="Example Test",Big Buck Bunny: Dark Truths
+#EXTINF:-1 tvg-id="example-test-bbb" group-title="Example Test",Big Buck Bunny
 https://storage.googleapis.com/shaka-demo-assets/bbb-dark-truths-hls/hls.m3u8
 #EXTINF:-1 tvg-id="example-test-angel-one" group-title="Example Test",Angel One
 https://storage.googleapis.com/shaka-demo-assets/angel-one-hls/hls.m3u8

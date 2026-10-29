@@ -4096,7 +4096,9 @@ private struct TVMainTabView: View {
             onContentClick: onNavigateToDetails,
             onLongPress: onLongPressCard,
             onOpenCloudLibrary: onOpenCloudLibrary,
-            onPlayCloudFile: onPlayCloudFile
+            onPlayCloudFile: onPlayCloudFile,
+            isFullScreenOverlayPresented: isFullScreenOverlayPresented,
+            detailsDidDisappearGeneration: detailsDidDisappearGeneration
         )
             .id(activeProfile?.id ?? "none")
     }

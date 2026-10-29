@@ -73,6 +73,8 @@ struct CalendarEntry: Identifiable, Hashable {
     var sportGenre: String? = nil
     /// True for a fixture the add-on reports as in progress right now.
     var isLiveNow: Bool = false
+    /// A fixture's kick-off, so a day of matches reads in order of play.
+    var startsAt: Date? = nil
 
     var isMovie: Bool { kind == .movie }
 
@@ -246,6 +248,7 @@ final class CalendarViewModel: ObservableObject {
 
     private let repository: CatalogRepository
     private var libraryObserver: NSObjectProtocol?
+    private var fixtureArtObserver: NSObjectProtocol?
     private var loadGeneration = 0
 
     init(repository: CatalogRepository = CinemetaCatalogRepository()) {
@@ -258,11 +261,28 @@ final class CalendarViewModel: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in await self?.load() }
         }
+        // Omni's fixtures come without pictures; the app draws each match's
+        // art, and the Sports days are rebuilt as the pictures arrive.
+        if AppEdition.isPublic {
+            fixtureArtObserver = NotificationCenter.default.addObserver(
+                forName: FixtureArtwork.artDrawnNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, self.hasLoadedSports else { return }
+                    await self.loadSports()
+                }
+            }
+        }
     }
 
     deinit {
         if let libraryObserver {
             NotificationCenter.default.removeObserver(libraryObserver)
+        }
+        if let fixtureArtObserver {
+            NotificationCenter.default.removeObserver(fixtureArtObserver)
         }
     }
 
@@ -486,13 +506,21 @@ final class CalendarViewModel: ObservableObject {
 
         let catalogs = await repository.availableAddonCatalogs()
             .filter { $0.type.lowercased() == "sport" || $0.type.lowercased() == "sports" }
-        // Omni has no sports add-ons: its fixtures come from TheSportsDB, and
-        // each page offers the viewer's own matching IPTV channels.
+        // Omni has no sports add-ons: its fixtures come from ESPN's
+        // scoreboards, and each page offers the viewer's own matching IPTV
+        // channels.
         var scheduled: [CalendarEntry] = []
         if AppEdition.isPublic {
-            scheduled = await SportsSchedule.fixtures().compactMap { item in
+            // Match art is drawn for the next three days only, soonest (and
+            // live) first: a week of every competition is several hundred
+            // matches, and in listing order tonight's waited behind them.
+            let soon = Date().addingTimeInterval(72 * 3600)
+            let fixtures = await SportsSchedule.fixtures()
+                .map { item in (item, FixtureTime.parse(item.meta.releaseInfo ?? "") ?? .distantPast) }
+                .sorted { $0.1 < $1.1 }
+            scheduled = fixtures.compactMap { item, start in
                 Self.sportEntry(
-                    from: item.meta,
+                    from: start < soon ? FixtureArtwork.decorated(item.meta) : item.meta,
                     catalog: AddonCatalogOption(
                         addonId: "omni.sports", addonName: "Fixtures", type: "sport",
                         catalogId: item.league.id, catalogName: item.league.name
@@ -576,7 +604,8 @@ final class CalendarViewModel: ObservableObject {
             dayKey: day,
             kind: .sport,
             sportGenre: sport ?? catalog.catalogName,
-            isLiveNow: isLive
+            isLiveNow: isLive,
+            startsAt: isLive ? .distantPast : FixtureTime.parse(info)
         )
     }
 
@@ -659,6 +688,8 @@ final class CalendarViewModel: ObservableObject {
         return Dictionary(grouping: unique.values, by: \.dayKey)
             .mapValues { items in
                 items.sorted {
+                    // Matches by kick-off, those under way first.
+                    if let a = $0.startsAt, let b = $1.startsAt, a != b { return a < b }
                     if $0.title != $1.title { return $0.title < $1.title }
                     if ($0.season ?? 0) != ($1.season ?? 0) {
                         return ($0.season ?? 0) < ($1.season ?? 0)

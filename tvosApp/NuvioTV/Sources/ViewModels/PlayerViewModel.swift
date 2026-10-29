@@ -765,7 +765,9 @@ class PlayerViewModel: ObservableObject {
         isLoadingExternalSubtitles = false
         self.title = meta.name
         self.subtitle = subtitle
-        self.isLiveStream = Self.isLiveContentType(meta.type)
+        // Omni's fixtures play the viewer's live IPTV channels, whatever the
+        // match's own type ("sport") says.
+        self.isLiveStream = Self.isLiveContentType(meta.type) || SportsSchedule.isFixtureID(meta.id)
         self.livePlaybackHasStarted = false
         self.liveBufferingBeganAt = nil
         self.status = .buffering

@@ -1663,9 +1663,12 @@ enum CalendarDateFormatting {
 /// cancels the press the sidebar would have acted on. It is removed with the
 /// view, so Menu goes back to opening the sidebar as soon as the layer closes.
 struct MenuPressCatcher: UIViewRepresentable {
+    /// Checked as each press arrives; when false the press goes on to the
+    /// sidebar or whatever is over the screen.
+    var isActive: () -> Bool = { true }
     let action: () -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
+    func makeCoordinator() -> Coordinator { Coordinator(action: action, isActive: isActive) }
 
     func makeUIView(context: Context) -> CatcherView {
         let view = CatcherView()
@@ -1675,6 +1678,7 @@ struct MenuPressCatcher: UIViewRepresentable {
 
     func updateUIView(_ view: CatcherView, context: Context) {
         context.coordinator.action = action
+        context.coordinator.isActive = isActive
     }
 
     static func dismantleUIView(_ view: CatcherView, coordinator: Coordinator) {
@@ -1683,9 +1687,13 @@ struct MenuPressCatcher: UIViewRepresentable {
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var action: () -> Void
+        var isActive: () -> Bool
         private var recognizer: UITapGestureRecognizer?
 
-        init(action: @escaping () -> Void) { self.action = action }
+        init(action: @escaping () -> Void, isActive: @escaping () -> Bool) {
+            self.action = action
+            self.isActive = isActive
+        }
 
         func attach(to window: UIWindow) {
             guard recognizer == nil else { return }
@@ -1707,8 +1715,9 @@ struct MenuPressCatcher: UIViewRepresentable {
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive press: UIPress) -> Bool {
-            TVHomeDebugTrace.log("menuCatcher.receive type=\(press.type.rawValue)")
-            return true
+            let active = isActive()
+            TVHomeDebugTrace.log("menuCatcher.receive type=\(press.type.rawValue) active=\(active)")
+            return active
         }
 
         func detach() {

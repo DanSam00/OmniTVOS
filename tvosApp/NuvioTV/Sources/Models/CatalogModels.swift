@@ -6308,6 +6308,7 @@ enum ProfileSettings {
         seedFromGlobalIfNeeded(suite)
         current = suite
         activeProfileID = id
+        if id == "guest" { IPTVSourceStore.addGuestPlaylistIfNeeded(in: suite) }
         AISubtitleKeyStore.migrateLegacyKey(from: suite, profileScope: id)
         if needsSeed {
             AISubtitleKeyStore.migrateLegacyKey(from: .standard, profileScope: id)

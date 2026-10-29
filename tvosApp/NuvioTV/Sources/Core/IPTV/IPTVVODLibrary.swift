@@ -91,7 +91,7 @@ actor IPTVVODLibrary {
         return result
     }
 
-    private static func stream(
+    static func stream(
         source: IPTVSource,
         login: (server: String, username: String, password: String),
         kind: String,
@@ -241,7 +241,7 @@ actor IPTVVODLibrary {
     }
 
     /// "[EN] NETFLIX" → English. Untagged and "[MULTI-LANG]" → none.
-    private static func categoryLanguages(_ name: String) -> Set<String> {
+    static func categoryLanguages(_ name: String) -> Set<String> {
         guard let range = name.range(of: #"^\s*\[([^\]]{1,16})\]"#, options: .regularExpression) else {
             return IPTVNaming.languages(group: name, nameTags: [])
         }
@@ -327,7 +327,7 @@ actor IPTVVODLibrary {
         return URLSession(configuration: configuration)
     }()
 
-    private static func json(
+    static func json(
         login: (server: String, username: String, password: String),
         action: String,
         extra: [String: String] = [:]
@@ -347,7 +347,7 @@ actor IPTVVODLibrary {
     }
 
     /// Panels disagree on whether ids and numbers are numbers or strings.
-    private static func stringValue(_ value: Any?) -> String? {
+    static func stringValue(_ value: Any?) -> String? {
         if let text = value as? String { return text.vodNonBlank }
         if let number = value as? NSNumber { return number.stringValue }
         return nil
@@ -384,7 +384,7 @@ actor IPTVVODLibrary {
     }
 }
 
-private extension String {
+extension String {
     var vodNonBlank: String? {
         trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : self
     }
