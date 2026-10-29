@@ -1,6 +1,6 @@
 #EXTM3U
-#EXTINF:-1 tvg-id="example-test-live" tvg-logo="https://storage.googleapis.com/shaka-asset-icons/shaka.png" group-title="Example Test",Example Test Live
-https://raw.githubusercontent.com/DanSam00/OmniTVOS/omni-macos-port/public/example-test-live.m3u8
+#EXTINF:-1 tvg-id="example-test-live" tvg-logo="https://raw.githubusercontent.com/DanSam00/OmniTVOS/omni-macos-port/public/example-test/live-poster.jpg" group-title="Example Test",Example Test Live
+https://demo.unified-streaming.com/k8s/live/stable/live.isml/.m3u8
 #EXTINF:-1 tvg-id="example-test-big-buck-bunny" tvg-logo="https://storage.googleapis.com/shaka-asset-icons/big_buck_bunny.png" group-title="Example Test",Big Buck Bunny
 https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8
 #EXTINF:-1 tvg-id="example-test-tears-of-steel" tvg-logo="https://storage.googleapis.com/shaka-asset-icons/tears_of_steel.png" group-title="Example Test",Tears of Steel
