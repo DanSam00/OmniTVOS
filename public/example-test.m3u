@@ -1,9 +1,9 @@
 #EXTM3U
-#EXTINF:-1 tvg-id="example-test-live" group-title="Example Test",Example Test Live
-https://storage.googleapis.com/shaka-live-assets/player-source.m3u8
-#EXTINF:-1 tvg-id="example-test-bbb" group-title="Example Test",Big Buck Bunny
-https://storage.googleapis.com/shaka-demo-assets/bbb-dark-truths-hls/hls.m3u8
-#EXTINF:-1 tvg-id="example-test-angel-one" group-title="Example Test",Angel One
-https://storage.googleapis.com/shaka-demo-assets/angel-one-hls/hls.m3u8
-#EXTINF:-1 tvg-id="example-test-apple" group-title="Example Test",Apple Advanced Stream
+#EXTINF:-1 tvg-id="example-test-live" tvg-logo="https://storage.googleapis.com/shaka-asset-icons/shaka.png" group-title="Example Test",Example Test Live
+https://raw.githubusercontent.com/DanSam00/OmniTVOS/omni-macos-port/public/example-test-live.m3u8
+#EXTINF:-1 tvg-id="example-test-big-buck-bunny" tvg-logo="https://storage.googleapis.com/shaka-asset-icons/big_buck_bunny.png" group-title="Example Test",Big Buck Bunny
+https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8
+#EXTINF:-1 tvg-id="example-test-tears-of-steel" tvg-logo="https://storage.googleapis.com/shaka-asset-icons/tears_of_steel.png" group-title="Example Test",Tears of Steel
+https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8
+#EXTINF:-1 tvg-id="example-test-apple" tvg-logo="https://storage.googleapis.com/shaka-asset-icons/apple_test_pattern.png" group-title="Example Test",Apple Advanced Stream
 https://storage.googleapis.com/shaka-demo-assets/apple-advanced-stream-ts/master.m3u8
