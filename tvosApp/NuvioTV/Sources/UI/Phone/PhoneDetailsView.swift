@@ -780,7 +780,7 @@ struct PhoneDetailsView: View {
     private func relatedMatchesSection(_ meta: NuvioMeta) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if !relatedMatches.isEmpty {
-                PhoneSectionHeader(title: meta.genres?.first(where: { !$0.contains("-") }).map { "More \($0)" } ?? "More Matches")
+                PhoneSectionHeader(title: RelatedMatches.rowTitle(for: meta, matches: relatedMatches))
                 PhonePosterGrid(items: relatedMatches) { onOpenTitle($0.id, $0.type) }
             }
         }

@@ -530,7 +530,7 @@ struct PhonePlayerControls: View {
     private func portraitMatches(_ meta: NuvioMeta) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             if !relatedMatches.isEmpty {
-                Text(meta.genres?.first(where: { !$0.contains("-") }).map { "More \($0)" } ?? "More Matches")
+                Text(RelatedMatches.rowTitle(for: meta, matches: relatedMatches))
                     .font(.headline)
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 12, alignment: .top)], spacing: 16) {
                     ForEach(relatedMatches, id: \.id) { match in

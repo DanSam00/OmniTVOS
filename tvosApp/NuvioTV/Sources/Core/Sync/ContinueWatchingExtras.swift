@@ -110,7 +110,8 @@ enum FavouriteTeamsStore {
 ///   (`StreamAvailability`);
 /// - a favourite team's next match appears from the day before until it is
 ///   expected to have finished;
-/// - a few recommendations, each with a real source, close the row.
+/// - recommendations, each with a real source, close the row, and only to
+///   fill it: a row with enough of the viewer's own cards gets none.
 ///
 /// Nothing here is stored as progress or synced to an account.
 @MainActor
@@ -137,6 +138,8 @@ final class ContinueWatchingExtras {
     /// source yet.
     private static let recommendationCandidates = 10
     private static let recommendationCount = 6
+    /// Recommendations top the row up to this many playable cards.
+    private static let rowFillTarget = 8
 
     private init() {
         NotificationCenter.default.addObserver(
@@ -171,16 +174,23 @@ final class ContinueWatchingExtras {
 
         let present = Set(shown.map(\.meta.id))
         let liveFixtures = fixtures.filter { Self.fixtureIsCurrent($0) && !present.contains($0.meta.id) }
+        // Filler only: as many as the row is short of the target, counting
+        // what can be played now (not episodes still to air).
+        let playable = (shown + liveFixtures).filter {
+            !ContinueWatchingSortPolicy.isUpcomingItem($0) && !ContinueWatchingDismissStore.isDismissed($0)
+        }.count
+        let slots = max(0, min(Self.recommendationCount, Self.rowFillTarget - playable))
         // Marked watched since they were fetched: not suggested again.
         let watchedIDs = Set(WatchedStore.visibleItems().map(\.meta.id))
-        let extraRecommendations = recommendations.filter { item in
+        let extraRecommendations = slots == 0 ? [] : recommendations.filter { item in
             guard !present.contains(item.meta.id), !watchedIDs.contains(item.meta.id),
+                  !ContinueWatchingDismissStore.isDismissed(item),
                   let request = StreamAvailability.request(for: item) else {
                 return false
             }
             requests.append(request)
             return StreamAvailability.shared.isAvailable(request)
-        }.prefix(Self.recommendationCount)
+        }.prefix(slots)
         StreamAvailability.shared.ensureChecked(requests)
 
         // 18+ titles only while the row's NSFW toggle is on (this session).
@@ -376,18 +386,25 @@ final class ContinueWatchingExtras {
 
     /// Each team's next match from the installed sports add-ons.
     private func loadFixtures(teams: [String]) async -> [ContinueWatchingItem] {
+        // Recaps and highlights are games already played.
         let catalogs = await repository.availableAddonCatalogs()
             .filter { ["sport", "sports"].contains($0.type.lowercased()) }
+            .filter { catalog in
+                let name = (catalog.catalogName + " " + catalog.catalogId).lowercased()
+                return !["recap", "replay", "highlight"].contains { name.contains($0) }
+            }
         var listed: [NuvioMeta] = []
         await withTaskGroup(of: [NuvioMeta].self) { group in
             for catalog in catalogs {
                 group.addTask { [repository] in
                     // A page is about twenty matches and a busy sport lists
                     // far more, so read on: on the first page alone Liverpool
-                    // v Brighton was never seen. Six pages at most.
+                    // v Brighton was never seen, and with six pages Liverpool
+                    // v Arsenal (page 8 of 15 in a 300-match football list)
+                    // was not either. To the end, twenty pages at most.
                     var items: [NuvioMeta] = []
                     var skip = 0
-                    for _ in 0..<6 {
+                    for _ in 0..<20 {
                         guard let page = try? await repository.browseCatalog(
                             addonId: catalog.addonId,
                             contentType: catalog.type,

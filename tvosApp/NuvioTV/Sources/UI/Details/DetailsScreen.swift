@@ -4349,15 +4349,15 @@ struct TvDetailsContent: View {
         uiState.meta.map(RelatedMatches.applies(to:)) ?? false
     }
 
-    /// "More Basketball", else More Like This.
+    /// "More Premier League" (or "More Football"), else More Like This.
     private var relatedRowTitle: String {
         guard uiState.moreLikeThis.isEmpty else {
             return L10n.string("settings_tmdb_module_more_like_this", fallback: "More Like This")
         }
-        if let sport = uiState.meta?.genres?.first(where: { !$0.contains("-") }) {
-            return L10n.format("details_more_sport", fallback: "More %@", sport)
+        guard let meta = uiState.meta else {
+            return L10n.string("details_more_matches", fallback: "More Matches")
         }
-        return L10n.string("details_more_matches", fallback: "More Matches")
+        return RelatedMatches.rowTitle(for: meta, matches: relatedMatches)
     }
 
     /// The source check for the Play button: the film, or the episode it

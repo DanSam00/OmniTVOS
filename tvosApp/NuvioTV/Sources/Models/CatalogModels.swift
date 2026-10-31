@@ -1500,8 +1500,9 @@ enum ContinueWatchingSortPolicy {
     /// 2. new episodes of shows being watched or watched before,
     /// 3. a favourite team's next match,
     /// 4. what is being watched — films and shows, by the chosen sort,
-    /// 5. recommendations,
-    /// 6. episodes still to air, when the row shows them.
+    /// 5. episodes still to air, when the row shows them,
+    /// 6. recommendations, which only fill a short row
+    ///    (`ContinueWatchingExtras.compose`).
     ///
     /// The chosen sort still orders the cards inside each group.
     static func sorted(_ items: [ContinueWatchingItem], preference: String) -> [ContinueWatchingItem] {
@@ -1525,7 +1526,7 @@ enum ContinueWatchingSortPolicy {
         if item.isNewEpisodeDrop || isRecentlyReleasedProgress(item) { return 1 }
         // Out today: shown only once a real source is found, so it is out.
         if item.cardKind == nil, item.isUpNextEntry, item.isAiringToday { return 1 }
-        if item.isRecommendation { return 4 }
+        if item.isRecommendation { return 6 }
         if isUpcomingItem(item) { return 5 }
         return 3
     }
