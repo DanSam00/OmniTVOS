@@ -97,6 +97,22 @@ enum FixtureArtwork {
         return isDrawn(title: meta.name, genres: genres)
     }
 
+    /// The widgets' wide picture: the match centred, on every platform. The
+    /// Mac's own backdrop puts it in the right two-fifths, which the widget's
+    /// narrower crop cut through. Drawn now if need be; nil until it is.
+    @MainActor
+    static func widgetArtURL(for meta: NuvioMeta) async -> String? {
+        guard isMatch(meta),
+              let address = artURL(for: meta, shape: .landscape),
+              let url = URL(string: address) else { return nil }
+        let genres = meta.genres ?? []
+        if let file = drawnFile(title: meta.name, genres: genres, shape: .landscape),
+           FileManager.default.fileExists(atPath: file.path) {
+            return address
+        }
+        return await imageData(for: url) == nil ? nil : address
+    }
+
     // MARK: Background drawing
 
     @MainActor private static var queue: [(title: String, genres: [String])] = []

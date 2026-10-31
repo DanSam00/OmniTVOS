@@ -481,7 +481,11 @@ final class ContinueWatchingExtras {
             )
         }
         #if os(iOS) || os(macOS)
-        publishToWidget(nextMatches)
+        var widgetArt: [String: String] = [:]
+        for item in nextMatches {
+            widgetArt[item.meta.id] = await FixtureArtwork.widgetArtURL(for: item.meta)
+        }
+        publishToWidget(nextMatches, wideArt: widgetArt)
         #endif
         // Continue Watching shows each from the day before.
         return nextMatches.filter(Self.fixtureIsCurrent)
@@ -507,8 +511,10 @@ final class ContinueWatchingExtras {
     }
 
     #if os(iOS) || os(macOS)
+    private var didPublishToWidget = false
+
     /// The teams' next matches for the Coming Up widget, beside the episodes.
-    private func publishToWidget(_ matches: [ContinueWatchingItem]) {
+    private func publishToWidget(_ matches: [ContinueWatchingItem], wideArt: [String: String] = [:]) {
         let feed = matches.compactMap { item -> UpcomingEpisodeEntry? in
             let day = item.kickoff ?? item.released.flatMap(CalendarDayKey.date(fromDayKey:))
             guard let day else { return nil }
@@ -521,12 +527,16 @@ final class ContinueWatchingExtras {
                 episodeTitle: nil,
                 airDate: Calendar.current.startOfDay(for: day),
                 posterURL: item.meta.posterUrl,
-                imageURL: item.meta.backgroundUrl,
+                imageURL: wideArt[item.meta.id] ?? item.meta.backgroundUrl,
                 kickoff: item.kickoff,
                 matchLength: Self.expectedLength(of: item.meta)
             )
         }
-        guard UpcomingEpisodeFeedStore.readMatches() != feed else { return }
+        // Once a launch even when unchanged: a widget left showing an old
+        // timeline (its extension kept running across an update, on the Mac)
+        // was otherwise never asked again while the matches stayed the same.
+        guard UpcomingEpisodeFeedStore.readMatches() != feed || !didPublishToWidget else { return }
+        didPublishToWidget = true
         UpcomingEpisodeFeedStore.writeMatches(feed)
         WidgetCenter.shared.reloadTimelines(ofKind: OmniWidgetKind.upcoming)
         let sources = feed.flatMap { [$0.posterURL, $0.imageURL].compactMap { $0 } }
