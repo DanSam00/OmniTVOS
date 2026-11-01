@@ -85,11 +85,14 @@ private final class DecodedAnimatedImage {
     let delays: [TimeInterval]
     /// Total loop duration (sum of delays).
     let loopDuration: TimeInterval
+    /// Decoded bitmap size, for the cache's memory budget.
+    let byteCost: Int
 
-    init(frames: [UIImage], delays: [TimeInterval]) {
+    init(frames: [UIImage], delays: [TimeInterval], byteCost: Int = 0) {
         self.frames = frames
         self.delays = delays
         self.loopDuration = delays.reduce(0, +)
+        self.byteCost = byteCost
     }
 
     var isAnimated: Bool { frames.count > 1 }
@@ -354,6 +357,8 @@ private final class AnimatedGIFCache {
 
     private init() {
         cache.countLimit = 16
+        // A 90-frame focus loop decodes to ~80 MB at card size.
+        cache.totalCostLimit = 256 * 1024 * 1024
     }
 
     func image(for url: URL) -> DecodedAnimatedImage? {
@@ -386,7 +391,7 @@ private final class AnimatedGIFCache {
         }
 
         if let image {
-            cache.setObject(image, forKey: key as NSString)
+            cache.setObject(image, forKey: key as NSString, cost: image.byteCost)
         }
         return image
     }
@@ -418,6 +423,7 @@ private final class AnimatedGIFCache {
 
         var frames: [UIImage] = []
         var delays: [TimeInterval] = []
+        var byteCost = 0
         frames.reserveCapacity(count)
         delays.reserveCapacity(count)
 
@@ -430,6 +436,7 @@ private final class AnimatedGIFCache {
                 continue
             }
             frames.append(UIImage(cgImage: cgImage))
+            byteCost += cgImage.bytesPerRow * cgImage.height
             delays.append(frameDelay(source: source, index: index))
         }
 
@@ -442,7 +449,7 @@ private final class AnimatedGIFCache {
             let avg = delays.isEmpty ? 0.1 : delays.reduce(0, +) / Double(delays.count)
             delays = Array(repeating: avg, count: frames.count)
         }
-        return DecodedAnimatedImage(frames: frames, delays: delays)
+        return DecodedAnimatedImage(frames: frames, delays: delays, byteCost: byteCost)
     }
 
     private static func createFrameImage(
@@ -470,12 +477,16 @@ private final class AnimatedGIFCache {
 
         let gif = properties[kCGImagePropertyGIFDictionary] as? [AnyHashable: Any]
         let png = properties[kCGImagePropertyPNGDictionary] as? [AnyHashable: Any]
+        // Community collections ship their focus art as animated WebP.
+        let webp = properties[kCGImagePropertyWebPDictionary] as? [AnyHashable: Any]
 
         // ImageIO may surface delays as NSNumber *or* Double — both must work.
         let unclamped = numberValue(gif?[kCGImagePropertyGIFUnclampedDelayTime])
             ?? numberValue(png?[kCGImagePropertyAPNGUnclampedDelayTime])
+            ?? numberValue(webp?[kCGImagePropertyWebPUnclampedDelayTime])
         let clamped = numberValue(gif?[kCGImagePropertyGIFDelayTime])
             ?? numberValue(png?[kCGImagePropertyAPNGDelayTime])
+            ?? numberValue(webp?[kCGImagePropertyWebPDelayTime])
 
         var delay = unclamped ?? clamped ?? defaultDelay
         // GIF89a / browser rule: delays under 20ms are treated as 100ms.

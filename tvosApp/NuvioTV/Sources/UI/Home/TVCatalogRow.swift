@@ -1500,7 +1500,14 @@ struct TVCollectionFolderCard: View {
     @State private var didRequestInitialFocus = false
     @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
 
-    private var showFocus: Bool { isFocused || retainFocusAppearance }
+    private var showFocus: Bool {
+        #if os(macOS)
+        // Home drives focus by hand on the Mac; the card's own `@FocusState`
+        // never follows it, so the focus art and outline read the shared key.
+        if let macFocusedCardKey, macFocusedCardKey == (externalFocusValue ?? folder.id) { return true }
+        #endif
+        return isFocused || retainFocusAppearance
+    }
 
     private var cardWidth: CGFloat {
         TVCollectionFolderCardLayout.cardWidth(shape: folder.tileShape, layoutMode: layoutMode)
