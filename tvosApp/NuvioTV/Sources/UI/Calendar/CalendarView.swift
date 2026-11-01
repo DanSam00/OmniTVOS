@@ -14,22 +14,25 @@ private enum CalendarMetrics {
     static let dayCellHeight: CGFloat = 150
     static let dayCellGap: CGFloat = 12
 
-    /// A month that spans six weeks (November 2026, starting on a Sunday) has
-    /// one row more than the screen holds at the full height. On the Mac the
-    /// overflow did more than cut the last week off: every tab shares one
-    /// stack, so the tall Calendar lifted every screen off the top. Those
-    /// months get shorter cells.
-    static func dayCellHeight(weeks: Int) -> CGFloat {
-        #if os(macOS)
-        weeks > 5 ? 128 : dayCellHeight
-        #else
-        dayCellHeight
-        #endif
+    /// The weekday initials above the grid.
+    static let weekdayRowHeight: CGFloat = 24
+    /// Between the weekday row and each week.
+    static let weekSpacing: CGFloat = 8
+
+    /// Full height when the month fits, shorter when it does not. A month
+    /// that spans six weeks (November 2026, starting on a Sunday) has a row
+    /// more than the screen holds at full height: the last week was cut off,
+    /// and on the Mac, where every tab shares one stack, the tall Calendar
+    /// lifted every screen off the top.
+    static func dayCellHeight(weeks: Int, available: CGFloat?) -> CGFloat {
+        guard let available, weeks > 0 else { return dayCellHeight }
+        let fit = (available - weekdayRowHeight - CGFloat(weeks) * weekSpacing) / CGFloat(weeks)
+        return max(96, min(dayCellHeight, fit.rounded(.down)))
     }
 
     /// A day's poster, sized to the room its cell leaves under the date.
     static func dayThumbSize(cellHeight: CGFloat) -> CGSize {
-        let height = min(92, cellHeight - 58)
+        let height = max(38, min(92, cellHeight - 58))
         return CGSize(width: (height * 62 / 92).rounded(), height: height)
     }
 }
@@ -660,22 +663,26 @@ struct CalendarView: View {
             monthHeader
                 .padding(.horizontal, CalendarMetrics.pageInset)
 
-            MonthGrid(
-                anchor: monthAnchor,
-                viewModel: viewModel,
-                accentColor: accentColor,
-                macFocusedDayKey: macFocusedMonthDay,
-                focusedDayKey: $focusedDayKey,
-                onOpenDay: { key in
-                    guard !viewModel.entries(on: key).isEmpty else { return }
-                    focusedPanelEntryID = viewModel.entries(on: key).first?.id
-                    TVHomeDebugTrace.log("calendar.panel.open day=\(key)")
-                    withAnimation(.easeOut(duration: 0.22)) { panelDayKey = key }
-                }
-            )
+            // The grid sizes its cells to the room left below the header.
+            GeometryReader { proxy in
+                MonthGrid(
+                    anchor: monthAnchor,
+                    viewModel: viewModel,
+                    accentColor: accentColor,
+                    macFocusedDayKey: macFocusedMonthDay,
+                    focusedDayKey: $focusedDayKey,
+                    onOpenDay: { key in
+                        guard !viewModel.entries(on: key).isEmpty else { return }
+                        focusedPanelEntryID = viewModel.entries(on: key).first?.id
+                        TVHomeDebugTrace.log("calendar.panel.open day=\(key)")
+                        withAnimation(.easeOut(duration: 0.22)) { panelDayKey = key }
+                    },
+                    availableHeight: proxy.size.height
+                )
+            }
             .padding(.horizontal, CalendarMetrics.pageInset)
-
-            Spacer(minLength: 0)
+            // Room for the focused cell and a margin under the last week.
+            .padding(.bottom, 24)
         }
         .padding(.top, 4)
     }
@@ -1010,19 +1017,21 @@ private struct MonthGrid: View {
     var macFocusedDayKey: String? = nil
     @FocusState.Binding var focusedDayKey: String?
     let onOpenDay: (String) -> Void
+    /// Height the grid may fill; cells shrink to fit it.
+    var availableHeight: CGFloat? = nil
 
     private var calendar: Calendar { Calendar.current }
 
     var body: some View {
         let layout = CalendarDateFormatting.monthLayout(for: anchor)
-        let cellHeight = CalendarMetrics.dayCellHeight(weeks: layout.weeks.count)
-        VStack(alignment: .leading, spacing: 8) {
+        let cellHeight = CalendarMetrics.dayCellHeight(weeks: layout.weeks.count, available: availableHeight)
+        VStack(alignment: .leading, spacing: CalendarMetrics.weekSpacing) {
             HStack(spacing: CalendarMetrics.dayCellGap) {
                 ForEach(CalendarDateFormatting.weekdaySymbols(), id: \.self) { symbol in
                     Text(symbol)
                         .font(.system(size: 18, weight: .semibold))
                         .foregroundColor(.white.opacity(0.45))
-                        .frame(width: CalendarMetrics.dayCellWidth, alignment: .leading)
+                        .frame(width: CalendarMetrics.dayCellWidth, height: CalendarMetrics.weekdayRowHeight, alignment: .leading)
                 }
             }
 
