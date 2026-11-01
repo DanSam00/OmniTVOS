@@ -13,6 +13,25 @@ private enum CalendarMetrics {
     static let dayCellWidth: CGFloat = 224
     static let dayCellHeight: CGFloat = 150
     static let dayCellGap: CGFloat = 12
+
+    /// A month that spans six weeks (November 2026, starting on a Sunday) has
+    /// one row more than the screen holds at the full height. On the Mac the
+    /// overflow did more than cut the last week off: every tab shares one
+    /// stack, so the tall Calendar lifted every screen off the top. Those
+    /// months get shorter cells.
+    static func dayCellHeight(weeks: Int) -> CGFloat {
+        #if os(macOS)
+        weeks > 5 ? 128 : dayCellHeight
+        #else
+        dayCellHeight
+        #endif
+    }
+
+    /// A day's poster, sized to the room its cell leaves under the date.
+    static func dayThumbSize(cellHeight: CGFloat) -> CGSize {
+        let height = min(92, cellHeight - 58)
+        return CGSize(width: (height * 62 / 92).rounded(), height: height)
+    }
 }
 
 /// Upcoming (and recent) releases for the titles the user follows.
@@ -996,6 +1015,7 @@ private struct MonthGrid: View {
 
     var body: some View {
         let layout = CalendarDateFormatting.monthLayout(for: anchor)
+        let cellHeight = CalendarMetrics.dayCellHeight(weeks: layout.weeks.count)
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: CalendarMetrics.dayCellGap) {
                 ForEach(CalendarDateFormatting.weekdaySymbols(), id: \.self) { symbol in
@@ -1017,6 +1037,7 @@ private struct MonthGrid: View {
                                 isToday: key == CalendarDayKey.dayKey(offsetFromToday: 0),
                                 accentColor: accentColor,
                                 macIsFocused: macFocusedDayKey == key,
+                                cellHeight: cellHeight,
                                 action: { onOpenDay(key) }
                             )
                             .nuvioFocusable()
@@ -1027,7 +1048,7 @@ private struct MonthGrid: View {
                             .focusEffectDisabledIfAvailable()
                         } else {
                             Color.clear
-                                .frame(width: CalendarMetrics.dayCellWidth, height: CalendarMetrics.dayCellHeight)
+                                .frame(width: CalendarMetrics.dayCellWidth, height: cellHeight)
                         }
                     }
                 }
@@ -1055,6 +1076,7 @@ private struct DayCell: View {
     let isToday: Bool
     let accentColor: Color
     var macIsFocused = false
+    var cellHeight: CGFloat = CalendarMetrics.dayCellHeight
     let action: () -> Void
 
     var body: some View {
@@ -1090,13 +1112,13 @@ private struct DayCell: View {
                 // dropping the title row.
                 HStack(spacing: 5) {
                     ForEach(entries.prefix(3)) { entry in
-                        DayThumb(entry: entry)
+                        DayThumb(entry: entry, size: CalendarMetrics.dayThumbSize(cellHeight: cellHeight))
                     }
                     Spacer(minLength: 0)
                 }
             }
             .padding(10)
-            .frame(width: CalendarMetrics.dayCellWidth, height: CalendarMetrics.dayCellHeight, alignment: .topLeading)
+            .frame(width: CalendarMetrics.dayCellWidth, height: cellHeight, alignment: .topLeading)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(Color.white.opacity(entries.isEmpty ? 0.03 : 0.09))
@@ -1110,6 +1132,7 @@ private struct DayCell: View {
 /// A day's poster, falling back as `EntryArtwork` does when one fails.
 private struct DayThumb: View {
     let entry: CalendarEntry
+    var size = CGSize(width: 62, height: 92)
     @State private var attempt = 0
 
     private var candidates: [String] {
@@ -1138,7 +1161,7 @@ private struct DayThumb: View {
                 .id(attempt)
             }
         }
-        .frame(width: 62, height: 92)
+        .frame(width: size.width, height: size.height)
         .clipped()
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
     }

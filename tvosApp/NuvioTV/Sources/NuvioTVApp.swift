@@ -4170,6 +4170,11 @@ private struct TVMainTabView: View {
     ) -> some View {
         let isCurrent = selectedTab == tab
         content()
+            // Every tab stays mounted in one stack, so a tab that measured
+            // taller than the screen grew the stack for all of them, and it
+            // was re-centred: every screen, the menu and the player's title
+            // rose off the top. Each tab takes exactly the space offered.
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
             .opacity(isCurrent ? 1 : 0)
             .allowsHitTesting(isCurrent)
             .accessibilityHidden(!isCurrent)
