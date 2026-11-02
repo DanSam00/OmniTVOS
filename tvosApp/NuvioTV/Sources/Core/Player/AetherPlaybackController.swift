@@ -35,9 +35,13 @@ final class AetherSubtitleOverlayState: ObservableObject {
 
 /// Keeps enough translated dialogue ready to absorb provider latency without
 /// continuously translating far beyond the viewer's playback position.
+/// Free-tier quotas count requests, not tokens, so each refill reaches up to
+/// five minutes ahead in one large batch rather than many small ones.
+/// Embedded tracks only expose cues about a minute ahead (the engine's drain
+/// lead), so for those the window is bounded by what has been read.
 enum AISubtitleAdaptiveBuffer {
     static let lowWatermark: TimeInterval = 20
-    static let highWatermark: TimeInterval = 60
+    static let highWatermark: TimeInterval = 300
 
     static func shouldRefill(nextUntranslatedStart: Double, sourceTime: Double) -> Bool {
         max(0, nextUntranslatedStart - sourceTime) <= lowWatermark
@@ -467,7 +471,11 @@ final class AISubtitleTranslationState: ObservableObject {
             report(outcome)
             startNextBatchIfNeeded(settings: currentSettings ?? AISubtitleTranslationSettings.current())
         case .failure(let error):
-            failedCueIDs.insert(cue.id)
+            if let delay = Self.throttleDelay(for: error) {
+                nextBatchStartAt = max(nextBatchStartAt, Date().addingTimeInterval(delay))
+            } else {
+                failedCueIDs.insert(cue.id)
+            }
             remainingPriorityCueIDs.removeAll { $0 == cue.id }
             if (error as? AISubtitleTranslationError)?.isPermanentLimitError == true {
                 stopTranslationAfterPermanentProviderFailure()
@@ -509,7 +517,14 @@ final class AISubtitleTranslationState: ObservableObject {
             report(outcome)
             startNextBatchIfNeeded(settings: currentSettings ?? AISubtitleTranslationSettings.current())
         case .failure(let error):
-            failedCueIDs.formUnion(cues.map(\.id))
+            if let delay = Self.throttleDelay(for: error) {
+                // A throttle is not the cues' fault: keep them pending and try
+                // again once the provider's window has passed.
+                nextBatchStartAt = max(nextBatchStartAt, Date().addingTimeInterval(delay))
+                AISubtitleLog.log("throttled, next batch in " + String(format: "%.1fs", delay))
+            } else {
+                failedCueIDs.formUnion(cues.map(\.id))
+            }
             if (error as? AISubtitleTranslationError)?.isPermanentLimitError == true {
                 stopTranslationAfterPermanentProviderFailure()
             }
@@ -594,7 +609,16 @@ final class AISubtitleTranslationState: ObservableObject {
         priorityTasks = [:]
     }
 
+    /// The provider's retry time for a temporary 429; nil for anything else.
+    private static func throttleDelay(for error: Error) -> TimeInterval? {
+        guard let error = error as? AISubtitleTranslationError,
+              case .service(429, _, let retryAfter?) = error,
+              !error.isPermanentLimitError else { return nil }
+        return retryAfter
+    }
+
     private func stopTranslationAfterPermanentProviderFailure() {
+        AISubtitleLog.log("stopped for this playback: the provider reported a final quota or billing limit")
         hasPermanentProviderFailure = true
         cancelTranslationWork()
         translatingCueIDs = []
@@ -688,6 +712,23 @@ enum AISubtitleTranslationError: LocalizedError {
         return retryAfter
     }
 
+    /// One log line's worth: no key, no subtitle text.
+    var logSummary: String {
+        switch self {
+        case .missingAPIKey:
+            return "missingAPIKey"
+        case .invalidResponse:
+            return "invalidResponse"
+        case .service(let statusCode, let message, let retryAfter):
+            let oneLine = message
+                .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            return "status=\(statusCode)"
+                + " retryAfter=" + (retryAfter.map { String(format: "%.1fs", $0) } ?? "none")
+                + " permanent=\(isPermanentLimitError)"
+                + " message=\"" + String(oneLine.prefix(300)) + "\""
+        }
+    }
+
     var errorDescription: String? {
         switch self {
         case .missingAPIKey:
@@ -696,6 +737,8 @@ enum AISubtitleTranslationError: LocalizedError {
             return "The AI subtitle provider returned no translated text. Original subtitles will remain visible."
         case .service where isPermanentLimitError:
             return "AI subtitle translation stopped because the provider reported a quota, billing, credit, or daily limit. Original subtitles will remain visible."
+        case .service(429, _, let retryAfter?):
+            return "The AI subtitle provider is limiting requests; translation resumes in about \(Int(retryAfter.rounded(.up))) s."
         case .service(_, let message, _):
             return message
         }
@@ -727,9 +770,9 @@ struct AISubtitleTranslationItem: Sendable {
 /// room for the translation prompt, JSON envelope, and a longer translated
 /// response, not just the source text sent to the provider.
 enum AISubtitleBatching {
-    static let maximumCueCount = 40
-    static let maximumEstimatedRequestBytes = 24_000
-    static let maximumEstimatedRequestTokens = 6_000
+    static let maximumCueCount = 120
+    static let maximumEstimatedRequestBytes = 64_000
+    static let maximumEstimatedRequestTokens = 16_000
 
     static func batches(_ items: [AISubtitleTranslationItem]) -> [[AISubtitleTranslationItem]] {
         guard !items.isEmpty else { return [] }
@@ -782,7 +825,7 @@ enum AISubtitleBatching {
         let sourceTokens = estimatedInputTokens(for: items)
         let jsonOverhead = items.count * 8 + 160
         let output = Int(Double(sourceTokens) * 1.8) + jsonOverhead
-        return min(2_048, max(512, output))
+        return min(8_192, max(512, output))
     }
 
     private static func fits(_ items: [AISubtitleTranslationItem]) -> Bool {
@@ -939,6 +982,14 @@ actor AISubtitleRequestPacer {
         try Task.checkCancellation()
     }
 
+    /// A throttle answer covers every request to that model, not just the one
+    /// that received it: hold the whole scope until the provider's retry time.
+    func backOff(provider: String, model: String, for delay: TimeInterval) {
+        let scope = Scope(provider: provider.lowercased(), model: model.lowercased())
+        let until = Date().addingTimeInterval(max(0, delay))
+        nextStartByScope[scope] = max(nextStartByScope[scope] ?? until, until)
+    }
+
     func acquisitionCount(provider: String, model: String) -> Int {
         acquisitionCountByScope[
             Scope(provider: provider.lowercased(), model: model.lowercased())
@@ -954,7 +1005,7 @@ enum AISubtitleTranslator {
         pacer: AISubtitleRequestPacer = .shared
     ) async throws -> String {
         guard !settings.apiKey.isEmpty else { throw AISubtitleTranslationError.missingAPIKey }
-        return try await execute(settings: settings, pacer: pacer) {
+        return try await execute(settings: settings, pacer: pacer, label: "cue") {
             switch settings.provider {
             case .gemini:
                 return try await GeminiSubtitleTranslator.translate(
@@ -983,7 +1034,11 @@ enum AISubtitleTranslator {
         pacer: AISubtitleRequestPacer = .shared
     ) async throws -> [Int: String] {
         guard !settings.apiKey.isEmpty else { throw AISubtitleTranslationError.missingAPIKey }
-        return try await execute(settings: settings, pacer: pacer) {
+        return try await execute(
+            settings: settings,
+            pacer: pacer,
+            label: "batch cues=\(items.count) estTokens=\(AISubtitleBatching.estimatedRequestTokens(for: items))"
+        ) {
             switch settings.provider {
             case .gemini:
                 return try await GeminiSubtitleTranslator.translateBatch(
@@ -1008,27 +1063,57 @@ enum AISubtitleTranslator {
     private static func execute<T>(
         settings: AISubtitleTranslationSettings,
         pacer: AISubtitleRequestPacer,
+        label: String,
         operation: @escaping () async throws -> T
     ) async throws -> T {
         var completedAttempts = 0
+        let scope = "\(settings.provider.rawValue)/\(settings.model) \(label)"
         while true {
             try Task.checkCancellation()
             try await pacer.acquire(provider: settings.provider.rawValue, model: settings.model)
+            let started = Date()
+            func elapsed() -> String { String(Int(Date().timeIntervalSince(started) * 1000)) }
             do {
-                return try await operation()
+                let result = try await operation()
+                AISubtitleLog.log("ok \(scope) attempt=\(completedAttempts + 1) ms=\(elapsed())")
+                return result
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
                 completedAttempts += 1
+                let summary = (error as? AISubtitleTranslationError)?.logSummary
+                    ?? String(describing: error)
                 guard let delay = AISubtitleRetryPolicy.delay(
                     for: error,
                     completedAttempts: completedAttempts
                 ) else {
+                    AISubtitleLog.log("failed \(scope) attempt=\(completedAttempts) ms=\(elapsed()) giving up \(summary)")
                     throw error
                 }
-                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                AISubtitleLog.log(
+                    "failed \(scope) attempt=\(completedAttempts) ms=\(elapsed()) retrying in "
+                        + String(format: "%.1fs ", delay) + summary
+                )
+                if (error as? AISubtitleTranslationError)?.retryAfter != nil {
+                    await pacer.backOff(provider: settings.provider.rawValue, model: settings.model, for: delay)
+                } else {
+                    try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                }
             }
         }
+    }
+}
+
+/// Writes AI subtitle request outcomes next to the engine's lines: the Mac's
+/// `~/Library/Logs/Omni/omni.log` and the phone's container log. Never the
+/// key or the subtitle text.
+enum AISubtitleLog {
+    static func log(_ line: String) {
+        #if os(macOS)
+        MacDiagnostics.log("ai.subtitles " + line)
+        #elseif os(iOS)
+        AetherPlaybackController.PhoneLogFile.log("ai.subtitles " + line)
+        #endif
     }
 }
 
@@ -1105,6 +1190,18 @@ enum GeminiSubtitleTranslator {
 
     private struct APIError: Decodable {
         let message: String?
+        let details: [ErrorDetail]?
+    }
+
+    /// `google.rpc.RetryInfo` carries `retryDelay`; `google.rpc.QuotaFailure`
+    /// carries the `violations`. Other detail types decode to all-nil.
+    private struct ErrorDetail: Decodable {
+        let retryDelay: String?
+        let violations: [QuotaViolation]?
+    }
+
+    private struct QuotaViolation: Decodable {
+        let quotaId: String?
     }
 
     private struct BatchInput: Encodable {
@@ -1184,7 +1281,7 @@ enum GeminiSubtitleTranslator {
             body,
             model: model,
             apiKey: apiKey,
-            timeout: 30,
+            timeout: 60,
             session: session
         )
         guard let outputs = try? JSONDecoder().decode(
@@ -1232,11 +1329,13 @@ enum GeminiSubtitleTranslator {
             throw AISubtitleTranslationError.invalidResponse
         }
         guard (200...299).contains(http.statusCode) else {
-            let serviceError = try? JSONDecoder().decode(ErrorBody.self, from: data)
-            throw AISubtitleTranslationError.service(
+            let apiError = (try? JSONDecoder().decode(ErrorBody.self, from: data))?.error
+            throw serviceError(
                 statusCode: http.statusCode,
-                message: serviceError?.error?.message ?? ServiceErrorText.describe(status: http.statusCode, service: "Gemini"),
-                retryAfter: retryAfter(from: http)
+                message: apiError?.message ?? ServiceErrorText.describe(status: http.statusCode, service: "Gemini"),
+                quotaIDs: apiError?.details?.flatMap { $0.violations ?? [] }.compactMap(\.quotaId) ?? [],
+                retryDelay: apiError?.details?.compactMap(\.retryDelay).first,
+                headerRetryAfter: retryAfter(from: http)
             )
         }
         let decoded = try JSONDecoder().decode(ResponseBody.self, from: data)
@@ -1291,6 +1390,54 @@ enum GeminiSubtitleTranslator {
     private static func retryAfter(from response: HTTPURLResponse) -> TimeInterval? {
         guard let value = response.value(forHTTPHeaderField: "Retry-After") else { return nil }
         return AISubtitleRetryPolicy.retryAfter(from: value)
+    }
+
+    /// Gemini sends no `Retry-After` header, and every 429 it sends, even
+    /// the per-minute ones, says "check your plan and billing details". Read
+    /// as-is, that looked like a permanent billing limit and ended translation
+    /// for the rest of the episode on the first throttle. The quota ID tells
+    /// the two apart: only a per-day quota is final for the session.
+    static func serviceError(
+        statusCode: Int,
+        message: String,
+        quotaIDs: [String],
+        retryDelay: String?,
+        headerRetryAfter: TimeInterval?
+    ) -> AISubtitleTranslationError {
+        guard statusCode == 429 else {
+            return .service(statusCode: statusCode, message: message, retryAfter: headerRetryAfter)
+        }
+        if let daily = quotaIDs.first(where: { $0.localizedCaseInsensitiveContains("PerDay") }) {
+            return .service(
+                statusCode: statusCode,
+                message: "Gemini daily quota exhausted (\(daily)). It resets at midnight Pacific time.",
+                retryAfter: nil
+            )
+        }
+        let quotaSuffix = quotaIDs.isEmpty ? "" : " [quota: \(quotaIDs.joined(separator: ", "))]"
+        // A 429 with no retry time anywhere keeps the message-based reading.
+        let retryAfter = headerRetryAfter
+            ?? retryDelay.flatMap(seconds(fromDuration:))
+            ?? secondsFromRetryHint(in: message)
+        return .service(statusCode: statusCode, message: message + quotaSuffix, retryAfter: retryAfter)
+    }
+
+    /// `google.protobuf.Duration` JSON form: "37s", "1.5s".
+    static func seconds(fromDuration value: String) -> TimeInterval? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasSuffix("s"), let seconds = TimeInterval(trimmed.dropLast()), seconds >= 0 else {
+            return nil
+        }
+        return seconds
+    }
+
+    /// The message itself ends "Please retry in 37.9s." on most throttles.
+    private static func secondsFromRetryHint(in message: String) -> TimeInterval? {
+        guard let match = message.range(
+            of: #"retry in [0-9]+(\.[0-9]+)?s"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) else { return nil }
+        return seconds(fromDuration: String(message[match].dropFirst("retry in ".count)))
     }
 }
 
@@ -1401,7 +1548,7 @@ enum OpenRouterSubtitleTranslator {
             prompt: prompt,
             apiKey: apiKey,
             maxTokens: batchOutputTokenLimit(for: items),
-            timeout: 30,
+            timeout: 60,
             session: session
         )
         guard let outputs = try? JSONDecoder().decode(

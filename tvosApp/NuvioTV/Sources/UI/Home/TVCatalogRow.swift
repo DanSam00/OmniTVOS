@@ -474,6 +474,7 @@ struct TVCatalogRow: View {
                         continueEpisodeArtworkURL: progressItem?.episodeArtworkURL,
                         continueIsUpNext: progressItem?.isUpNextEntry == true,
                         continueUpNextBadgeText: progressItem?.upNextBadgeText,
+                        continueBadgeCountdown: progressItem?.badgeCountdown,
                         showsWatchedBadge: id != TVHomeSection.continueWatchingId && id != TVHomeSection.upcomingId,
                         shouldRequestInitialFocus: shouldRequestInitialFocus,
                         onInitialFocusRequested: shouldRequestInitialFocus ? onInitialFocusRequested : nil,

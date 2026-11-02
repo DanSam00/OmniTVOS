@@ -334,7 +334,10 @@ struct PhoneContinueCard: View {
                 PhoneLiveBadge(font: .caption.weight(.semibold))
             } else {
                 // A match or a suggestion says when, or that it is one.
-                Text(item.cardKind != nil ? item.upNextBadgeText : (item.episodeDisplayLine ?? item.remainingText))
+                CountdownBadgeText(
+                    countdown: item.isFixture ? item.badgeCountdown : nil,
+                    text: item.cardKind != nil ? item.upNextBadgeText : (item.episodeDisplayLine ?? item.remainingText)
+                )
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

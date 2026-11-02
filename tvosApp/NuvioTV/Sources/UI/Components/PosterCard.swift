@@ -168,6 +168,8 @@ struct PosterCard: View {
     /// no real playback position yet.
     var continueIsUpNext: Bool = false
     var continueUpNextBadgeText: String? = nil
+    /// On the day, the badge counts down to this air time or kick-off.
+    var continueBadgeCountdown: BadgeCountdown? = nil
     var showsWatchedBadge: Bool = true
     var shouldRequestInitialFocus: Bool = false
     var onInitialFocusRequested: (() -> Void)? = nil
@@ -508,7 +510,10 @@ struct PosterCard: View {
                 if continueIsUpNext, continueBadgeDisplayText.uppercased() == "LIVE" {
                     LivePulseDot(size: 12)
                 }
-                Text(continueBadgeDisplayText)
+                CountdownBadgeText(
+                    countdown: continueIsUpNext ? continueBadgeCountdown : nil,
+                    text: continueBadgeDisplayText
+                )
                     .font(.system(size: 22, weight: .semibold))
                     .foregroundColor(.white)
                     .lineLimit(1)
@@ -869,6 +874,7 @@ extension PosterCard: Equatable {
             && lhs.continueEpisodeArtworkURL == rhs.continueEpisodeArtworkURL
             && lhs.continueIsUpNext == rhs.continueIsUpNext
             && lhs.continueUpNextBadgeText == rhs.continueUpNextBadgeText
+            && lhs.continueBadgeCountdown == rhs.continueBadgeCountdown
             && lhs.showsWatchedBadge == rhs.showsWatchedBadge
             && lhs.shouldRequestInitialFocus == rhs.shouldRequestInitialFocus
             && lhs.externalFocusValue == rhs.externalFocusValue
@@ -2647,7 +2653,10 @@ struct ContinueBadgeLine: View {
                     .foregroundColor(.white)
             }
         } else {
-            Text(item.isUpNextEntry ? item.upNextBadgeText : item.remainingText.uppercased())
+            CountdownBadgeText(
+                countdown: item.badgeCountdown,
+                text: item.isUpNextEntry ? item.upNextBadgeText : item.remainingText.uppercased()
+            )
                 .font(.custom("Inter-SemiBold", size: size))
                 .foregroundColor(.white.opacity(opacity))
         }

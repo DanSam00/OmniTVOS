@@ -6162,12 +6162,13 @@ struct TVHomeView: View {
             }
         }
         // A next episode's source turning up, a favourite team's match coming
-        // into its window, or new recommendations: the same progress, composed
-        // again.
+        // into its window, new recommendations or an episode's air time: the
+        // same progress, composed again.
         .onReceive(
             NotificationCenter.default.publisher(for: StreamAvailability.changedNotification)
                 .merge(with: NotificationCenter.default.publisher(for: ContinueWatchingExtras.changedNotification))
                 .merge(with: NotificationCenter.default.publisher(for: NSFWVisibility.continueWatchingChanged))
+                .merge(with: NotificationCenter.default.publisher(for: EpisodeAirTimes.changedNotification))
                 .receive(on: RunLoop.main)
         ) { _ in
             setContinueWatching(rawContinueWatchingItems)

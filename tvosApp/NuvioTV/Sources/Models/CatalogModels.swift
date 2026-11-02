@@ -537,6 +537,21 @@ enum EpisodeReleasePolicy {
         return NuvioDateDisplay.formattedDate(released) ?? released.prefix(10).description
     }
 
+    /// A known air time in the device's zone and clock: "Today · 8:30 pm",
+    /// "Tomorrow · 20:30", "Mon 9 Nov · 12:30 pm".
+    static func airTimeText(_ date: Date) -> String {
+        let calendar = Calendar.current
+        let day: String
+        if calendar.isDateInToday(date) {
+            day = L10n.string("date_today", fallback: "Today")
+        } else if calendar.isDateInTomorrow(date) {
+            day = L10n.string("date_tomorrow", fallback: "Tomorrow")
+        } else {
+            day = date.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
+        }
+        return "\(day) · \(date.formatted(date: .omitted, time: .shortened))"
+    }
+
     /// True when `released` is a real timestamp within the last `days` days.
     /// This mirrors Android's release-alert window, which uses elapsed time
     /// rather than only comparing calendar dates.
@@ -1154,6 +1169,10 @@ struct ContinueWatchingItem: Identifiable, Codable {
     let cardKind: String?
     /// A fixture's kick-off, when the add-on gave one.
     let kickoff: Date?
+    /// When an episode still to air goes out, to the minute, where TVmaze
+    /// lists a real air time (`EpisodeAirTimes`). Set by
+    /// `ContinueWatchingExtras.compose`; never stored or synced.
+    var airTime: Date? = nil
 
     /// The episode this entry points at, resolved once at construction.
     ///
@@ -1188,10 +1207,26 @@ struct ContinueWatchingItem: Identifiable, Codable {
     /// waiting for a progress record to be rebuilt.
     private var effectiveEpisodeReleaseDate: String? { episodeVideo?.released ?? released }
     /// Recommendations and fixtures are offered as they are, never as
-    /// something still to air.
-    var hasAired: Bool { cardKind != nil || EpisodeReleasePolicy.hasAired(effectiveEpisodeReleaseDate) }
+    /// something still to air. A known air time decides it to the minute.
+    var hasAired: Bool {
+        if cardKind != nil { return true }
+        if let airTime { return Date() >= airTime }
+        return EpisodeReleasePolicy.hasAired(effectiveEpisodeReleaseDate)
+    }
+    /// Has a known air time still ahead.
+    var isAwaitingAirTime: Bool { airTime.map { $0 > Date() } ?? false }
+    /// What the badge counts down to on the day: a timed episode's air time,
+    /// or a match's kick-off.
+    var badgeCountdown: BadgeCountdown? {
+        let target = isFixture ? kickoff : (isUpNextEntry ? airTime : nil)
+        guard let target, target > Date(), Calendar.current.isDateInToday(target) else { return nil }
+        return BadgeCountdown(target: target, isMatch: isFixture)
+    }
     var isAiringToday: Bool { EpisodeReleasePolicy.isAiringToday(effectiveEpisodeReleaseDate) }
-    var airDateText: String? { EpisodeReleasePolicy.airDateText(for: effectiveEpisodeReleaseDate) }
+    var airDateText: String? {
+        if !hasAired, let airTime, airTime > Date() { return EpisodeReleasePolicy.airTimeText(airTime) }
+        return EpisodeReleasePolicy.airDateText(for: effectiveEpisodeReleaseDate)
+    }
     var upNextBadgeText: String {
         if isRecommendation { return L10n.string("cw_badge_recommended", fallback: "RECOMMENDED") }
         if isFixture { return fixtureBadgeText }
@@ -1205,6 +1240,7 @@ struct ContinueWatchingItem: Identifiable, Codable {
     }
 
     /// "LIVE", or the day and local kick-off time: "TOMORROW · 20:00".
+    /// Views that redraw by the minute show `badgeCountdown` instead on the day.
     private var fixtureBadgeText: String {
         if isFixtureLive { return L10n.string("cw_badge_live", fallback: "LIVE") }
         guard let kickoff else {
@@ -1490,8 +1526,10 @@ struct ContinueWatchingItem: Identifiable, Codable {
 /// its air date so a returning show surfaces the day it returns instead of at
 /// the age of the episode that seeded it.
 enum ContinueWatchingSortPolicy {
+    /// Still to air. Out today counts as out, unless its exact time is
+    /// known and still ahead.
     static func isUpcomingItem(_ item: ContinueWatchingItem) -> Bool {
-        item.isUpNextEntry && !item.hasAired && !item.isAiringToday
+        item.isUpNextEntry && !item.hasAired && (!item.isAiringToday || item.isAwaitingAirTime)
     }
 
     /// The row in the order the viewer reads it, whatever the sort chosen:
@@ -1500,7 +1538,7 @@ enum ContinueWatchingSortPolicy {
     /// 2. new episodes of shows being watched or watched before,
     /// 3. a favourite team's next match,
     /// 4. what is being watched — films and shows, by the chosen sort,
-    /// 5. episodes still to air, when the row shows them,
+    /// 5. episodes still to air, when the row shows them — soonest first,
     /// 6. recommendations, which only fill a short row
     ///    (`ContinueWatchingExtras.compose`).
     ///
@@ -1516,6 +1554,15 @@ enum ContinueWatchingSortPolicy {
                 // New episodes: the latest release first, today's ahead of
                 // yesterday's, whatever the chosen sort.
                 if left == 1, let a = airDate(lhs.element), let b = airDate(rhs.element), a != b { return a > b }
+                // Still to air: the soonest first, undated ones last.
+                if left == 5 {
+                    switch (upcomingDate(lhs.element), upcomingDate(rhs.element)) {
+                    case let (a?, b?) where a != b: return a < b
+                    case (_?, nil): return true
+                    case (nil, _?): return false
+                    default: break
+                    }
+                }
                 return lhs.offset < rhs.offset
             }
             .map(\.element)
@@ -1524,10 +1571,10 @@ enum ContinueWatchingSortPolicy {
     static func tier(_ item: ContinueWatchingItem) -> Int {
         if item.isFixture { return item.isFixtureLive ? 0 : 2 }
         if item.isNewEpisodeDrop || isRecentlyReleasedProgress(item) { return 1 }
+        if isUpcomingItem(item) { return 5 }
         // Out today: shown only once a real source is found, so it is out.
         if item.cardKind == nil, item.isUpNextEntry, item.isAiringToday { return 1 }
         if item.isRecommendation { return 6 }
-        if isUpcomingItem(item) { return 5 }
         return 3
     }
 
@@ -1600,8 +1647,8 @@ enum ContinueWatchingSortPolicy {
         }
         let sortedReleased = sortByRecency(released)
         let sortedUnreleased = unreleased.enumerated().sorted { lhs, rhs in
-            let dateL = airDate(lhs.element)
-            let dateR = airDate(rhs.element)
+            let dateL = upcomingDate(lhs.element)
+            let dateR = upcomingDate(rhs.element)
             switch (dateL, dateR) {
             case let (dateL?, dateR?) where dateL != dateR:
                 return dateL < dateR
@@ -1653,6 +1700,11 @@ enum ContinueWatchingSortPolicy {
         return nil
     }
 
+    /// The exact air time when known, else the listed release.
+    private static func upcomingDate(_ item: ContinueWatchingItem) -> Date? {
+        item.airTime ?? airDate(item)
+    }
+
     private static func releaseKey(_ item: ContinueWatchingItem) -> String {
         for value in [item.released, item.episodeVideo?.released, item.meta.released] {
             guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1664,6 +1716,89 @@ enum ContinueWatchingSortPolicy {
         return item.meta.year.map { String(format: "%04d", $0) } ?? ""
     }
 }
+
+/// A badge counting down, on the day, to an episode's air time or a match's
+/// start: "4 HRS 32 MINS TO AIR", then each second of the last minute.
+struct BadgeCountdown: Equatable {
+    let target: Date
+    let isMatch: Bool
+
+    /// nil once the time has come.
+    func text(at now: Date) -> String? {
+        let remaining = target.timeIntervalSince(now)
+        guard remaining > 0 else { return nil }
+        let left: String
+        if remaining <= 60 {
+            let seconds = Int(remaining.rounded(.up))
+            left = seconds == 1
+                ? L10n.string("cw_countdown_second", fallback: "1 SEC")
+                : L10n.format("cw_countdown_seconds", fallback: "%d SECS", seconds)
+        } else {
+            // Whole minutes left once the current one is over, so the text
+            // changes on each whole minute, when `CountdownSchedule` redraws.
+            let minutes = Int((remaining / 60).rounded(.up)) - 1
+            var parts: [String] = []
+            if minutes >= 60 {
+                let hours = minutes / 60
+                parts.append(hours == 1
+                    ? L10n.string("cw_countdown_hour", fallback: "1 HR")
+                    : L10n.format("cw_countdown_hours", fallback: "%d HRS", hours))
+            }
+            if minutes % 60 > 0 {
+                parts.append(minutes % 60 == 1
+                    ? L10n.string("cw_countdown_minute", fallback: "1 MIN")
+                    : L10n.format("cw_countdown_minutes", fallback: "%d MINS", minutes % 60))
+            }
+            left = parts.joined(separator: " ")
+        }
+        return isMatch
+            ? L10n.format("cw_countdown_to_start", fallback: "%@ TO START", left)
+            : L10n.format("cw_countdown_to_air", fallback: "%@ TO AIR", left)
+    }
+}
+
+#if canImport(SwiftUI)
+import SwiftUI
+
+/// Redraws a countdown when its text changes: at each whole minute left,
+/// then every second of the last minute, and once at the time itself.
+struct CountdownSchedule: TimelineSchedule {
+    let target: Date
+
+    func entries(from startDate: Date, mode: TimelineScheduleMode) -> AnyIterator<Date> {
+        var next: Date? = startDate
+        return AnyIterator {
+            guard let current = next else { return nil }
+            let remaining = target.timeIntervalSince(current)
+            if remaining <= 0 {
+                next = nil
+            } else {
+                // Whole seconds left before `current`'s text would change.
+                let left = remaining.rounded(.up) - 1
+                let step = left > 60 ? (left / 60).rounded(.down) * 60 : left
+                next = target.addingTimeInterval(-max(step, 0))
+            }
+            return current
+        }
+    }
+}
+
+/// `text`, or while `countdown` runs, its countdown, kept current.
+struct CountdownBadgeText: View {
+    let countdown: BadgeCountdown?
+    let text: String
+
+    var body: some View {
+        if let countdown, countdown.target > Date() {
+            TimelineView(CountdownSchedule(target: countdown.target)) { context in
+                Text(countdown.text(at: context.date) ?? text)
+            }
+        } else {
+            Text(text)
+        }
+    }
+}
+#endif
 
 enum ContinueWatchingStore {
     /// Posted whenever the list changes (progress saved, item removed, profile

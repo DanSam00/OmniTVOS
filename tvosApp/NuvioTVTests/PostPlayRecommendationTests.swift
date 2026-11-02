@@ -148,13 +148,13 @@ final class PostPlayRecommendationTests: XCTestCase {
         let first = [SkipInterval(startTime: 553, endTime: 600, type: "outro", provider: "introdb")]
         let replacement = [SkipInterval(startTime: 554, endTime: 600, type: "outro", provider: "introdb")]
 
-        service.seedSeasonTemplate(imdbId: "tt1234567", season: 1, episode: 1, intervals: first, duration: 600)
-        service.seedSeasonTemplate(imdbId: "tt1234567", season: 1, episode: 1, intervals: replacement, duration: 600)
+        await service.seedSeasonTemplate(imdbId: "tt1234567", season: 1, episode: 1, intervals: first, duration: 600)
+        await service.seedSeasonTemplate(imdbId: "tt1234567", season: 1, episode: 1, intervals: replacement, duration: 600)
         let oneEpisode = await service.intervals(imdbId: "tt1234567", season: 1, episode: 9, duration: 720)
 
         XCTAssertNil(oneEpisode.first(where: { $0.type == "outro" }))
 
-        service.seedSeasonTemplate(imdbId: "tt1234567", season: 1, episode: 2, intervals: first, duration: 600)
+        await service.seedSeasonTemplate(imdbId: "tt1234567", season: 1, episode: 2, intervals: first, duration: 600)
         let twoEpisodes = await service.intervals(imdbId: "tt1234567", season: 1, episode: 9, duration: 720)
 
         XCTAssertEqual(twoEpisodes.first(where: { $0.type == "outro" })?.startTime, 673.5)

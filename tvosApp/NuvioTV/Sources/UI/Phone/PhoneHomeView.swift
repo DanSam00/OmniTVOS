@@ -33,12 +33,13 @@ final class PhoneHomeLoader: ObservableObject {
                 Task { @MainActor in self?.refreshContinueWatching() }
             })
         }
-        // A next episode's source turning up, a fixture or new recommendations:
-        // the same progress, composed again.
+        // A next episode's source turning up, a fixture, new recommendations
+        // or an air time: the same progress, composed again.
         for name in [
             StreamAvailability.changedNotification,
             ContinueWatchingExtras.changedNotification,
-            NSFWVisibility.continueWatchingChanged
+            NSFWVisibility.continueWatchingChanged,
+            EpisodeAirTimes.changedNotification
         ] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in
@@ -1071,7 +1072,10 @@ private struct PhoneHeroSlideView: View {
                 if PhoneLive.isLive(item) {
                     PhoneLiveBadge()
                 } else {
-                    Text(item.isUpNextEntry ? item.upNextBadgeText : item.remainingText)
+                    CountdownBadgeText(
+                        countdown: item.badgeCountdown,
+                        text: item.isUpNextEntry ? item.upNextBadgeText : item.remainingText
+                    )
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.white.opacity(0.7))
                 }

@@ -403,17 +403,17 @@ final class PlaybackBackendPolicyTests: XCTestCase {
     }
 
     func testAISubtitleBatchesRespectCueCountBudgetAndCueOrder() {
-        let countLimited = (1...41).map { AISubtitleTranslationItem(id: $0, text: "Hi") }
+        let countLimited = (1...121).map { AISubtitleTranslationItem(id: $0, text: "Hi") }
         let byteLimited = [
-            AISubtitleTranslationItem(id: 101, text: String(repeating: "a", count: 5_000)),
-            AISubtitleTranslationItem(id: 102, text: String(repeating: "b", count: 5_000)),
+            AISubtitleTranslationItem(id: 101, text: String(repeating: "a", count: 15_000)),
+            AISubtitleTranslationItem(id: 102, text: String(repeating: "b", count: 15_000)),
             AISubtitleTranslationItem(id: 103, text: "After long cues"),
         ]
 
         let countBatches = AISubtitleBatching.batches(countLimited)
         let byteBatches = AISubtitleBatching.batches(byteLimited)
 
-        XCTAssertEqual(countBatches.map(\.count), [40, 1])
+        XCTAssertEqual(countBatches.map(\.count), [120, 1])
         XCTAssertEqual(countBatches.flatMap { $0.map(\.id) }, countLimited.map(\.id))
         XCTAssertEqual(byteBatches.map { $0.map(\.id) }, [[101], [102, 103]])
         XCTAssertTrue(AISubtitleBatching.estimatedRequestBytes(for: byteLimited) > AISubtitleBatching.maximumEstimatedRequestBytes)
@@ -440,13 +440,13 @@ final class PlaybackBackendPolicyTests: XCTestCase {
         )
         XCTAssertTrue(
             AISubtitleAdaptiveBuffer.isInsideRefillWindow(
-                cueStart: 160,
+                cueStart: 400,
                 sourceTime: 100
             )
         )
         XCTAssertFalse(
             AISubtitleAdaptiveBuffer.isInsideRefillWindow(
-                cueStart: 160.01,
+                cueStart: 400.01,
                 sourceTime: 100
             )
         )
@@ -588,6 +588,84 @@ final class PlaybackBackendPolicyTests: XCTestCase {
         XCTAssertTrue(error.isRetryable)
         XCTAssertFalse(error.isPermanentLimitError)
         XCTAssertEqual(AISubtitleRetryPolicy.delay(for: error, completedAttempts: 1), 12)
+    }
+
+    func testGeminiPerMinuteThrottleIsRetriedAfterItsRetryDelay() {
+        // Gemini's real per-minute 429: no Retry-After header, "billing" in
+        // the message, the wait in RetryInfo.
+        let error = GeminiSubtitleTranslator.serviceError(
+            statusCode: 429,
+            message: "You exceeded your current quota, please check your plan and billing details.",
+            quotaIDs: ["GenerateRequestsPerMinutePerProjectPerModel-FreeTier"],
+            retryDelay: "37s",
+            headerRetryAfter: nil
+        )
+
+        XCTAssertFalse(error.isPermanentLimitError)
+        XCTAssertTrue(error.isRetryable)
+        XCTAssertEqual(error.retryAfter, 37)
+        XCTAssertTrue(error.localizedDescription.contains("resumes in about 37 s"))
+    }
+
+    func testGeminiThrottleFallsBackToTheRetryHintInItsMessage() {
+        let error = GeminiSubtitleTranslator.serviceError(
+            statusCode: 429,
+            message: "You exceeded your current quota, please check your plan and billing details. Please retry in 12.5s.",
+            quotaIDs: [],
+            retryDelay: nil,
+            headerRetryAfter: nil
+        )
+
+        XCTAssertFalse(error.isPermanentLimitError)
+        XCTAssertEqual(error.retryAfter, 12.5)
+    }
+
+    func testGeminiDailyQuotaStopsTranslationEvenWithARetryDelay() {
+        let error = GeminiSubtitleTranslator.serviceError(
+            statusCode: 429,
+            message: "You exceeded your current quota, please check your plan and billing details.",
+            quotaIDs: ["GenerateRequestsPerDayPerProjectPerModel-FreeTier"],
+            retryDelay: "20s",
+            headerRetryAfter: nil
+        )
+
+        XCTAssertTrue(error.isPermanentLimitError)
+        XCTAssertFalse(error.isRetryable)
+        XCTAssertNil(AISubtitleRetryPolicy.delay(for: error, completedAttempts: 1))
+    }
+
+    func testGeminiThrottleBodyIsDecodedFromTheErrorDetails() async {
+        let attempts = RequestCounter()
+        GeminiURLProtocolStub.handler = { request in
+            attempts.increment()
+            let response = HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 429,
+                httpVersion: nil,
+                headerFields: [:]
+            )!
+            let body = #"{"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details.","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaMetric":"generativelanguage.googleapis.com/generate_content_free_tier_requests","quotaId":"GenerateRequestsPerMinutePerProjectPerModel-FreeTier","quotaValue":"10"}]},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"0s"}]}}"#
+            return (response, Data(body.utf8))
+        }
+        defer { GeminiURLProtocolStub.handler = nil }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [GeminiURLProtocolStub.self]
+        do {
+            _ = try await AISubtitleTranslator.translate(
+                "Hello",
+                settings: aiSettings(model: "throttle-test"),
+                session: URLSession(configuration: configuration),
+                pacer: AISubtitleRequestPacer(minimumSpacing: 0)
+            )
+            XCTFail("Expected retry exhaustion")
+        } catch let error as AISubtitleTranslationError {
+            XCTAssertFalse(error.isPermanentLimitError)
+            XCTAssertEqual(error.retryAfter, 0)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        XCTAssertEqual(attempts.value, AISubtitleRetryPolicy.maximumAttempts)
     }
 
     func testTranslatorDoesNotRetryPermanentQuotaErrors() async {
@@ -2627,6 +2705,108 @@ final class ContinueWatchingDismissStoreTests: XCTestCase {
             ContinueWatchingSortPolicy.upcomingItems(items).map(\.meta.id),
             ["upcoming-soon", "upcoming-late"]
         )
+    }
+
+    /// The default sort orders watched titles by recency, but episodes still
+    /// to air read soonest first, whenever the show was last watched.
+    func testContinueWatchingDefaultSortPutsTheSoonestUpcomingEpisodeFirst() {
+        let watched = makeSortItem(id: "watched", lastWatchedAt: Date().addingTimeInterval(-86_400))
+        let late = makeSortItem(
+            id: "late",
+            lastWatchedAt: Date().addingTimeInterval(-3_600),
+            released: isoDay(daysFromToday: 6),
+            isUpNext: true
+        )
+        let soon = makeSortItem(
+            id: "soon",
+            lastWatchedAt: Date().addingTimeInterval(-86_400 * 90),
+            released: isoDay(daysFromToday: 1),
+            isUpNext: true
+        )
+        let middle = makeSortItem(
+            id: "middle",
+            lastWatchedAt: Date().addingTimeInterval(-86_400 * 30),
+            released: isoDay(daysFromToday: 3),
+            isUpNext: true
+        )
+
+        XCTAssertEqual(
+            ContinueWatchingSortPolicy.sorted([late, watched, middle, soon], preference: "Default").map(\.meta.id),
+            ["watched", "soon", "middle", "late"]
+        )
+    }
+
+    /// A known air time orders episodes out the same day, and the badge
+    /// reads it in the device's clock.
+    func testUpcomingEpisodeWithAKnownAirTimeSortsAndReadsByThatTime() {
+        let day = isoDay(daysFromToday: 2)
+        var evening = makeSortItem(id: "evening", lastWatchedAt: Date(), released: day, isUpNext: true)
+        var morning = makeSortItem(
+            id: "morning",
+            lastWatchedAt: Date().addingTimeInterval(-86_400),
+            released: day,
+            isUpNext: true
+        )
+        let start = Calendar.current.startOfDay(for: EpisodeReleasePolicy.releaseDate(for: day) ?? Date())
+        let morningTime = Calendar.current.date(byAdding: .hour, value: 9, to: start)!
+        evening.airTime = Calendar.current.date(byAdding: .hour, value: 21, to: start)
+        morning.airTime = morningTime
+
+        XCTAssertEqual(
+            ContinueWatchingSortPolicy.sorted([evening, morning], preference: "Default").map(\.meta.id),
+            ["morning", "evening"]
+        )
+        let time = morningTime.formatted(date: .omitted, time: .shortened)
+        XCTAssertTrue(morning.upNextBadgeText.hasPrefix("AIRS "), morning.upNextBadgeText)
+        XCTAssertTrue(morning.upNextBadgeText.hasSuffix(" · \(time.uppercased())"), morning.upNextBadgeText)
+    }
+
+    func testBadgeCountdownReadsHoursAndMinutesThenSeconds() {
+        let now = Date()
+        let episode = { (seconds: TimeInterval) in
+            BadgeCountdown(target: now.addingTimeInterval(seconds), isMatch: false).text(at: now)
+        }
+        XCTAssertEqual(episode(4 * 3600 + 32 * 60 + 30), "4 HRS 32 MINS TO AIR")
+        XCTAssertEqual(episode(3600 + 59), "1 HR TO AIR")
+        XCTAssertEqual(episode(61), "1 MIN TO AIR")
+        XCTAssertEqual(episode(60), "60 SECS TO AIR")
+        XCTAssertEqual(episode(0.4), "1 SEC TO AIR")
+        XCTAssertNil(episode(0))
+        XCTAssertEqual(
+            BadgeCountdown(target: now.addingTimeInterval(2 * 3600 + 330), isMatch: true).text(at: now),
+            "2 HRS 5 MINS TO START"
+        )
+    }
+
+    /// Redrawn on each whole minute left, then every second of the last one.
+    func testCountdownScheduleTicksWhenTheTextChanges() {
+        let target = Date(timeIntervalSince1970: 10_000)
+        let ticks = Array(
+            CountdownSchedule(target: target)
+                .entries(from: target.addingTimeInterval(-150.5), mode: .normal)
+        ).map { target.timeIntervalSince($0) }
+        XCTAssertEqual(Array(ticks.prefix(5)), [150.5, 120, 60, 59, 58])
+        XCTAssertEqual(ticks.last, 0)
+        XCTAssertEqual(ticks.count, 63)
+        // Every tick's text is the one shown until the next.
+        for (tick, next) in zip(ticks, ticks.dropFirst()) {
+            let countdown = BadgeCountdown(target: target, isMatch: false)
+            XCTAssertEqual(
+                countdown.text(at: target.addingTimeInterval(-tick)),
+                countdown.text(at: target.addingTimeInterval(-next - 0.01))
+            )
+        }
+    }
+
+    /// A timed episode listed for today stays upcoming until its time.
+    func testEpisodeOutTodayWithATimeStillAheadIsUpcoming() {
+        var item = makeSortItem(id: "today", lastWatchedAt: Date(), released: isoDay(daysAgo: 0), isUpNext: true)
+        item.airTime = Date().addingTimeInterval(90 * 60)
+        XCTAssertTrue(ContinueWatchingSortPolicy.isUpcomingItem(item))
+        XCTAssertEqual(ContinueWatchingSortPolicy.tier(item), 5)
+        item.airTime = Date().addingTimeInterval(-60)
+        XCTAssertFalse(ContinueWatchingSortPolicy.isUpcomingItem(item))
+        XCTAssertTrue(item.hasAired)
     }
 
     func testUpcomingSortUsesCorrectedEpisodeGuideDateOverStaleStoredDate() {

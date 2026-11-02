@@ -162,14 +162,32 @@ final class ContinueWatchingExtras {
     func compose(_ items: [ContinueWatchingItem]) -> [ContinueWatchingItem] {
         refreshIfNeeded(basedOn: items)
 
+        // Next episodes carry their exact air time where TVmaze has one.
+        let airTimes = EpisodeAirTimes.shared
+        airTimes.ensureLoaded(items.filter(EpisodeAirTimes.wantsAirTime))
+        let items = items.map { item -> ContinueWatchingItem in
+            guard EpisodeAirTimes.wantsAirTime(item) else { return item }
+            var item = item
+            item.airTime = airTimes.airTime(for: item)
+            return item
+        }
+
         var requests: [StreamAvailability.Request] = []
-        let gated = items.filter { Self.needsSource($0) }
+        let gated = items.filter { Self.needsSource($0) || Self.mayDropEarly($0) }
             .sorted { ContinueWatchingSortPolicy.tier($0) < ContinueWatchingSortPolicy.tier($1) }
         requests += gated.compactMap(StreamAvailability.request(for:))
 
-        let shown = items.filter { item in
-            guard Self.needsSource(item), let request = StreamAvailability.request(for: item) else { return true }
-            return StreamAvailability.shared.isAvailable(request)
+        let shown = items.compactMap { item -> ContinueWatchingItem? in
+            if Self.mayDropEarly(item) {
+                // Out before its time once a source turns up: no countdown then.
+                guard let request = StreamAvailability.request(for: item),
+                      StreamAvailability.shared.isAvailable(request) else { return item }
+                var out = item
+                out.airTime = nil
+                return out
+            }
+            guard Self.needsSource(item), let request = StreamAvailability.request(for: item) else { return item }
+            return StreamAvailability.shared.isAvailable(request) ? item : nil
         }
 
         let present = Set(shown.map(\.meta.id))
@@ -193,6 +211,13 @@ final class ContinueWatchingExtras {
         }.prefix(slots)
         StreamAvailability.shared.ensureChecked(requests)
 
+        // Compose again when an episode airs or a match starts, so it moves
+        // out of the upcoming cards on time.
+        let now = Date()
+        scheduleRecompose(at: (shown.compactMap(\.airTime) + liveFixtures.compactMap(\.kickoff))
+            .filter { $0 > now }
+            .min())
+
         // 18+ titles only while the row's NSFW toggle is on (this session).
         return NSFWVisibility.shared.continueWatchingFiltered(
             (shown + liveFixtures + extraRecommendations)
@@ -201,9 +226,34 @@ final class ContinueWatchingExtras {
     }
 
     /// An aired next episode, which only shows once it has a real source.
-    /// Progress already under way is left alone: it played before.
+    /// Progress already under way is left alone: it played before. One
+    /// listed for today whose exact time is still ahead shows as upcoming.
     private static func needsSource(_ item: ContinueWatchingItem) -> Bool {
         item.cardKind == nil && item.isUpNextEntry && (item.hasAired || item.isAiringToday)
+            && !item.isAwaitingAirTime
+    }
+
+    /// Listed for today with its time still ahead: services often release
+    /// hours early, so its source is looked for all the same.
+    private static func mayDropEarly(_ item: ContinueWatchingItem) -> Bool {
+        item.cardKind == nil && item.isUpNextEntry && item.isAiringToday && item.isAwaitingAirTime
+    }
+
+    private var recomposeAt: Date?
+    private var recomposeTask: Task<Void, Never>?
+
+    private func scheduleRecompose(at date: Date?) {
+        guard date != recomposeAt else { return }
+        recomposeTask?.cancel()
+        recomposeAt = date
+        guard let date else { return }
+        recomposeTask = Task {
+            let delay = max(0, date.timeIntervalSinceNow) + 1
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            recomposeAt = nil
+            NotificationCenter.default.post(name: Self.changedNotification, object: nil)
+        }
     }
 
     // MARK: Refresh
@@ -597,5 +647,160 @@ final class ContinueWatchingExtras {
     /// read every unmarked time as UTC, a game an hour away as tomorrow.
     static func kickoff(fromFixtureInfo info: String) -> Date? {
         FixtureTime.parse(info)
+    }
+}
+
+/// Exact air times for next episodes still to come, from TVmaze's public API
+/// (no key).
+///
+/// Cinemeta dates every episode of a show at one fixed hour — midnight in the
+/// network's zone, not when it airs: Dexter's 9 pm episodes all read 05:00 UTC
+/// — so that hour is never shown. TVmaze gives broadcast shows a real
+/// `airstamp`. Streaming shows have no `airtime` there (their stamp is a noon
+/// placeholder) and keep a date only.
+@MainActor
+final class EpisodeAirTimes {
+    static let shared = EpisodeAirTimes()
+
+    /// Posted when a lookup brings new times; Home composes again.
+    static let changedNotification = Notification.Name("omni.episodeAirTimes.changed")
+
+    private struct Show: Codable {
+        var tvmazeId: Int?
+        var checkedAt: Date
+        /// "season:episode" → air time, for timed episodes only.
+        var airTimes: [String: Date]
+    }
+
+    private var shows: [String: Show] = [:]
+    private var queue: [String] = []
+    private var task: Task<Void, Never>?
+
+    private static let lifetime: TimeInterval = 12 * 3600
+    /// A lookup that failed is tried again after this long.
+    private static let retryAfter: TimeInterval = 30 * 60
+    /// TVmaze allows 20 calls per 10 s from one address.
+    private static let spacing: UInt64 = 600_000_000
+    /// TVmaze and Cinemeta can number a season differently; a time more than
+    /// this far from Cinemeta's date belongs to some other episode.
+    private static let dateTolerance: TimeInterval = 2 * 86_400
+
+    private static var fileURL: URL? {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("episode-air-times.json")
+    }
+
+    private init() {
+        if let url = Self.fileURL, let data = try? Data(contentsOf: url),
+           let saved = try? JSONDecoder().decode([String: Show].self, from: data) {
+            shows = saved
+        }
+    }
+
+    /// A next episode listed as out no more than two days ago, or later:
+    /// Cinemeta's placeholder hour can put it "out" before it really airs.
+    static func wantsAirTime(_ item: ContinueWatchingItem) -> Bool {
+        guard item.cardKind == nil, item.isUpNextEntry, imdbId(of: item) != nil,
+              let listed = EpisodeReleasePolicy.releaseDate(for: item.episodeVideo?.released ?? item.released)
+        else { return false }
+        return listed > Date().addingTimeInterval(-dateTolerance)
+    }
+
+    func airTime(for item: ContinueWatchingItem) -> Date? {
+        guard let imdbId = Self.imdbId(of: item), let numbers = item.episodeNumbers,
+              let time = shows[imdbId]?.airTimes["\(numbers.season):\(numbers.episode)"] else { return nil }
+        if let listed = EpisodeReleasePolicy.releaseDate(for: item.episodeVideo?.released ?? item.released),
+           abs(time.timeIntervalSince(listed)) > Self.dateTolerance {
+            return nil
+        }
+        return time
+    }
+
+    /// Looks up the shows of `items` not checked in the last 12 hours, one at
+    /// a time.
+    func ensureLoaded(_ items: [ContinueWatchingItem]) {
+        let now = Date()
+        for item in items {
+            guard let id = Self.imdbId(of: item), !queue.contains(id) else { continue }
+            if let show = shows[id], now.timeIntervalSince(show.checkedAt) < Self.lifetime { continue }
+            queue.append(id)
+        }
+        guard task == nil, !queue.isEmpty else { return }
+        task = Task { await drain() }
+    }
+
+    private func drain() async {
+        var changed = false
+        while !queue.isEmpty {
+            let id = queue.removeFirst()
+            let previous = shows[id]
+            if let show = await Self.fetch(imdbId: id, tvmazeId: previous?.tvmazeId) {
+                changed = changed || show.airTimes != previous?.airTimes
+                shows[id] = show
+            } else {
+                shows[id] = Show(
+                    tvmazeId: previous?.tvmazeId,
+                    checkedAt: Date().addingTimeInterval(Self.retryAfter - Self.lifetime),
+                    airTimes: previous?.airTimes ?? [:]
+                )
+            }
+            if !queue.isEmpty { try? await Task.sleep(nanoseconds: Self.spacing) }
+        }
+        task = nil
+        if let url = Self.fileURL, let data = try? JSONEncoder().encode(shows) {
+            try? data.write(to: url, options: .atomic)
+        }
+        if changed {
+            NotificationCenter.default.post(name: Self.changedNotification, object: nil)
+        }
+    }
+
+    private static func imdbId(of item: ContinueWatchingItem) -> String? {
+        for candidate in [item.meta.imdbId, item.meta.id.split(separator: ":").first.map(String.init)] {
+            if let candidate = candidate?.trimmingCharacters(in: .whitespaces), candidate.hasPrefix("tt") {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    private struct ShowLookup: Decodable { let id: Int }
+
+    private struct Episode: Decodable {
+        let season: Int
+        let number: Int?
+        let airtime: String?
+        let airstamp: String?
+    }
+
+    /// nil when TVmaze could not be reached; a show it does not list comes
+    /// back with no times.
+    nonisolated private static func fetch(imdbId: String, tvmazeId known: Int?) async -> Show? {
+        let session = URLSession.shared
+        var tvmazeId = known
+        if tvmazeId == nil {
+            guard let url = URL(string: "https://api.tvmaze.com/lookup/shows?imdb=\(imdbId)"),
+                  let (data, response) = try? await session.data(from: url),
+                  let status = (response as? HTTPURLResponse)?.statusCode else { return nil }
+            if status == 404 { return Show(tvmazeId: nil, checkedAt: Date(), airTimes: [:]) }
+            guard status == 200, let show = try? JSONDecoder().decode(ShowLookup.self, from: data) else { return nil }
+            tvmazeId = show.id
+        }
+        guard let tvmazeId,
+              let url = URL(string: "https://api.tvmaze.com/shows/\(tvmazeId)/episodes"),
+              let (data, response) = try? await session.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let episodes = try? JSONDecoder().decode([Episode].self, from: data) else { return nil }
+        // Only what is still to come, so the cache stays small.
+        let cutoff = Date().addingTimeInterval(-dateTolerance)
+        var times: [String: Date] = [:]
+        for episode in episodes {
+            guard let number = episode.number,
+                  episode.airtime?.isEmpty == false,
+                  let stamp = EpisodeReleasePolicy.releaseDate(for: episode.airstamp),
+                  stamp > cutoff else { continue }
+            times["\(episode.season):\(number)"] = stamp
+        }
+        return Show(tvmazeId: tvmazeId, checkedAt: Date(), airTimes: times)
     }
 }
