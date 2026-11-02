@@ -707,21 +707,33 @@ final class EpisodeAirTimes {
     }
 
     func airTime(for item: ContinueWatchingItem) -> Date? {
-        guard let imdbId = Self.imdbId(of: item), let numbers = item.episodeNumbers,
-              let time = shows[imdbId]?.airTimes["\(numbers.season):\(numbers.episode)"] else { return nil }
-        if let listed = EpisodeReleasePolicy.releaseDate(for: item.episodeVideo?.released ?? item.released),
-           abs(time.timeIntervalSince(listed)) > Self.dateTolerance {
-            return nil
-        }
+        guard let imdbId = Self.imdbId(of: item), let numbers = item.episodeNumbers else { return nil }
+        return airTime(
+            imdbId: imdbId,
+            season: numbers.season,
+            episode: numbers.episode,
+            listed: EpisodeReleasePolicy.releaseDate(for: item.episodeVideo?.released ?? item.released)
+        )
+    }
+
+    /// `listed` is when the add-on dates the episode; a time far from it is
+    /// some other episode's.
+    func airTime(imdbId: String, season: Int, episode: Int, listed: Date?) -> Date? {
+        guard let time = shows[imdbId]?.airTimes["\(season):\(episode)"] else { return nil }
+        if let listed, abs(time.timeIntervalSince(listed)) > Self.dateTolerance { return nil }
         return time
     }
 
     /// Looks up the shows of `items` not checked in the last 12 hours, one at
     /// a time.
     func ensureLoaded(_ items: [ContinueWatchingItem]) {
+        ensureLoaded(imdbIds: items.compactMap(Self.imdbId(of:)))
+    }
+
+    func ensureLoaded(imdbIds: [String]) {
         let now = Date()
-        for item in items {
-            guard let id = Self.imdbId(of: item), !queue.contains(id) else { continue }
+        for id in imdbIds where id.hasPrefix("tt") {
+            guard !queue.contains(id) else { continue }
             if let show = shows[id], now.timeIntervalSince(show.checkedAt) < Self.lifetime { continue }
             queue.append(id)
         }

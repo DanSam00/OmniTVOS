@@ -107,6 +107,8 @@ struct WidgetHero: View {
     var fallback: String? = nil
     var titleSize: CGFloat = 18
     var showsWordmark = true
+    /// The meta line counts down to this instead: "4 HR, 32 MIN TO AIR".
+    var countdown: WidgetCountdown? = nil
     @Environment(\.widgetRenderingMode) private var renderingMode
 
     var body: some View {
@@ -142,7 +144,7 @@ struct WidgetHero: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
                 if let meta {
-                    WidgetMeta(text: meta, highlighted: metaHighlighted, isLive: isLive)
+                    WidgetMeta(text: meta, highlighted: metaHighlighted, isLive: isLive, countdown: countdown)
                 }
                 if let progress {
                     WidgetProgressBar(value: progress, height: 3)
@@ -162,11 +164,19 @@ struct WidgetHero: View {
 }
 
 /// The small capitals line: NEXT · S2, E1. Live content gets a red dot.
+/// A meta line counting down to `target`, kept current by WidgetKit itself.
+struct WidgetCountdown {
+    let target: Date
+    /// "to air", "to start".
+    let suffix: String
+}
+
 struct WidgetMeta: View {
     let text: String
     var highlighted = false
     var isLive = false
     var size: CGFloat = 11
+    var countdown: WidgetCountdown? = nil
 
     var body: some View {
         HStack(spacing: 5) {
@@ -176,7 +186,14 @@ struct WidgetMeta: View {
                     .frame(width: size * 0.7, height: size * 0.7)
                     .shadow(color: .red.opacity(0.8), radius: 3)
             }
-            Text(text.uppercased())
+            Group {
+                if let countdown {
+                    Text("\(Text(countdown.target, style: .relative)) \(countdown.suffix)")
+                        .textCase(.uppercase)
+                } else {
+                    Text(text.uppercased())
+                }
+            }
                 .font(.system(size: size, weight: .semibold))
                 .tracking(0.6)
                 .foregroundStyle(isLive ? .white : (highlighted ? OmniWidgetStyle.accent : OmniWidgetStyle.secondary))
@@ -202,6 +219,7 @@ struct WidgetRow: View {
     var fallback: String? = nil
     var isLast = false
     var url: URL?
+    var countdown: WidgetCountdown? = nil
     @Environment(\.widgetRowCompact) private var compact
 
     var body: some View {
@@ -219,7 +237,7 @@ struct WidgetRow: View {
                         .font(.system(size: compact ? 13 : 15, weight: .semibold))
                         .lineLimit(1)
                     if let meta {
-                        WidgetMeta(text: meta, highlighted: metaHighlighted, isLive: isLive, size: 10)
+                        WidgetMeta(text: meta, highlighted: metaHighlighted, isLive: isLive, size: 10, countdown: countdown)
                     }
                     if let progress {
                         WidgetProgressBar(value: progress, height: 2.5)

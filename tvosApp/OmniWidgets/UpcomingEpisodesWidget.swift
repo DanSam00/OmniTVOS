@@ -44,6 +44,10 @@ struct UpcomingEpisodesProvider: TimelineProvider {
             dates += [kickoff, kickoff.addingTimeInterval(match.matchLength ?? 3 * 3600)]
                 .filter { $0 > now && $0 < horizon }
         }
+        // A timed episode stops counting down when it airs.
+        dates += (UpcomingEpisodeFeedStore.read()?.entries ?? [])
+            .compactMap(\.airTime)
+            .filter { $0 > now && $0 < horizon }
         completion(Timeline(entries: Set(dates).sorted().map(Self.entry(at:)), policy: .atEnd))
     }
 
@@ -60,7 +64,7 @@ struct UpcomingEpisodesProvider: TimelineProvider {
             .filter { $0.isCurrent(at: date) }
             .sorted { lhs, rhs in
                 if rank(lhs) != rank(rhs) { return rank(lhs) < rank(rhs) }
-                return (lhs.kickoff ?? lhs.airDate) < (rhs.kickoff ?? rhs.airDate)
+                return lhs.startsAt < rhs.startsAt
             }
         return UpcomingEpisodesEntry(date: date, episodes: episodes, hasFeed: feed != nil || !matches.isEmpty)
     }
@@ -160,10 +164,15 @@ struct UpcomingEpisodesWidgetView: View {
     private var rectangular: some View {
         let next = episodes[0]
         return VStack(alignment: .leading, spacing: 1) {
-            Label(
-                next.isLive(at: entry.date) ? "LIVE" : dayLabel(next.kickoff ?? next.airDate),
-                systemImage: next.isMatch ? "sportscourt" : "calendar"
-            )
+            Label {
+                if let countdown = countdown(next) {
+                    Text("\(Text(countdown.target, style: .relative)) \(countdown.suffix)")
+                } else {
+                    Text(next.isLive(at: entry.date) ? "LIVE" : dayLabel(next.startsAt))
+                }
+            } icon: {
+                Image(systemName: next.isMatch ? "sportscourt" : "calendar")
+            }
                 .font(.caption2.weight(.semibold))
                 .widgetAccentable()
             Text(next.title).font(.headline).lineLimit(1)
@@ -183,7 +192,8 @@ struct UpcomingEpisodesWidgetView: View {
             isLive: episode.isLive(at: entry.date),
             art: episode.imageURL,
             fallback: episode.posterURL,
-            titleSize: titleSize
+            titleSize: titleSize,
+            countdown: countdown(episode)
         )
     }
 
@@ -204,7 +214,8 @@ struct UpcomingEpisodesWidgetView: View {
                     art: episode.imageURL,
                     fallback: episode.posterURL,
                     isLast: index == list.count - 1,
-                    url: episode.deepLinkURL
+                    url: episode.deepLinkURL,
+                    countdown: countdown(episode)
                 )
             }
             if let slots, list.count < slots {
@@ -217,14 +228,23 @@ struct UpcomingEpisodesWidgetView: View {
 
     // MARK: Text
 
-    /// "TOMORROW · S1, E6", in the Apple TV app's manner; for a match
-    /// "TODAY · 7:30 PM", then "LIVE".
+    /// "TOMORROW · S1, E6", in the Apple TV app's manner, with the time when
+    /// known ("TOMORROW 8:30 PM · S1, E6"); for a match "TODAY · 7:30 PM",
+    /// then "LIVE". On the day, `countdown` stands in until it starts.
     private func meta(_ episode: UpcomingEpisodeEntry) -> String {
         if let kickoff = episode.kickoff {
             if episode.isLive(at: entry.date) { return "LIVE" }
             return [dayLabel(kickoff), kickoff.formatted(date: .omitted, time: .shortened)].joined(separator: " · ")
         }
-        return [dayLabel(episode.airDate), episodeCode(episode)].compactMap { $0 }.joined(separator: " · ")
+        let day = episode.airTime.map { "\(dayLabel($0)) \($0.formatted(date: .omitted, time: .shortened))" }
+            ?? dayLabel(episode.airDate)
+        return [day, episodeCode(episode)].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    /// "2 HR, 5 MIN TO AIR" on the day, until it is on.
+    private func countdown(_ episode: UpcomingEpisodeEntry) -> WidgetCountdown? {
+        guard let target = episode.countdownTarget(at: entry.date) else { return nil }
+        return WidgetCountdown(target: target, suffix: episode.isMatch ? "to start" : "to air")
     }
 
     private func episodeCode(_ episode: UpcomingEpisodeEntry) -> String? {
@@ -238,7 +258,8 @@ struct UpcomingEpisodesWidgetView: View {
         if let kickoff = episode.kickoff, !episode.isLive(at: entry.date) {
             return kickoff.formatted(date: .omitted, time: .shortened)
         }
-        return [episode.episodeCode, episode.episodeTitle].compactMap { $0 }.joined(separator: " · ")
+        let time = episode.airTime.map { $0.formatted(date: .omitted, time: .shortened) }
+        return [time, episode.episodeCode, episode.episodeTitle].compactMap { $0 }.joined(separator: " · ")
     }
 
     private func isToday(_ date: Date) -> Bool {

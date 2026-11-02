@@ -81,11 +81,28 @@ enum EpisodeReminders {
         return configurations.contains { $0.kind == OmniWidgetKind.upcoming }
     }
 
-    /// Hands the next releases to the Upcoming widget, with their artwork.
+    /// The last releases handed to the widget, published again when their
+    /// air times arrive.
+    private static var widgetEntries: [CalendarEntry] = []
+    private static var airTimesObserver: NSObjectProtocol?
+
+    /// Hands the next releases to the Upcoming widget, with their artwork and,
+    /// where TVmaze lists one, the exact air time (`EpisodeAirTimes`).
     private static func publishToWidget(_ entries: [CalendarEntry]) {
-        let feed = entries.prefix(24).compactMap { entry -> UpcomingEpisodeEntry? in
+        let entries = Array(entries.prefix(24))
+        widgetEntries = entries
+        let airTimes = EpisodeAirTimes.shared
+        airTimes.ensureLoaded(imdbIds: entries.filter { !$0.isMovie }.map(\.metaId))
+        if airTimesObserver == nil {
+            airTimesObserver = NotificationCenter.default.addObserver(
+                forName: EpisodeAirTimes.changedNotification, object: nil, queue: .main
+            ) { _ in
+                Task { @MainActor in publishToWidget(widgetEntries) }
+            }
+        }
+        let feed = entries.compactMap { entry -> UpcomingEpisodeEntry? in
             guard let day = CalendarDayKey.date(fromDayKey: entry.dayKey) else { return nil }
-            return UpcomingEpisodeEntry(
+            var item = UpcomingEpisodeEntry(
                 id: entry.id,
                 metaId: entry.metaId,
                 type: entry.type,
@@ -96,6 +113,12 @@ enum EpisodeReminders {
                 posterURL: entry.posterUrl,
                 imageURL: entry.imageUrl ?? entry.backdropUrl
             )
+            if !entry.isMovie, let season = entry.season, let episode = entry.episode {
+                item.airTime = airTimes.airTime(
+                    imdbId: entry.metaId, season: season, episode: episode, listed: day
+                )
+            }
+            return item
         }
         guard UpcomingEpisodeFeedStore.read()?.entries != feed else { return }
         UpcomingEpisodeFeedStore.write(feed)

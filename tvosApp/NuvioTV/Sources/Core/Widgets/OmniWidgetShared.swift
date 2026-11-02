@@ -66,8 +66,21 @@ struct UpcomingEpisodeEntry: Codable, Equatable, Identifiable {
     var kickoff: Date? = nil
     /// How long the match runs, for when LIVE ends.
     var matchLength: TimeInterval? = nil
+    /// An episode's exact air time, where TVmaze lists one. Nil for matches,
+    /// for episodes known only by day, and for older feeds.
+    var airTime: Date? = nil
 
     var isMatch: Bool { kickoff != nil }
+
+    /// When it is on, as exactly as known.
+    var startsAt: Date { kickoff ?? airTime ?? airDate }
+
+    /// On its day, before it starts: what the widget counts down to.
+    func countdownTarget(at date: Date) -> Date? {
+        guard let target = kickoff ?? airTime, target > date,
+              Calendar.current.isDate(target, inSameDayAs: date) else { return nil }
+        return target
+    }
 
     /// A match under way at `date`.
     func isLive(at date: Date) -> Bool {

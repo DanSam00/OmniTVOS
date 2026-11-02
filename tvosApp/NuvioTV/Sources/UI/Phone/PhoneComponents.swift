@@ -325,6 +325,20 @@ struct PhoneContinueCard: View {
                 }
             }
             .frame(width: PhoneLayout.landscapeWidth, height: PhoneLayout.landscapeWidth * 9 / 16)
+            // Still to air: when, and on the day a countdown to it.
+            .overlay(alignment: .topLeading) {
+                if ContinueWatchingSortPolicy.isUpcomingItem(item) {
+                    CountdownBadgeText(countdown: item.badgeCountdown, text: item.upNextBadgeText)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .padding(6)
+                }
+            }
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
 
             Text(item.meta.name)
