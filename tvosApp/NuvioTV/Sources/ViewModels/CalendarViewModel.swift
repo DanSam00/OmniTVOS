@@ -75,6 +75,8 @@ struct CalendarEntry: Identifiable, Hashable {
     var isLiveNow: Bool = false
     /// A fixture's kick-off, so a day of matches reads in order of play.
     var startsAt: Date? = nil
+    /// An episode's release as its add-on gives it, time and all.
+    var released: String? = nil
 
     var isMovie: Bool { kind == .movie }
 
@@ -673,7 +675,8 @@ final class CalendarViewModel: ObservableObject {
                 episode: video.episode,
                 episodeTitle: video.title,
                 dayKey: day,
-                kind: .series
+                kind: .series,
+                released: video.released
             )
         }
     }

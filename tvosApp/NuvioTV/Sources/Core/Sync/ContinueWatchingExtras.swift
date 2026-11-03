@@ -358,12 +358,24 @@ final class ContinueWatchingExtras {
                 // Out before its time once a source turns up: no countdown then.
                 guard let request = StreamAvailability.request(for: item),
                       StreamAvailability.shared.isAvailable(request) else { return item }
+                #if os(iOS) || os(macOS)
+                // Its alert, if set for later, comes now.
+                if let numbers = item.episodeNumbers {
+                    EpisodeReminders.sourceFound(metaId: item.meta.id, season: numbers.season, episode: numbers.episode)
+                }
+                #endif
                 var out = item
                 out.airTime = nil
                 return out
             }
             guard Self.needsSource(item), let request = StreamAvailability.request(for: item) else { return item }
-            return StreamAvailability.shared.isAvailable(request) ? item : nil
+            guard StreamAvailability.shared.isAvailable(request) else { return nil }
+            #if os(iOS) || os(macOS)
+            if item.isAiringToday, let numbers = item.episodeNumbers {
+                EpisodeReminders.sourceFound(metaId: item.meta.id, season: numbers.season, episode: numbers.episode)
+            }
+            #endif
+            return item
         }
 
         let present = Set(shown.map(\.meta.id))
