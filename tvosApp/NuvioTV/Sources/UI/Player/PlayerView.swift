@@ -126,6 +126,19 @@ struct PlayerView: View {
     @AppStorage(SettingsKey.playerShowEpisodes) private var playerShowEpisodes = true
     @AppStorage(SettingsKey.playerShowSources) private var playerShowSources = true
     #endif
+    #if !os(iOS)
+    /// Shrunk into a corner of the app (the PiP button) while the viewer
+    /// browses. Everything but the picture stands down then.
+    @ObservedObject private var miniWindow = PlayerMiniWindowState.shared
+    #endif
+
+    private var isMiniWindow: Bool {
+        #if os(iOS)
+        false
+        #else
+        miniWindow.isMini
+        #endif
+    }
 
     private var skipCardShownFocused: Bool {
         #if os(macOS)
@@ -230,7 +243,9 @@ struct PlayerView: View {
             isSettingsOpen: { viewModel.showSettingsPanel || isCastPickerOpen || isCasting },
             onCaretMove: { macCaretMove($0) },
             onCaretActivate: { macCaretActivate() },
-            swallowsTransportKeys: { viewModel.postPlayState.isVisible }
+            swallowsTransportKeys: { viewModel.postPlayState.isVisible },
+            // In the corner, the keys are the app's again.
+            isSuspended: { PlayerMiniWindowState.shared.isMini }
         )
     }
     #endif
@@ -259,12 +274,14 @@ struct PlayerView: View {
             videoLayer
 
             postPlayOverlay
+                .hiddenInMiniWindow(isMiniWindow)
 
             #if !os(iOS)
             // Window-level trackpad capture for Infuse-style scrubbing / peek.
             RemoteTouchCatcher(
                 isActive: {
-                    !viewModel.showSettingsPanel
+                    !miniWindow.isMini
+                        && !viewModel.showSettingsPanel
                         && viewModel.sidePanel == nil
                         && !viewModel.postPlayState.isVisible
                         && (viewModel.isScrubbing
@@ -282,7 +299,8 @@ struct PlayerView: View {
                 // when the timeline is focused. (Arrow holds are unreliable while
                 // a focused progress bar owns the focus engine — hide chrome to
                 // hold-seek.)
-                isActive: !viewModel.showSettingsPanel
+                isActive: !miniWindow.isMini
+                    && !viewModel.showSettingsPanel
                     && viewModel.sidePanel == nil
                     && !viewModel.isScrubbing
                     && !viewModel.postPlayState.isVisible
@@ -315,6 +333,7 @@ struct PlayerView: View {
                 }
                 .transition(.opacity)
                 .allowsHitTesting(false)
+                .hiddenInMiniWindow(isMiniWindow)
                 .zIndex(6)
             }
 
@@ -369,6 +388,7 @@ struct PlayerView: View {
             if viewModel.peekVisible, !viewModel.showControls, !viewModel.isScrubbing {
                 PeekBar(clock: viewModel.clock)
                     .transition(.opacity)
+                    .hiddenInMiniWindow(isMiniWindow)
                     .zIndex(1)
             }
 
@@ -403,6 +423,7 @@ struct PlayerView: View {
             if viewModel.pendingSeekDelta != 0, !viewModel.showControls, !viewModel.isScrubbing {
                 SeekHUD(clock: viewModel.clock, delta: viewModel.pendingSeekDelta)
                     .transition(.opacity)
+                    .hiddenInMiniWindow(isMiniWindow)
                     .zIndex(4)
             }
 
@@ -417,6 +438,7 @@ struct PlayerView: View {
                     logoURL: viewModel.pauseOverlayLogoURL
                 )
                 .transition(.opacity)
+                .hiddenInMiniWindow(isMiniWindow)
                 .zIndex(2)
             }
 
@@ -436,6 +458,7 @@ struct PlayerView: View {
                 .padding(.leading, 60)
                 .padding(.bottom, viewModel.showControls ? 200 : 54)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
+                .hiddenInMiniWindow(isMiniWindow)
                 .zIndex(3)
             }
 
@@ -467,6 +490,7 @@ struct PlayerView: View {
                 .padding(.trailing, 60)
                 .padding(.bottom, viewModel.showControls ? 200 : 54)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
+                .hiddenInMiniWindow(isMiniWindow)
                 .zIndex(3)
             }
 
@@ -531,6 +555,7 @@ struct PlayerView: View {
                 .animation(.playerControls, value: viewModel.showSettingsPanel)
                 .animation(.playerControls, value: viewModel.isScrubbing)
                 .animation(.playerControls, value: viewModel.showPauseOverlay)
+                .hiddenInMiniWindow(isMiniWindow)
             #endif
 
             #if !os(iOS)
@@ -571,7 +596,7 @@ struct PlayerView: View {
             // Esc was the only way out, which a mouse user has no reason to
             // know. Shown with the controls, and throughout loading, when
             // there are no controls yet and a stalled stream would trap you.
-            if !isCasting, !isCastPickerOpen, !viewModel.showSettingsPanel,
+            if !isCasting, !isCastPickerOpen, !viewModel.showSettingsPanel, !isMiniWindow,
                (viewModel.showControls && !viewModel.isScrubbing) || !didReportPlaybackStarted {
                 Button {
                     MacDiagnostics.log("player.control close")
@@ -622,6 +647,7 @@ struct PlayerView: View {
             #endif
 
             debugOverlayLayer
+                .hiddenInMiniWindow(isMiniWindow)
         }
         .animation(.playerControls, value: viewModel.showSettingsPanel)
         .animation(.playerControls, value: viewModel.showNextEpisodeCard)
@@ -687,7 +713,21 @@ struct PlayerView: View {
         // The menu stands down while a layer that takes its own keys is up, so
         // a key that layer lets through cannot reach a menu item instead.
         .onChange(of: macMenuEnabled, initial: true) { _, enabled in
-            MacPlayerCommandBus.shared.isPlayerActive = enabled
+            MacPlayerCommandBus.shared.isPlayerActive = enabled && !miniWindow.isMini
+        }
+        // In the corner the player gives the keys and the menu back to the
+        // app; full size again, it takes them back.
+        .onChange(of: miniWindow.isMini) { _, isMini in
+            if isMini {
+                MacKeyRouter.shared.popBarrier(macKeyBarrier)
+                macKeyBarrier = nil
+                isCastPickerOpen = false
+                showKeyboardHelp = false
+                macCaret = nil
+            } else if macKeyBarrier == nil {
+                macKeyBarrier = MacKeyRouter.shared.pushBarrier()
+            }
+            MacPlayerCommandBus.shared.isPlayerActive = macMenuEnabled && !isMini
         }
         .onDisappear { MacPlayerCommandBus.shared.isPlayerActive = false }
         .onReceive(MacPlayerCommandBus.shared.actions) { action in performMenuAction(action) }
@@ -886,7 +926,7 @@ struct PlayerView: View {
         }
         .background(macKeyCatcher)
         // The pointer has no business sitting over a playing film.
-        .background(MacCursorAutoHide(isActive: viewModel.status == .playing))
+        .background(MacCursorAutoHide(isActive: viewModel.status == .playing && !miniWindow.isMini))
         #else
         .onPlayPauseCommand {
             viewModel.togglePlayPause()
@@ -936,6 +976,15 @@ struct PlayerView: View {
             }
         }
         .onExitCommand { exitOneLayer() }
+        #if os(tvOS)
+        // Back to full size from the corner: focus comes home to the player,
+        // which the disabled mini window could not hold.
+        .onChange(of: miniWindow.isMini) { _, isMini in
+            guard !isMini else { return }
+            focusRemoteInput()
+            viewModel.revealControls()
+        }
+        #endif
     }
 
     /// Backs out of whatever is on top, one layer per press, leaving the player
@@ -2164,7 +2213,7 @@ extension PlayerView {
     /// The buttons in `PlayerControls.transportRow`, left to right.
     private var macTransportOrder: [PlayerControlFocus] {
         var order: [PlayerControlFocus] = [.play]
-        if viewModel.isPictureInPictureSupported && playerShowPiP { order.append(.pip) }
+        if playerShowPiP { order.append(.pip) }
         if viewModel.canShowEpisodesPanel && playerShowEpisodes { order.append(.episodes) }
         if viewModel.canShowSourcesPanel && playerShowSources { order.append(.sources) }
         order.append(contentsOf: [.airplay, .cast, .settings])
@@ -2239,7 +2288,7 @@ extension PlayerView {
             viewModel.closeSidePanel()
             viewModel.showSettingsPanel.toggle()
         case .pictureInPicture:
-            viewModel.togglePictureInPicture()
+            viewModel.minimizeToWindow()
         case .airPlay:
             viewModel.revealControls()
             MacAirPlay.open()
@@ -2372,7 +2421,7 @@ extension PlayerView {
         case .control(.play), .control(.timeline):
             viewModel.togglePlayPause()
         case .control(.pip):
-            viewModel.togglePictureInPicture()
+            viewModel.minimizeToWindow()
         case .control(.episodes):
             viewModel.openSidePanel(.episodes)
         case .control(.sources):
@@ -2486,3 +2535,12 @@ private struct MacPlayerCloseGlass: ViewModifier {
     }
 }
 #endif
+
+private extension View {
+    /// Player chrome stands down while the player is the mini window in the
+    /// corner of the app. Hidden rather than removed, so nothing it holds is
+    /// rebuilt when the player grows back.
+    func hiddenInMiniWindow(_ isMini: Bool) -> some View {
+        opacity(isMini ? 0 : 1).allowsHitTesting(!isMini)
+    }
+}

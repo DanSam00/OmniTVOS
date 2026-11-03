@@ -225,6 +225,10 @@ struct ContentView: View {
     /// The bar and its video sliding away together after the bar's X, before
     /// the slot empties.
     @State private var phoneMiniClosing = false
+    #else
+    /// The player while shrunk into a corner of the app (the PiP button), kept
+    /// so it stays mounted and plays on while `activeScreen` moves on.
+    @State private var tvMiniPlayback: TVScreen?
     #endif
     @State private var resolvedInitialScreen = false
     /// `nil` until tvOS has actually backgrounded the app, so the initial
@@ -634,6 +638,8 @@ struct ContentView: View {
             PhoneMiniPlayerState.shared.minimize = { minimizePhonePlayer() }
             PhoneMiniPlayerState.shared.expand = { expandPhoneMiniPlayer() }
             PhoneMiniPlayerState.shared.close = { closePhoneMiniPlayer() }
+            #else
+            PlayerMiniWindowState.shared.minimize = { minimizeTVPlayer() }
             #endif
             guard !resolvedInitialScreen else { return }
             resolvedInitialScreen = true
@@ -829,8 +835,51 @@ struct ContentView: View {
         #if os(iOS)
         return phoneMiniPlayback
         #else
-        return nil
+        return tvMiniPlayback
         #endif
+    }
+
+    #if !os(iOS)
+    /// The PiP button: the player goes to the corner and the screen it was
+    /// opened from comes back, to browse while it plays.
+    private func minimizeTVPlayer() {
+        guard case let .player(_, meta, subtitle, _, _, _) = activeScreen else { return }
+        withAnimation(PlayerMiniWindowState.motion) {
+            tvMiniPlayback = activeScreen
+            PlayerMiniWindowState.shared.isMini = true
+        }
+        dismissPlayer(meta: meta, subtitle: subtitle)
+    }
+
+    private func expandTVMiniPlayer() {
+        guard let playback = tvMiniPlayback else { return }
+        withAnimation(PlayerMiniWindowState.motion) {
+            activeScreen = playback
+            tvMiniPlayback = nil
+            PlayerMiniWindowState.shared.isMini = false
+        }
+    }
+
+    /// Ends playback: the player tears down as it does from its own close.
+    private func closeTVMiniPlayer() {
+        guard tvMiniPlayback != nil else { return }
+        withAnimation(.easeIn(duration: 0.2)) {
+            tvMiniPlayback = nil
+            PlayerMiniWindowState.shared.isMini = false
+        }
+    }
+    #endif
+
+    /// The player is done with the screen: back to where it was opened from,
+    /// or, from the corner, simply gone — the viewer is elsewhere by then.
+    private func leavePlayer(meta: NuvioMeta, subtitle: String) {
+        #if !os(iOS)
+        if tvMiniPlayback != nil {
+            closeTVMiniPlayer()
+            return
+        }
+        #endif
+        dismissPlayer(meta: meta, subtitle: subtitle)
     }
 
     #if os(iOS)
@@ -1728,6 +1777,10 @@ struct ContentView: View {
         // Something new to play replaces whatever the mini bar held.
         phoneMiniPlayback = nil
         PhoneMiniPlayerState.shared.isMini = false
+        #else
+        // And whatever was playing in the corner.
+        tvMiniPlayback = nil
+        PlayerMiniWindowState.shared.isMini = false
         #endif
         withAnimation(.easeInOut(duration: 0.28)) {
             activeScreen = .player(
@@ -1937,6 +1990,12 @@ struct ContentView: View {
                 ))
                 .offset(y: phoneMiniPlayback != nil ? phoneMiniCloseOffset : 0)
                 .opacity(phoneMiniPlayback != nil && phoneMiniClosing ? 0 : 1)
+                #else
+                .modifier(TVMiniPlayerFrame(
+                    isMini: tvMiniPlayback != nil,
+                    onExpand: expandTVMiniPlayer,
+                    onClose: closeTVMiniPlayer
+                ))
                 #endif
                 .transition(.opacity)
                 .zIndex(2)
@@ -2139,6 +2198,15 @@ struct ContentView: View {
                 .zIndex(4)
             }
         }
+        #if os(tvOS)
+        // Play/Pause brings the corner player back. Here, round everything,
+        // because a command reaches only the focused view and what holds it;
+        // Home and Details do not claim it, and the full-size player's own
+        // handler sits nearer its focus and wins there.
+        .onPlayPauseCommand {
+            if tvMiniPlayback != nil { expandTVMiniPlayer() }
+        }
+        #endif
         #if os(macOS)
         // Pinned to the canvas. The stack takes the height of its tallest
         // child and the player fills it with `maxHeight: .infinity`, so a
@@ -2233,8 +2301,9 @@ struct ContentView: View {
         #endif
         #else
         mainTabView
-            // `-OmniDebugPlayURL <url>`, in a build made with OMNI_MAC_DEBUG_PLAY.
-            #if os(macOS) && OMNI_MAC_DEBUG_PLAY
+            // `-OmniDebugPlayURL <url>`, in a build made with OMNI_MAC_DEBUG_PLAY
+            // (OMNI_TV_DEBUG_PLAY on Apple TV).
+            #if (os(macOS) && OMNI_MAC_DEBUG_PLAY) || (os(tvOS) && OMNI_TV_DEBUG_PLAY)
             .task {
                 try? await Task.sleep(nanoseconds: 4_000_000_000)
                 playDebugLaunchURLIfRequested()
@@ -2243,7 +2312,7 @@ struct ContentView: View {
         #endif
     }
 
-    #if (os(iOS) && OMNI_DEBUG_TOOLS) || (os(macOS) && OMNI_MAC_DEBUG_PLAY)
+    #if (os(iOS) && OMNI_DEBUG_TOOLS) || (os(macOS) && OMNI_MAC_DEBUG_PLAY) || (os(tvOS) && OMNI_TV_DEBUG_PLAY)
     /// `-OmniDebugPlayURL <url>` on launch opens the player on that URL once
     /// Home is up, so the player can be exercised in the simulator without a
     /// stream add-on installed.
@@ -2282,6 +2351,14 @@ struct ContentView: View {
             country: nil, released: nil
         )
         presentPlayback(url: url, meta: meta, subtitle: "", externalSubtitles: [], resumeFrom: startAt > 0 ? startAt : nil)
+        #if !os(iOS)
+        // `-OmniDebugMiniAfter <seconds>` sends it to the corner, as the PiP
+        // button does, without driving the controls.
+        let miniAfter = UserDefaults.standard.double(forKey: "OmniDebugMiniAfter")
+        if miniAfter > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + miniAfter) { minimizeTVPlayer() }
+        }
+        #endif
     }
     #endif
 
@@ -3039,6 +3116,12 @@ struct ContentView: View {
                 )
             },
             onFinished: isTrailer ? {
+                #if !os(iOS)
+                if tvMiniPlayback != nil {
+                    closeTVMiniPlayer()
+                    return
+                }
+                #endif
                 withAnimation(.easeInOut(duration: 0.24)) {
                     activeScreen = .details(id: meta.id, type: meta.type)
                 }
@@ -3047,17 +3130,17 @@ struct ContentView: View {
                 playbackDidStart = true
             },
             onPlayRecommendation: { recMeta, playManually in
-                dismissPlayer(meta: meta, subtitle: subtitle)
+                leavePlayer(meta: meta, subtitle: subtitle)
                 playRecommendedTitle(meta: recMeta, playManually: playManually)
             },
             onOpenRecommendationDetails: { recMeta in
-                dismissPlayer(meta: meta, subtitle: subtitle)
+                leavePlayer(meta: meta, subtitle: subtitle)
                 withAnimation(.easeInOut(duration: 0.28)) {
                     openDetailsRoot(id: recMeta.id, type: recMeta.type)
                 }
             }
         ) {
-            dismissPlayer(meta: meta, subtitle: subtitle)
+            leavePlayer(meta: meta, subtitle: subtitle)
         }
         .onAppear {
             Task {
@@ -10314,6 +10397,17 @@ private struct TVFeatureHeroView: View {
                     }
                 }
 
+                if onRemove != nil, activeItem.isRecommendation {
+                    Button {
+                        ContinueWatchingActions.notInterested(activeItem)
+                    } label: {
+                        Label(
+                            L10n.string("action_not_interested", fallback: "Not Interested"),
+                            systemImage: "hand.thumbsdown"
+                        )
+                    }
+                }
+
                 if let onRemove {
                     Button(role: .destructive) {
                         onRemove(activeItem)
@@ -11250,5 +11344,183 @@ private struct PhoneMiniPlayerClip: Shape {
             ? Path(roundedRect: rect, cornerRadius: 12, style: .continuous)
             : Path(rect.insetBy(dx: -4000, dy: -4000))
     }
+}
+#endif
+
+#if !os(iOS)
+/// The player in the corner of the app on Apple TV and the Mac.
+///
+/// Drawn smaller rather than laid out smaller: the player keeps its full-screen
+/// size underneath, so neither engine's video surface is resized — mpv keeps
+/// the size its output opened at, and would come back from a small frame
+/// blurred. While small it takes no input, and on Apple TV no focus, so the
+/// screen behind is browsed as usual; Play/Pause brings it back (Apple TV), as
+/// does a click (Mac).
+private struct TVMiniPlayerFrame: ViewModifier {
+    let isMini: Bool
+    let onExpand: () -> Void
+    let onClose: () -> Void
+
+    /// The player's frame and the safe area round it. On Apple TV the frame
+    /// is the screen less its safe area, and the picture draws past it to the
+    /// screen's edges; the corner window is the whole picture, so both count.
+    @State private var layout = Layout()
+
+    private struct Layout: Equatable {
+        var size = CGSize(width: 1920, height: 1080)
+        var insets = EdgeInsets()
+        var pictureSize: CGSize {
+            CGSize(width: size.width + insets.leading + insets.trailing,
+                   height: size.height + insets.top + insets.bottom)
+        }
+    }
+
+    #if os(tvOS)
+    /// Top right, inside the safe area, where the system puts its own
+    /// picture in picture.
+    private static let anchor = UnitPoint.topTrailing
+    private static let alignment = Alignment.topTrailing
+    private static let inset = CGSize.zero
+    #else
+    private static let anchor = UnitPoint.bottomTrailing
+    private static let alignment = Alignment.bottomTrailing
+    private static let inset = CGSize(width: -40, height: -40)
+    #endif
+
+    /// How far past the frame the picture draws: to the screen's edges on
+    /// Apple TV; nowhere on the Mac, whose player fills the canvas.
+    private static func pictureOutset(of frame: CGRect) -> EdgeInsets {
+        #if os(tvOS)
+        let screen = UIScreen.main.bounds
+        return EdgeInsets(
+            top: max(0, frame.minY),
+            leading: max(0, frame.minX),
+            bottom: max(0, screen.height - frame.maxY),
+            trailing: max(0, screen.width - frame.maxX)
+        )
+        #else
+        return EdgeInsets()
+        #endif
+    }
+
+    func body(content: Content) -> some View {
+        let picture = layout.pictureSize
+        let scale = PlayerMiniWindowState.size.width / max(picture.width, 1)
+        // The picture's corner, outside the frame by the safe area, brought
+        // back onto the frame's corner once drawn small.
+        #if os(tvOS)
+        let corner = CGSize(width: -layout.insets.trailing * scale, height: layout.insets.top * scale)
+        #else
+        let corner = CGSize(width: -layout.insets.trailing * scale, height: -layout.insets.bottom * scale)
+        #endif
+        let offset = CGSize(width: Self.inset.width + corner.width, height: Self.inset.height + corner.height)
+        content
+            .allowsHitTesting(!isMini)
+            .disabled(isMini)
+            // Read full size only: drawn small, the frame reads transformed.
+            // The Mac's global space is its window's, scaled from the canvas,
+            // so the size is the frame's own; the screen-relative frame is only
+            // for the Apple TV outset.
+            .onGeometryChange(for: [CGRect].self) {
+                [CGRect(origin: .zero, size: $0.size), $0.frame(in: .global)]
+            } action: { frames in
+                guard !isMini, frames[0].width > 0, frames[0].height > 0 else { return }
+                layout = Layout(size: frames[0].size, insets: Self.pictureOutset(of: frames[1]))
+            }
+            .clipShape(TVMiniPlayerClip(isMini: isMini, cornerRadius: 14 / scale, outset: layout.insets))
+            .scaleEffect(isMini ? scale : 1, anchor: Self.anchor)
+            .offset(isMini ? offset : .zero)
+            .overlay(alignment: Self.alignment) {
+                if isMini {
+                    TVMiniPlayerChrome(onExpand: onExpand, onClose: onClose)
+                        .frame(width: layout.size.width * scale, height: layout.size.height * scale)
+                        .offset(offset)
+                        .transition(.opacity)
+                }
+            }
+            .shadow(color: .black.opacity(isMini ? 0.55 : 0), radius: 24, y: 8)
+    }
+}
+
+private struct TVMiniPlayerClip: Shape {
+    var isMini: Bool
+    var cornerRadius: CGFloat
+    /// How far the picture draws past the frame (the safe area).
+    var outset: EdgeInsets
+
+    func path(in rect: CGRect) -> Path {
+        // Full screen it must not clip at all: the player draws past its
+        // frame, and even a square clip antialiases a hairline round it.
+        guard isMini else { return Path(rect.insetBy(dx: -4000, dy: -4000)) }
+        let picture = CGRect(
+            x: rect.minX - outset.leading,
+            y: rect.minY - outset.top,
+            width: rect.width + outset.leading + outset.trailing,
+            height: rect.height + outset.top + outset.bottom
+        )
+        return Path(roundedRect: picture, cornerRadius: cornerRadius, style: .continuous)
+    }
+}
+
+/// What the corner player shows over its picture: on the Mac, a click target
+/// with expand and close on hover; on Apple TV, which has no pointer, a hint.
+private struct TVMiniPlayerChrome: View {
+    let onExpand: () -> Void
+    let onClose: () -> Void
+    #if os(macOS)
+    @State private var isHovering = false
+    #endif
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.22), lineWidth: 1.5)
+            #if os(macOS)
+            Color.black.opacity(isHovering ? 0.28 : 0)
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onExpand)
+            if isHovering {
+                HStack {
+                    miniButton("arrow.up.left.and.arrow.down.right", help: "Back to full screen", action: onExpand)
+                    Spacer()
+                    miniButton("xmark", help: "Stop playing", action: onClose)
+                }
+                .padding(14)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .transition(.opacity)
+            }
+            #else
+            Text(L10n.string("player_mini_hint", fallback: "Play/Pause for full screen"))
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundColor(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(Color.black.opacity(0.6), in: Capsule())
+                .padding(12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            #endif
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        #if os(macOS)
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.15)) { isHovering = hovering }
+        }
+        #endif
+    }
+
+    #if os(macOS)
+    private func miniButton(_ icon: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundColor(.white)
+                .frame(width: 46, height: 46)
+                .background(Circle().fill(Color.black.opacity(0.55)))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+    #endif
 }
 #endif

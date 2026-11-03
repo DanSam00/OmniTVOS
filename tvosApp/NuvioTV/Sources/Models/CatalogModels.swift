@@ -2736,6 +2736,7 @@ enum ContinueWatchingStore {
         invalidateCache()
         WatchProgressLedger.eraseProfile(profileId)
         ContinueWatchingDismissStore.eraseProfile(profileId)
+        NotInterestedStore.eraseProfile(profileId)
         LargePayloadStore.remove(key: episodeResumeStorageKey(for: profileId), directory: episodeResumeDirectoryName)
         for key in [storageKey(for: profileId), episodeResumeStorageKey(for: profileId)] {
             UserDefaults.standard.removeObject(forKey: key)
@@ -2752,6 +2753,7 @@ enum ContinueWatchingStore {
         invalidateCache()
         WatchProgressLedger.eraseAllProfiles()
         ContinueWatchingDismissStore.eraseAllProfiles()
+        NotInterestedStore.eraseAllProfiles()
         LargePayloadStore.removeDirectory(episodeResumeDirectoryName)
         let defaults = UserDefaults.standard
         defaults.dictionaryRepresentation().keys
@@ -2958,10 +2960,19 @@ enum ContinueWatchingStore {
 /// different key, and any fresh progress for the title clears its keys outright
 /// (see `ContinueWatchingStore.save`), so a show they return to always comes
 /// back on its own.
+///
+/// Each removal and each such clear is timed, so the account blob can be
+/// merged rather than copied: a pull used to replace this device's list with
+/// the account's, and any device pushing from an older copy of the blob wiped
+/// removals made elsewhere since, which is how a removed show kept coming back.
 enum ContinueWatchingDismissStore {
     static let changedNotification = Notification.Name("nuvio.tv.continueWatching.dismissed")
 
     private static let baseKey = "nuvio.tv.continueWatching.dismissedKeys"
+    /// When each key was removed, and when each title was last watched again
+    /// (which retires its removals). Epoch seconds, beside the plain key list.
+    private static let dismissedAtBaseKey = "omni.continueWatching.dismissedAt"
+    private static let restoredAtBaseKey = "omni.continueWatching.restoredAt"
     private static let separator = "|"
     private static let legacySeparator = "\u{1f}"
 
@@ -2987,6 +2998,32 @@ enum ContinueWatchingDismissStore {
     static func eraseProfile(_ profileId: String) {
         let key = storageKey(for: profileId)
         UserDefaults.standard.removeObject(forKey: key)
+        UserDefaults.standard.removeObject(forKey: scopedKey(dismissedAtBaseKey, profileId))
+        UserDefaults.standard.removeObject(forKey: scopedKey(restoredAtBaseKey, profileId))
+    }
+
+    private static func scopedKey(_ base: String, _ profileId: String?) -> String {
+        guard let id = profileId?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty else { return base }
+        return "\(base).\(id)"
+    }
+
+    private static func times(_ base: String, profileId: String?) -> [String: Double] {
+        (UserDefaults.standard.dictionary(forKey: scopedKey(base, profileId)) as? [String: Double]) ?? [:]
+    }
+
+    private static func setTimes(_ times: [String: Double], _ base: String, profileId: String?) {
+        let key = scopedKey(base, profileId)
+        if times.isEmpty {
+            UserDefaults.standard.removeObject(forKey: key)
+        } else {
+            UserDefaults.standard.set(times, forKey: key)
+        }
+    }
+
+    /// The title a key belongs to.
+    static func contentId(ofKey key: String) -> String {
+        String(key.split(whereSeparator: { String($0) == separator || String($0) == legacySeparator })
+            .first ?? Substring(key))
     }
 
     static func key(for item: ContinueWatchingItem) -> String {
@@ -3024,38 +3061,73 @@ enum ContinueWatchingDismissStore {
         return current.contains(exact) || current.contains(wildcard) || current.contains(legacyExact) || current.contains(legacyWildcard)
     }
 
+    /// Removed as a whole title, not just one of its episodes.
+    static func isDismissed(contentId: String) -> Bool {
+        let id = contentId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let current = keys()
+        return current.contains("\(id)\(separator)-1\(separator)-1")
+            || current.contains("\(id)\(legacySeparator)-1\(legacySeparator)-1")
+    }
+
     static func dismiss(_ item: ContinueWatchingItem) {
-        var current = keys()
         let numbers = item.episodeNumbers
-        let specificKey = key(contentId: item.meta.id, season: numbers?.season, episode: numbers?.episode)
-        current.insert(specificKey)
+        var added = [key(contentId: item.meta.id, season: numbers?.season, episode: numbers?.episode)]
         if numbers == nil {
-            current.insert("\(item.meta.id.trimmingCharacters(in: .whitespacesAndNewlines))\(separator)-1\(separator)-1")
+            added.append("\(item.meta.id.trimmingCharacters(in: .whitespacesAndNewlines))\(separator)-1\(separator)-1")
         }
-        persist(current)
+        insert(added)
     }
 
     static func dismiss(contentId: String) {
-        var current = keys()
         let id = contentId.trimmingCharacters(in: .whitespacesAndNewlines)
-        current.insert("\(id)\(separator)-1\(separator)-1")
-        persist(current)
+        insert(["\(id)\(separator)-1\(separator)-1"])
+    }
+
+    private static func insert(_ added: [String]) {
+        let now = Date().timeIntervalSince1970
+        var stamps = times(dismissedAtBaseKey, profileId: activeProfileId)
+        for key in added { stamps[key] = now }
+        setTimes(stamps, dismissedAtBaseKey, profileId: activeProfileId)
+        persist(keys().union(added))
     }
 
     /// Retires every removal recorded for a title.
+    ///
+    /// Timed even when this device holds none of its removals, since another
+    /// device's may still arrive with the next pull and must lose to this. Called
+    /// on every progress save, so the time is only written again after a while.
     static func clear(contentId: String) {
-        let current = keys()
-        guard !current.isEmpty else { return }
         let id = contentId.trimmingCharacters(in: .whitespacesAndNewlines)
-        let prefix1 = "\(id)\(separator)"
-        let prefix2 = "\(id)\(legacySeparator)"
-        let remaining = current.filter { !$0.hasPrefix(prefix1) && !$0.hasPrefix(prefix2) && $0 != id }
+        let current = keys()
+        let remaining = current.filter { Self.contentId(ofKey: $0) != id }
+        let now = Date().timeIntervalSince1970
+        var restored = times(restoredAtBaseKey, profileId: activeProfileId)
+        if remaining.count != current.count || (restored[id] ?? 0) < now - 600 {
+            restored[id] = now
+            setTimes(restored, restoredAtBaseKey, profileId: activeProfileId)
+        }
         guard remaining.count != current.count else { return }
         persist(remaining)
     }
 
-    static func replaceKeys(_ keys: Set<String>, profileId: String?) {
-        persist(keys, profileId: profileId)
+    /// Everything the account blob carries about removals for a profile.
+    static func syncState(profileId: String?) -> ContinueWatchingDismissals {
+        ContinueWatchingDismissals(
+            keys: keys(profileId: profileId),
+            dismissedAt: times(dismissedAtBaseKey, profileId: profileId),
+            restoredAt: times(restoredAtBaseKey, profileId: profileId)
+        )
+    }
+
+    /// Folds the account's removals into this device's, rather than replacing
+    /// them: see the type's note.
+    static func merge(_ remote: ContinueWatchingDismissals, profileId: String?) {
+        let local = syncState(profileId: profileId)
+        let merged = ContinueWatchingDismissals.merged(local, remote)
+        guard merged != local else { return }
+        setTimes(merged.dismissedAt, dismissedAtBaseKey, profileId: profileId)
+        setTimes(merged.restoredAt, restoredAtBaseKey, profileId: profileId)
+        persist(merged.keys, profileId: profileId)
     }
 
     private static func persist(_ keys: Set<String>, profileId: String? = activeProfileId) {
@@ -3078,8 +3150,36 @@ enum ContinueWatchingDismissStore {
     static func eraseAllProfiles() {
         let defaults = UserDefaults.standard
         defaults.dictionaryRepresentation().keys
-            .filter { $0.hasPrefix(baseKey) }
+            .filter { $0.hasPrefix(baseKey) || $0.hasPrefix(dismissedAtBaseKey) || $0.hasPrefix(restoredAtBaseKey) }
             .forEach { defaults.removeObject(forKey: $0) }
+    }
+}
+
+/// Removals as the account blob carries them: the key list every Nuvio client
+/// reads, plus Omni's times, which let two copies be merged.
+struct ContinueWatchingDismissals: Equatable {
+    var keys: Set<String>
+    /// Key → when it was removed (epoch seconds).
+    var dismissedAt: [String: Double] = [:]
+    /// Title → when it was last watched again, which retires its removals.
+    var restoredAt: [String: Double] = [:]
+
+    /// Restores older than this are forgotten.
+    static let restoreLifetime: TimeInterval = 365 * 86_400
+
+    /// A key survives unless its title was watched again after it was removed.
+    /// A key with no time (another Nuvio client's, or one from before times
+    /// were kept) only survives while its title has no restore at all.
+    static func merged(_ a: Self, _ b: Self, now: Date = Date()) -> Self {
+        let cutoff = now.timeIntervalSince1970 - restoreLifetime
+        let restoredAt = a.restoredAt.merging(b.restoredAt, uniquingKeysWith: max).filter { $0.value >= cutoff }
+        let stamps = a.dismissedAt.merging(b.dismissedAt, uniquingKeysWith: max)
+        let keys = a.keys.union(b.keys).filter { key in
+            guard let restored = restoredAt[ContinueWatchingDismissStore.contentId(ofKey: key)] else { return true }
+            guard let dismissed = stamps[key] else { return false }
+            return dismissed > restored
+        }
+        return Self(keys: keys, dismissedAt: stamps.filter { keys.contains($0.key) }, restoredAt: restoredAt)
     }
 }
 

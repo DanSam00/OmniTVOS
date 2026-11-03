@@ -3011,6 +3011,71 @@ final class ContinueWatchingDismissStoreTests: XCTestCase {
         )
     }
 
+    /// Two devices' copies of the account's removals. A pull used to replace
+    /// this device's list outright, so a device pushing from an older copy
+    /// wiped removals made elsewhere and the show came back.
+    func testRemovalsMergeByTimeRatherThanReplacing() {
+        let here = ContinueWatchingDismissals(
+            keys: ["tt1|-1|-1", "tt2|1|3"],
+            dismissedAt: ["tt1|-1|-1": 200, "tt2|1|3": 100]
+        )
+        let account = ContinueWatchingDismissals(
+            keys: ["tt3|-1|-1", "tt4|-1|-1"],
+            dismissedAt: ["tt3|-1|-1": 150],
+            // tt2 was watched again after it was removed here; tt1 before.
+            restoredAt: ["tt2": 150, "tt1": 120]
+        )
+        let merged = ContinueWatchingDismissals.merged(here, account, now: Date(timeIntervalSince1970: 1_000))
+        XCTAssertEqual(merged.keys, ["tt1|-1|-1", "tt3|-1|-1", "tt4|-1|-1"])
+        XCTAssertEqual(merged, ContinueWatchingDismissals.merged(account, here, now: Date(timeIntervalSince1970: 1_000)))
+
+        // A key with no time (another Nuvio client's) loses to any restore.
+        let untimed = ContinueWatchingDismissals(keys: ["tt5|1|1"])
+        let restored = ContinueWatchingDismissals(keys: [], restoredAt: ["tt5": 10])
+        XCTAssertTrue(ContinueWatchingDismissals.merged(untimed, restored, now: Date(timeIntervalSince1970: 1_000)).keys.isEmpty)
+    }
+
+    func testRemovalSurvivesAPullFromAnOlderCopy() {
+        let item = makeItem(meta: makeMovie(), season: nil, episode: nil)
+        ContinueWatchingDismissStore.dismiss(item)
+        // The account as another device pushed it, from before the removal.
+        let stale = ContinueWatchingSyncMapper.dismissals(from: ["dismissedNextUpKeys": ["tt-other|-1|-1"]])
+        ContinueWatchingDismissStore.merge(stale, profileId: profileId)
+        XCTAssertTrue(ContinueWatchingDismissStore.isDismissed(item))
+
+        // Watching it again here retires it, and the next push says so.
+        ContinueWatchingDismissStore.clear(contentId: item.meta.id)
+        XCTAssertFalse(ContinueWatchingDismissStore.isDismissed(item))
+        let payload = ContinueWatchingSyncMapper.exportPayload(
+            localProfileId: profileId,
+            upNextFromFurthestEpisode: true,
+            showUnairedNextUp: true,
+            continueWatchingSort: "Default",
+            existingPayload: #"{"dismissedNextUpKeys": ["tt-dismiss-movie|-1|-1"], "omni_dismissed_at": {"tt-dismiss-movie|-1|-1": 1}}"#
+        )
+        let exported = ContinueWatchingSyncMapper.dismissals(from: ContinueWatchingSyncMapper.payloadDictionary(payload) ?? [:])
+        XCTAssertFalse(exported.keys.contains("tt-dismiss-movie|-1|-1"))
+        XCTAssertTrue(exported.keys.contains("tt-other|-1|-1"))
+        XCTAssertNotNil(exported.restoredAt["tt-dismiss-movie"])
+    }
+
+    @MainActor
+    func testMarkingAnEpisodeWatchedMovesTheCardOnAtOnce() {
+        let meta = makeMeta(id: "tt-marks-series", type: "series", videos: [
+            NuvioVideo(id: "tt-marks-series:1:1", title: "One", season: 1, episode: 1, thumbnail: nil, overview: nil, released: "2020-01-01T00:00:00.000Z", rating: nil),
+            NuvioVideo(id: "tt-marks-series:1:2", title: "Two", season: 1, episode: 2, thumbnail: nil, overview: nil, released: "2020-01-08T00:00:00.000Z", rating: nil),
+        ])
+        let card = makeItem(meta: meta, season: 1, episode: 1)
+        let film = makeItem(meta: makeMeta(id: "tt-marks-movie", type: "movie", videos: nil), season: nil, episode: nil)
+        ContinueWatchingWatchedMarks.shared.record(card)
+        ContinueWatchingWatchedMarks.shared.record(film)
+
+        let row = ContinueWatchingWatchedMarks.shared.apply([card, film])
+        XCTAssertEqual(row.map(\.meta.id), ["tt-marks-series"])
+        XCTAssertEqual(row.first?.episodeNumbers?.episode, 2)
+        XCTAssertEqual(row.first?.isUpNextEntry, true)
+    }
+
     private func makeItem(meta: NuvioMeta, season: Int?, episode: Int?) -> ContinueWatchingItem {
         ContinueWatchingItem(
             meta: meta,

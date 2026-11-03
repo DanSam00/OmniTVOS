@@ -2055,9 +2055,16 @@ enum ContinueWatchingSyncMapper {
         let style = existingDict["style"] as? String ?? "Card"
         let useEpisodeThumbnails = existingDict["use_episode_thumbnails_in_cw"] as? Bool ?? true
         let blurNextUp = existingDict["blur_continue_watching_next_up"] as? Bool ?? false
-        let existingDismissed = Set(existingDict["dismissedNextUpKeys"] as? [String] ?? [])
-        let localDismissed = ContinueWatchingDismissStore.keys(profileId: localProfileId)
-        let mergedDismissed = Array(existingDismissed.union(localDismissed)).sorted()
+        // Merged by time, not unioned: a title watched again since its removal
+        // has to come back on every device, not just the one it was played on.
+        let dismissals = ContinueWatchingDismissals.merged(
+            ContinueWatchingDismissStore.syncState(profileId: localProfileId),
+            Self.dismissals(from: existingDict)
+        )
+        let notInterested = NotInterestedStore.merged(
+            NotInterestedStore.entries(profileId: localProfileId),
+            NotInterestedStore.entries(fromWire: existingDict["omni_not_interested"])
+        )
         let showResumePromptOnLaunch = existingDict["showResumePromptOnLaunch"] as? Bool ?? true
         let sortMode = sortModeToWire(continueWatchingSort)
 
@@ -2068,7 +2075,10 @@ enum ContinueWatchingSyncMapper {
             "use_episode_thumbnails_in_cw": useEpisodeThumbnails,
             "show_unaired_next_up": showUnairedNextUp,
             "blur_continue_watching_next_up": blurNextUp,
-            "dismissedNextUpKeys": mergedDismissed,
+            "dismissedNextUpKeys": Array(dismissals.keys).sorted(),
+            "omni_dismissed_at": dismissals.dismissedAt,
+            "omni_restored_at": dismissals.restoredAt,
+            "omni_not_interested": NotInterestedStore.wire(notInterested),
             "showResumePromptOnLaunch": showResumePromptOnLaunch,
             "sort_mode": sortMode
         ]
@@ -2078,6 +2088,28 @@ enum ContinueWatchingSyncMapper {
             return jsonString
         }
         return ""
+    }
+
+    /// The removals in a Continue Watching payload, with Omni's times where
+    /// it wrote them.
+    static func dismissals(from dict: [String: Any]) -> ContinueWatchingDismissals {
+        func times(_ key: String) -> [String: Double] {
+            ((dict[key] as? [String: Any]) ?? [:]).compactMapValues { ($0 as? NSNumber)?.doubleValue }
+        }
+        return ContinueWatchingDismissals(
+            keys: Set(dict["dismissedNextUpKeys"] as? [String] ?? []),
+            dismissedAt: times("omni_dismissed_at"),
+            restoredAt: times("omni_restored_at")
+        )
+    }
+
+    static func payloadDictionary(_ remote: Any?) -> [String: Any]? {
+        if let jsonString = remote as? String,
+           let data = jsonString.data(using: .utf8),
+           let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            return parsed
+        }
+        return remote as? [String: Any]
     }
 
     static func importPayload(_ remote: Any?) -> (upNextFromFurthestEpisode: Bool?, showUnairedNextUp: Bool?, sortMode: String?, dismissedKeys: Set<String>?) {
@@ -3727,8 +3759,14 @@ fileprivate final class NuvioAPIClient {
                 defaults.set(sortMode, forKey: SettingsKey.continueWatchingSort)
             }
         }
-        if let dismissedKeys {
-            ContinueWatchingDismissStore.replaceKeys(dismissedKeys, profileId: localProfileId)
+        if dismissedKeys != nil, let dict = ContinueWatchingSyncMapper.payloadDictionary(remote) {
+            ContinueWatchingDismissStore.merge(ContinueWatchingSyncMapper.dismissals(from: dict), profileId: localProfileId)
+        }
+        if let dict = ContinueWatchingSyncMapper.payloadDictionary(remote) {
+            NotInterestedStore.merge(
+                NotInterestedStore.entries(fromWire: dict["omni_not_interested"]),
+                profileId: localProfileId
+            )
         }
     }
 

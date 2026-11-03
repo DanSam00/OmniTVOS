@@ -1,6 +1,23 @@
 import SwiftUI
 import AVKit
 
+#if !os(iOS)
+/// The player shrunk into a corner of the app on Apple TV and the Mac, playing
+/// on while the viewer browses (the PiP button). The app owns the player's
+/// slot and keeps it mounted; the player reads this to stand down.
+@MainActor
+final class PlayerMiniWindowState: ObservableObject {
+    static let shared = PlayerMiniWindowState()
+    @Published var isMini = false
+    /// Set by the app.
+    var minimize: (() -> Void)?
+
+    /// In the app's 1920×1080 design space, which the Mac scales to its window.
+    static let size = CGSize(width: 576, height: 324)
+    static let motion = Animation.spring(response: 0.42, dampingFraction: 0.86)
+}
+#endif
+
 enum PlayerControlFocus: Hashable {
     case play
     case pip
@@ -156,10 +173,20 @@ struct PlayerControls: View {
             && viewModel.sidePanel == nil
     }
 
+    /// The app's own mini window on Apple TV and the Mac works with either
+    /// engine; system PiP elsewhere needs the AVKit one.
+    private var showsPiPButton: Bool {
+        #if os(iOS)
+        viewModel.isPictureInPictureSupported && playerShowPiP
+        #else
+        playerShowPiP
+        #endif
+    }
+
     /// Left-to-right order of currently visible transport buttons.
     private var transportFocusOrder: [PlayerControlFocus] {
         var order: [PlayerControlFocus] = [.play]
-        if viewModel.isPictureInPictureSupported && playerShowPiP { order.append(.pip) }
+        if showsPiPButton { order.append(.pip) }
         if viewModel.canShowEpisodesPanel && playerShowEpisodes { order.append(.episodes) }
         if viewModel.canShowSourcesPanel && playerShowSources { order.append(.sources) }
         order.append(.settings)
@@ -287,14 +314,18 @@ struct PlayerControls: View {
 
             Spacer()
 
-            if viewModel.isPictureInPictureSupported && playerShowPiP {
+            if showsPiPButton {
                 glassIconButton(
                     size: 70,
                     iconSize: 28,
                     focusKey: .pip,
                     isFocused: isShownFocused(.pip)
                 ) {
+                    #if os(iOS)
                     viewModel.togglePictureInPicture()
+                    #else
+                    viewModel.minimizeToWindow()
+                    #endif
                 } icon: {
                     Image(systemName: "pip.enter")
                 }

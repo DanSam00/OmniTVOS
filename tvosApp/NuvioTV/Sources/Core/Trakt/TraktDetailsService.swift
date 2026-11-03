@@ -85,9 +85,16 @@ enum TraktDetailsService {
     /// Trakt's "related" list for a title, asked with the app's client id
     /// alone: it is public, so it needs no sign-in, Trakt or otherwise.
     static func fetchPublicRelated(for meta: NuvioMeta, limit: Int = 8) async -> [RelatedTitle] {
-        let imdb = meta.imdbId ?? String(meta.id.split(separator: ":").first ?? "")
+        await fetchPublicRelated(
+            imdbId: meta.imdbId ?? String(meta.id.split(separator: ":").first ?? ""),
+            type: meta.type,
+            limit: limit
+        )
+    }
+
+    static func fetchPublicRelated(imdbId imdb: String, type: String, limit: Int = 8) async -> [RelatedTitle] {
         guard imdb.hasPrefix("tt") else { return [] }
-        let endpoint = isSeries(meta.type) ? "shows" : "movies"
+        let endpoint = isSeries(type) ? "shows" : "movies"
         guard let url = URL(string: "\(TraktConfig.apiBaseURL)/\(endpoint)/\(imdb)/related?limit=\(limit)&extended=full,images") else {
             return []
         }
@@ -167,7 +174,16 @@ enum TraktDetailsService {
 
     // MARK: - Trakt API
 
-    private static func traktGET(route: String) async -> Data? {
+    /// "Not Interested": Trakt stops recommending the title to the account.
+    /// Nothing happens unless Trakt is connected.
+    static func hideRecommendation(_ meta: NuvioMeta) async {
+        guard isAuthenticated else { return }
+        let imdb = meta.imdbId ?? String(meta.id.split(separator: ":").first ?? "")
+        guard imdb.hasPrefix("tt") else { return }
+        _ = await traktGET(route: "recommendations/\(isSeries(meta.type) ? "shows" : "movies")/\(imdb)", method: "DELETE")
+    }
+
+    private static func traktGET(route: String, method: String = "GET") async -> Data? {
         guard TraktConfig.isConfigured else { return nil }
         let authService = TraktAuthService()
         guard await authService.refreshTokenIfNeeded(),
@@ -178,7 +194,7 @@ enum TraktDetailsService {
         guard let url = URL(string: "\(base)/\(route)") else { return nil }
 
         var request = URLRequest(url: url)
-        request.httpMethod = "GET"
+        request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(TraktConfig.userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue(TraktConfig.clientID, forHTTPHeaderField: "trakt-api-key")

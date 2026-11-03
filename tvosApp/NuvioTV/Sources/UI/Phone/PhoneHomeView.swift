@@ -777,6 +777,11 @@ struct PhoneHomeView: View {
         Button { ContinueWatchingActions.markWatched(item) } label: {
             Label("Mark as Watched", systemImage: "checkmark.circle")
         }
+        if item.isRecommendation {
+            Button { ContinueWatchingActions.notInterested(item) } label: {
+                Label("Not Interested", systemImage: "hand.thumbsdown")
+            }
+        }
         Button(role: .destructive) { onRemoveContinueWatching(item) } label: {
             Label("Remove", systemImage: "xmark")
         }

@@ -182,6 +182,8 @@ struct MacPlayerKeyCatcher: NSViewRepresentable {
     /// True while a full-screen layer (the post-play screen) is up: play/pause
     /// and the seek keys must not reach the film behind it.
     let swallowsTransportKeys: () -> Bool
+    /// True while the player is the mini window: every key goes to the app.
+    var isSuspended: () -> Bool = { false }
 
     func makeNSView(context: Context) -> PlayerKeyHostView {
         let view = PlayerKeyHostView()
@@ -218,6 +220,7 @@ struct MacPlayerKeyCatcher: NSViewRepresentable {
         view.onCaretMove = onCaretMove
         view.onCaretActivate = onCaretActivate
         view.swallowsTransportKeys = swallowsTransportKeys
+        view.isSuspended = isSuspended
     }
 }
 
@@ -242,6 +245,7 @@ final class PlayerKeyHostView: NSView {
     var onCaretMove: (MoveCommandDirection) -> Bool = { _ in false }
     var onCaretActivate: () -> Bool = { false }
     var swallowsTransportKeys: () -> Bool = { false }
+    var isSuspended: () -> Bool = { false }
 
     private enum Key {
         static let space: UInt16 = 49
@@ -270,7 +274,7 @@ final class PlayerKeyHostView: NSView {
         stopMonitoring()
         guard window != nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self else { return event }
+            guard let self, !self.isSuspended() else { return event }
             // The system AirPlay list is open: its own keyboard handling moves
             // through the receivers, which it cannot do if the arrows seek the
             // film and Return presses a player button instead.

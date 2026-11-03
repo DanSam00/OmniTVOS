@@ -444,7 +444,7 @@ enum ContinueWatchingBuilder {
     /// for episodes that have not aired, which then consumed slots in the capped
     /// list and — with "hide unreleased" on — were dropped again before display,
     /// leaving far fewer visible entries than the account actually had.
-    private static func nextEpisode(
+    static func nextEpisode(
         after current: (season: Int, episode: Int),
         in meta: NuvioMeta
     ) -> NuvioVideo? {

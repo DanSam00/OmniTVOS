@@ -195,6 +195,7 @@ struct PosterCard: View {
     var onStartFromBeginning: (() -> Void)? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onMarkWatched: (() -> Void)? = nil
+    var onNotInterested: (() -> Void)? = nil
     var layoutMode: String = "Modern"
     var showPosterLabels: Bool = false
     var smoothFocusAnimations: Bool = true
@@ -261,7 +262,8 @@ struct PosterCard: View {
             onPlayManually: onPlayManually,
             onStartFromBeginning: onStartFromBeginning,
             onRemoveFromContinueWatching: onRemoveFromContinueWatching,
-            onMarkWatched: onMarkWatched
+            onMarkWatched: onMarkWatched,
+            onNotInterested: onNotInterested
         )
             .onChange(of: isFocused) { _, focused in
                 if focused {
@@ -322,7 +324,8 @@ struct PosterCard: View {
             onPlayManually: onPlayManually,
             onStartFromBeginning: onStartFromBeginning,
             onRemoveFromContinueWatching: onRemoveFromContinueWatching,
-            onMarkWatched: onMarkWatched
+            onMarkWatched: onMarkWatched,
+            onNotInterested: onNotInterested
         )
         .frame(width: cardWidth, height: totalCardHeight, alignment: .topLeading)
         #endif
@@ -884,6 +887,7 @@ extension PosterCard: Equatable {
             && (lhs.onStartFromBeginning != nil) == (rhs.onStartFromBeginning != nil)
             && (lhs.onRemoveFromContinueWatching != nil) == (rhs.onRemoveFromContinueWatching != nil)
             && (lhs.onMarkWatched != nil) == (rhs.onMarkWatched != nil)
+            && (lhs.onNotInterested != nil) == (rhs.onNotInterested != nil)
             && lhs.layoutMode == rhs.layoutMode
             && lhs.showPosterLabels == rhs.showPosterLabels
             && lhs.smoothFocusAnimations == rhs.smoothFocusAnimations
@@ -1067,13 +1071,26 @@ struct TrailerPreviewPlayer: View {
     @State private var previewStartedAt: Date?
     @AppStorage(SettingsKey.trailerPreviewSound) private var trailerPreviewSound = false
     private let resolver = YouTubeTrailerResolver.shared
+    #if !os(iOS)
+    /// A film in the app's mini window has the screen's sound and motion.
+    @ObservedObject private var miniWindow = PlayerMiniWindowState.shared
+    #endif
+
+    /// Active, and nothing playing in the mini window.
+    private var playsNow: Bool {
+        #if os(iOS)
+        isActive
+        #else
+        isActive && !miniWindow.isMini
+        #endif
+    }
 
     var body: some View {
         TrailerPlayerSurface(player: player) {
             guard !isRenderReady else { return }
             isRenderReady = true
             logTrailer("firstFrame")
-            if isActive {
+            if playsNow {
                 onPlaybackReady()
             }
         }
@@ -1085,7 +1102,7 @@ struct TrailerPreviewPlayer: View {
         .task(id: previewIdentity) {
             await startPreview()
         }
-        .onChange(of: isActive) { _, active in
+        .onChange(of: playsNow) { _, active in
             if active {
                 logTrailer("activate", "ready=" + String(isRenderReady))
                 // Shown again after it ended: start over rather than sit on
@@ -1126,7 +1143,7 @@ struct TrailerPreviewPlayer: View {
     }
 
     private var isVisible: Bool {
-        isActive && isRenderReady && !didFinish
+        playsNow && isRenderReady && !didFinish
     }
 
     private func logTrailer(_ event: String, _ detail: String = "") {
@@ -1169,7 +1186,7 @@ struct TrailerPreviewPlayer: View {
         item.preferredMaximumResolution = .zero
         player.replaceCurrentItem(with: item)
         applySoundPreference(trailerPreviewSound)
-        if isActive {
+        if playsNow {
             player.play()
         }
     }
@@ -2436,6 +2453,7 @@ struct TitleActionsMenuContent: View {
     var onStartFromBeginning: (() -> Void)? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onMarkWatched: (() -> Void)? = nil
+    var onNotInterested: (() -> Void)? = nil
     var body: some View {
         contextMenuContent
     }
@@ -2478,6 +2496,16 @@ struct TitleActionsMenuContent: View {
                     }
                 } label: {
                     Label(L10n.string("action_mark_watched", fallback: "Mark as Watched"), systemImage: "checkmark.circle")
+                }
+            }
+
+            if let onNotInterested {
+                Button {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) {
+                        onNotInterested()
+                    }
+                } label: {
+                    Label(L10n.string("action_not_interested", fallback: "Not Interested"), systemImage: "hand.thumbsdown")
                 }
             }
 
@@ -2575,6 +2603,7 @@ struct TitleActionsContextMenu: ViewModifier {
     var onStartFromBeginning: (() -> Void)? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onMarkWatched: (() -> Void)? = nil
+    var onNotInterested: (() -> Void)? = nil
 
     func body(content: Content) -> some View {
         content
@@ -2587,7 +2616,8 @@ struct TitleActionsContextMenu: ViewModifier {
                     onPlayManually: onPlayManually,
                     onStartFromBeginning: onStartFromBeginning,
                     onRemoveFromContinueWatching: onRemoveFromContinueWatching,
-                    onMarkWatched: onMarkWatched
+                    onMarkWatched: onMarkWatched,
+                    onNotInterested: onNotInterested
                 )
             }
     }
@@ -2602,7 +2632,8 @@ extension View {
         onPlayManually: (() -> Void)? = nil,
         onStartFromBeginning: (() -> Void)? = nil,
         onRemoveFromContinueWatching: (() -> Void)? = nil,
-        onMarkWatched: (() -> Void)? = nil
+        onMarkWatched: (() -> Void)? = nil,
+        onNotInterested: (() -> Void)? = nil
     ) -> some View {
         modifier(
             TitleActionsContextMenu(
@@ -2613,7 +2644,8 @@ extension View {
                 onPlayManually: onPlayManually,
                 onStartFromBeginning: onStartFromBeginning,
                 onRemoveFromContinueWatching: onRemoveFromContinueWatching,
-                onMarkWatched: onMarkWatched
+                onMarkWatched: onMarkWatched,
+                onNotInterested: onNotInterested
             )
         )
     }

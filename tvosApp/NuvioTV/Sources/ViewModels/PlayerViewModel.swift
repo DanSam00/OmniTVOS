@@ -4278,6 +4278,19 @@ class PlayerViewModel: ObservableObject {
         #endif
     }
 
+    #if !os(iOS)
+    /// The PiP button on Apple TV and the Mac: the player shrinks into a
+    /// corner of the app and plays on while the viewer browses. Drawn by the
+    /// app rather than AVKit, so it works with either engine.
+    func minimizeToWindow() {
+        showSettingsPanel = false
+        closeSidePanel()
+        if isScrubbing { cancelScrub() }
+        hideControls()
+        PlayerMiniWindowState.shared.minimize?()
+    }
+    #endif
+
     #if os(macOS)
     /// Sends playback to the mini player when the app loses focus.
     ///
@@ -4389,7 +4402,10 @@ class PlayerViewModel: ObservableObject {
               // Nothing to shrink into a mini player if the viewer is mid-task
               // in a panel or the post-play card.
               sidePanel == nil,
-              !postPlayState.isVisible
+              !postPlayState.isVisible,
+              // Already small in the corner of the app; the system's window
+              // would take the player out from under it.
+              !PlayerMiniWindowState.shared.isMini
         else { return }
         MacDiagnostics.log("player.pip auto=start")
         PictureInPictureManager.shared.startAutomatically()

@@ -13,6 +13,7 @@ import WidgetKit
 /// recommendation isn't built from watch history, so its card is dismissed
 /// as well.
 enum ContinueWatchingActions {
+    @MainActor
     static func markWatched(_ item: ContinueWatchingItem) {
         if item.cardKind == ContinueWatchingItem.recommendationKind {
             // "Seen it": the whole title, not the first episode it suggested.
@@ -24,7 +25,180 @@ enum ContinueWatchingActions {
         }
         if item.cardKind != nil {
             ContinueWatchingDismissStore.dismiss(item)
+        } else {
+            ContinueWatchingWatchedMarks.shared.record(item)
         }
+    }
+
+    /// "Not Interested" on a recommendation: gone from the row for good, never
+    /// suggested again, and neither are the titles most like it. Trakt, when
+    /// connected, is told as well, so its own picks follow.
+    @MainActor
+    static func notInterested(_ item: ContinueWatchingItem) {
+        ContinueWatchingDismissStore.dismiss(item)
+        ContinueWatchingDismissStore.dismiss(contentId: item.meta.id)
+        NotInterestedStore.add(item.meta)
+        ContinueWatchingExtras.shared.reloadRecommendations()
+        Task { await TraktDetailsService.hideRecommendation(item.meta) }
+    }
+}
+
+/// Cards just marked watched, applied to the row straight away.
+///
+/// Simkl and Trakt rows only reflect a mark on the provider's next refresh, so
+/// the card used to stay put for minutes. Until the provider catches up a
+/// film's card goes and a show's moves on to its next unwatched episode here.
+@MainActor
+final class ContinueWatchingWatchedMarks {
+    static let shared = ContinueWatchingWatchedMarks()
+
+    private struct Mark {
+        let season: Int?
+        let episode: Int?
+        let at: Date
+        var next: ContinueWatchingItem?
+    }
+
+    private var marks: [String: Mark] = [:]
+    /// Long enough for any provider refresh to have taken the mark in.
+    private static let lifetime: TimeInterval = 2 * 3600
+
+    func record(_ item: ContinueWatchingItem) {
+        let numbers = item.meta.isSeries ? item.episodeNumbers : nil
+        let at = Date()
+        marks[item.meta.id] = Mark(season: numbers?.season, episode: numbers?.episode, at: at)
+        if let numbers {
+            if !(item.meta.videos ?? []).isEmpty {
+                marks[item.meta.id]?.next = Self.nextUp(after: numbers, in: item.meta, at: at)
+            } else {
+                // A card without the episode guide: fetch it, then move on.
+                let id = item.meta.id
+                Task {
+                    guard let meta = try? await CinemetaCatalogRepository().getMetadata(id: id, type: "series"),
+                          marks[id]?.at == at else { return }
+                    marks[id]?.next = Self.nextUp(after: numbers, in: meta, at: at)
+                    NotificationCenter.default.post(name: ContinueWatchingExtras.changedNotification, object: nil)
+                }
+            }
+        }
+        NotificationCenter.default.post(name: ContinueWatchingExtras.changedNotification, object: nil)
+    }
+
+    private static func nextUp(
+        after current: (season: Int, episode: Int),
+        in meta: NuvioMeta,
+        at: Date
+    ) -> ContinueWatchingItem? {
+        guard let next = ContinueWatchingBuilder.nextEpisode(after: current, in: meta) else { return nil }
+        return ContinueWatchingItem(
+            meta: meta, streamUrl: "", position: 1, duration: 120, lastWatchedAt: at,
+            season: next.season, episode: next.episode, released: next.released,
+            episodeTitleOverride: next.title, episodeOverviewOverride: next.overview,
+            episodeThumbnailOverride: next.thumbnail,
+            isUpNext: true, upNextSeedSeason: current.season
+        )
+    }
+
+    /// The row with every recent mark applied: the marked card and any older
+    /// one for the title dropped, and a show's next episode in their place
+    /// while the provider has nothing newer for it.
+    func apply(_ items: [ContinueWatchingItem]) -> [ContinueWatchingItem] {
+        let now = Date()
+        marks = marks.filter { now.timeIntervalSince($0.value.at) < Self.lifetime }
+        guard !marks.isEmpty else { return items }
+        var out = items.filter { item in
+            guard item.cardKind == nil, let mark = marks[item.meta.id], item.lastWatchedAt < mark.at else { return true }
+            guard let season = mark.season, let episode = mark.episode,
+                  let numbers = item.episodeNumbers else { return false }
+            return (numbers.season, numbers.episode) > (season, episode)
+        }
+        for (id, mark) in marks {
+            guard let next = mark.next,
+                  !out.contains(where: { $0.meta.id == id && $0.cardKind == nil }),
+                  !ContinueWatchingDismissStore.isDismissed(next) else { continue }
+            out.append(next)
+        }
+        return out
+    }
+}
+
+/// Titles the viewer asked not to be recommended, with when, per profile.
+///
+/// Carried in the account's Continue Watching blob beside the removals, so
+/// every device follows. The titles Trakt lists as most like each one are
+/// kept out of the suggestions too (`ContinueWatchingExtras`).
+enum NotInterestedStore {
+    struct Entry: Equatable {
+        var at: Double
+        var type: String
+    }
+
+    private static let baseKey = "omni.recommendations.notInterested"
+
+    private static func storageKey(_ profileId: String?) -> String {
+        guard let id = profileId?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty else { return baseKey }
+        return "\(baseKey).\(id)"
+    }
+
+    static func entries(profileId: String? = ContinueWatchingDismissStore.activeProfileId) -> [String: Entry] {
+        entries(fromWire: UserDefaults.standard.dictionary(forKey: storageKey(profileId)))
+    }
+
+    static func contains(_ id: String) -> Bool {
+        entries()[id] != nil
+    }
+
+    static func add(_ meta: NuvioMeta) {
+        var current = entries()
+        current[meta.id] = Entry(at: Date().timeIntervalSince1970, type: meta.isSeries ? "series" : "movie")
+        save(current, profileId: ContinueWatchingDismissStore.activeProfileId)
+    }
+
+    static func merge(_ remote: [String: Entry], profileId: String?) {
+        let local = entries(profileId: profileId)
+        let merged = merged(local, remote)
+        guard merged != local else { return }
+        save(merged, profileId: profileId)
+    }
+
+    static func merged(_ a: [String: Entry], _ b: [String: Entry]) -> [String: Entry] {
+        a.merging(b) { $0.at >= $1.at ? $0 : $1 }
+    }
+
+    /// `{"tt…": {"at": 1730000000, "type": "series"}}`, as stored and synced.
+    static func wire(_ entries: [String: Entry]) -> [String: [String: Any]] {
+        entries.mapValues { ["at": $0.at, "type": $0.type] }
+    }
+
+    static func entries(fromWire raw: Any?) -> [String: Entry] {
+        guard let dict = raw as? [String: Any] else { return [:] }
+        return dict.compactMapValues { value in
+            guard let fields = value as? [String: Any],
+                  let at = (fields["at"] as? NSNumber)?.doubleValue else { return nil }
+            return Entry(at: at, type: fields["type"] as? String ?? "movie")
+        }
+    }
+
+    private static func save(_ entries: [String: Entry], profileId: String?) {
+        let key = storageKey(profileId)
+        if entries.isEmpty {
+            UserDefaults.standard.removeObject(forKey: key)
+        } else {
+            UserDefaults.standard.set(wire(entries), forKey: key)
+        }
+        // The removals' notice: the account push and Home both listen for it.
+        NotificationCenter.default.post(name: ContinueWatchingDismissStore.changedNotification, object: nil)
+    }
+
+    static func eraseProfile(_ profileId: String) {
+        UserDefaults.standard.removeObject(forKey: storageKey(profileId))
+    }
+
+    static func eraseAllProfiles() {
+        let defaults = UserDefaults.standard
+        defaults.dictionaryRepresentation().keys
+            .filter { $0.hasPrefix(baseKey) }
+            .forEach { defaults.removeObject(forKey: $0) }
     }
 }
 
@@ -160,12 +334,14 @@ final class ContinueWatchingExtras {
     /// back through `StreamAvailability.changedNotification` and
     /// `changedNotification`, on which the caller composes again.
     func compose(_ items: [ContinueWatchingItem]) -> [ContinueWatchingItem] {
-        refreshIfNeeded(basedOn: items)
+        // Just marked watched: gone, or on to the next episode, at once.
+        let marked = ContinueWatchingWatchedMarks.shared.apply(items)
+        refreshIfNeeded(basedOn: marked)
 
         // Next episodes carry their exact air time where TVmaze has one.
         let airTimes = EpisodeAirTimes.shared
-        airTimes.ensureLoaded(items.filter(EpisodeAirTimes.wantsAirTime))
-        let items = items.map { item -> ContinueWatchingItem in
+        airTimes.ensureLoaded(marked.filter(EpisodeAirTimes.wantsAirTime))
+        let items = marked.map { item -> ContinueWatchingItem in
             guard EpisodeAirTimes.wantsAirTime(item) else { return item }
             var item = item
             item.airTime = airTimes.airTime(for: item)
@@ -314,6 +490,29 @@ final class ContinueWatchingExtras {
 
     // MARK: Recommendations
 
+    /// Drops what was found and asks again, after a "Not Interested".
+    func reloadRecommendations() {
+        let unwanted = NotInterestedStore.entries()
+        recommendations.removeAll { unwanted[$0.meta.id] != nil }
+        recommendationsLoadedAt = nil
+        NotificationCenter.default.post(name: Self.changedNotification, object: nil)
+    }
+
+    /// Trakt's most related titles to each one marked Not Interested, asked
+    /// once a launch for the latest few.
+    private var notInterestedNeighbours: [String: [String]] = [:]
+
+    private func unwantedRecommendations() async -> Set<String> {
+        let entries = NotInterestedStore.entries()
+        let latest = entries.sorted { $0.value.at > $1.value.at }.prefix(20)
+        for (id, entry) in latest where notInterestedNeighbours[id] == nil {
+            notInterestedNeighbours[id] = await TraktDetailsService
+                .fetchPublicRelated(imdbId: id, type: entry.type, limit: 10)
+                .map(\.id)
+        }
+        return Set(entries.keys).union(latest.flatMap { notInterestedNeighbours[$0.key] ?? [] })
+    }
+
     /// The account's recommendations when Trakt is connected; otherwise titles
     /// like the ones being watched, from the details page's source.
     private func loadRecommendations(seeds: [NuvioMeta], excluding: Set<String>) async -> [ContinueWatchingItem] {
@@ -343,7 +542,9 @@ final class ContinueWatchingExtras {
         }
 
         let watched = Set(WatchedStore.visibleItems().map(\.meta.id))
-        var seen = excluding.union(watched)
+        // Not Interested, and the titles most like those.
+        let unwanted = await unwantedRecommendations()
+        var seen = excluding.union(watched).union(unwanted)
         var result: [ContinueWatchingItem] = []
         // TMDB's come as `tmdb:` ids; the catalog maps them to IMDb on lookup.
         for candidate in candidates where candidate.id.hasPrefix("tt") || candidate.id.hasPrefix("tmdb:") {
@@ -351,6 +552,8 @@ final class ContinueWatchingExtras {
             let type = candidate.type == "movie" ? "movie" : "series"
             guard let meta = try? await repository.getMetadata(id: candidate.id, type: type),
                   meta.id.hasPrefix("tt"), seen.insert(meta.id).inserted || meta.id == candidate.id,
+                  !unwanted.contains(meta.id),
+                  !ContinueWatchingDismissStore.isDismissed(contentId: meta.id),
                   !ContentReleasePolicy.isUnreleased(meta) else { continue }
             if meta.isSeries {
                 let first = (meta.videos ?? [])
