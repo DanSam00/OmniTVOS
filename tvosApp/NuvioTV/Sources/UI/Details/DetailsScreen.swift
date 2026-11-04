@@ -8083,6 +8083,10 @@ struct MacPickerOptionsPanel: View {
     let onSelect: (Int) -> Void
     let onDismiss: () -> Void
 
+    /// The rows' own height. A bare ScrollView takes all the height it is
+    /// offered, so a three-item menu stood as tall as a long list.
+    @State private var listHeight: CGFloat = 0
+
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: 26, style: .continuous)
     }
@@ -8106,7 +8110,14 @@ struct MacPickerOptionsPanel: View {
                                 .onTapGesture { onSelect(index) }
                         }
                     }
+                    .background(GeometryReader { proxy in
+                        Color.clear.preference(key: MacPickerListHeightKey.self, value: proxy.size.height)
+                    })
                 }
+                // As tall as the rows, up to what the panel allows; longer
+                // lists scroll.
+                .frame(maxHeight: listHeight > 0 ? listHeight : nil)
+                .onPreferenceChange(MacPickerListHeightKey.self) { listHeight = $0 }
                 .onChange(of: highlighted) { _, index in
                     guard list.options.indices.contains(index) else { return }
                     withAnimation(.easeOut(duration: 0.16)) {
@@ -8133,6 +8144,11 @@ struct MacPickerOptionsPanel: View {
             }
             .buttonStyle(.plain)
         }
+    }
+
+    private struct MacPickerListHeightKey: PreferenceKey {
+        static let defaultValue: CGFloat = 0
+        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
     }
 
     private func row(_ option: MacPickerOption, isHighlighted: Bool) -> some View {
