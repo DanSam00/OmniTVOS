@@ -54,22 +54,44 @@ private struct PhoneIPTVCategoriesView: View {
 
     @State private var categories: [IPTVVODBrowser.Category]?
     @State private var filter = ""
+    @AppStorage(FolderSortOrder.storageKey) private var sortRaw = FolderSortOrder.standard.rawValue
+    @AppStorage(FolderViewMode.storageKey) private var viewRaw = FolderViewMode.tiles.rawValue
 
     private var shown: [IPTVVODBrowser.Category] {
-        let all = categories ?? []
+        let all = (FolderSortOrder(rawValue: sortRaw) ?? .standard).sorted(categories ?? [], name: \.name)
         let needle = filter.trimmingCharacters(in: .whitespaces)
         return needle.isEmpty ? all : all.filter { $0.name.localizedCaseInsensitiveContains(needle) }
     }
 
     var body: some View {
-        List(shown) { category in
-            NavigationLink {
-                PhoneIPTVEntriesView(source: source, kind: kind, category: category, onSelect: onSelect)
-            } label: {
-                Text(category.name)
+        Group {
+            if viewRaw == FolderViewMode.list.rawValue {
+                List(shown) { category in
+                    NavigationLink {
+                        PhoneIPTVEntriesView(source: source, kind: kind, category: category, onSelect: onSelect)
+                    } label: {
+                        Text(category.name)
+                    }
+                }
+                .listStyle(.plain)
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
+                        ForEach(shown) { category in
+                            NavigationLink {
+                                PhoneIPTVEntriesView(source: source, kind: kind, category: category, onSelect: onSelect)
+                            } label: {
+                                PhoneFolderTile(title: category.name, symbol: kind == .movies ? "film" : "tv")
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, PhoneLayout.gutter)
+                    .padding(.vertical, 8)
+                }
             }
         }
-        .listStyle(.plain)
+        .toolbar { ToolbarItem(placement: .topBarTrailing) { PhoneFolderOptionsMenu(sortRaw: $sortRaw, viewRaw: $viewRaw) } }
         .overlay {
             if categories == nil {
                 ProgressView()
@@ -93,24 +115,32 @@ private struct PhoneIPTVEntriesView: View {
 
     @State private var entries: [IPTVVODBrowser.Entry]?
     @State private var filter = ""
+    @AppStorage(FolderSortOrder.storageKey) private var sortRaw = FolderSortOrder.standard.rawValue
+    @AppStorage(FolderViewMode.storageKey) private var viewRaw = FolderViewMode.tiles.rawValue
 
     private var shown: [IPTVVODBrowser.Entry] {
-        let all = entries ?? []
+        let all = (FolderSortOrder(rawValue: sortRaw) ?? .standard).sorted(
+            entries ?? [], name: \.name, added: \.added, rating: \.rating, year: \.year
+        )
         let needle = filter.trimmingCharacters(in: .whitespaces)
         return needle.isEmpty ? all : all.filter { $0.name.localizedCaseInsensitiveContains(needle) }
     }
 
     var body: some View {
         ScrollView {
-            PhoneFolderGrid {
+            PhoneFolderItems(asList: viewRaw == FolderViewMode.list.rawValue) {
                 ForEach(shown) { entry in
                     Button { onSelect(entry.contentID, entry.type) } label: {
-                        PhoneFolderCard(title: entry.name, subtitle: entry.year.map(String.init), poster: entry.poster, placeholder: kind == .movies ? "film" : "tv")
+                        PhoneFolderCard(
+                            title: entry.name, subtitle: entry.year.map(String.init), poster: entry.poster,
+                            placeholder: kind == .movies ? "film" : "tv", asRow: viewRaw == FolderViewMode.list.rawValue
+                        )
                     }
                     .buttonStyle(.plain)
                 }
             }
         }
+        .toolbar { ToolbarItem(placement: .topBarTrailing) { PhoneFolderOptionsMenu(sortRaw: $sortRaw, viewRaw: $viewRaw) } }
         .overlay {
             if entries == nil {
                 ProgressView()
@@ -170,16 +200,21 @@ private struct PhoneJellyfinFolderView: View {
     @State private var items: [JellyfinBrowseItem]?
     @State private var filter = ""
     @State private var notSynced: JellyfinBrowseItem?
+    @AppStorage(FolderSortOrder.storageKey) private var sortRaw = FolderSortOrder.standard.rawValue
+    @AppStorage(FolderViewMode.storageKey) private var viewRaw = FolderViewMode.tiles.rawValue
 
     private var shown: [JellyfinBrowseItem] {
-        let all = items ?? []
+        let all = (FolderSortOrder(rawValue: sortRaw) ?? .standard).sorted(
+            items ?? [], name: \.name, isFolder: { !$0.isTitle && $0.isFolder },
+            added: \.added, rating: \.rating, year: \.year
+        )
         let needle = filter.trimmingCharacters(in: .whitespaces)
         return needle.isEmpty ? all : all.filter { $0.name.localizedCaseInsensitiveContains(needle) }
     }
 
     var body: some View {
         ScrollView {
-            PhoneFolderGrid {
+            PhoneFolderItems(asList: viewRaw == FolderViewMode.list.rawValue) {
                 ForEach(shown) { item in
                     if item.isTitle {
                         Button { open(item) } label: { card(item) }
@@ -200,6 +235,7 @@ private struct PhoneJellyfinFolderView: View {
                 PhoneFoldersEmpty(text: "This folder is empty.")
             }
         }
+        .toolbar { ToolbarItem(placement: .topBarTrailing) { PhoneFolderOptionsMenu(sortRaw: $sortRaw, viewRaw: $viewRaw) } }
         .searchable(text: $filter, placement: .navigationBarDrawer(displayMode: .always), prompt: "Titles")
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
@@ -233,21 +269,81 @@ private struct PhoneJellyfinFolderView: View {
             title: item.name,
             subtitle: item.year.map(String.init),
             poster: JellyfinBrowse.imageURL(server: server, item: item),
-            placeholder: item.isTitle ? (item.type == "Series" ? "tv" : "film") : "folder.fill"
+            placeholder: item.isTitle ? (item.type == "Series" ? "tv" : "film") : "folder.fill",
+            asRow: viewRaw == FolderViewMode.list.rawValue
         )
     }
 }
 
 // MARK: - Pieces
 
-private struct PhoneFolderGrid<Content: View>: View {
+/// A folder's titles: a poster grid, or rows in List.
+private struct PhoneFolderItems<Content: View>: View {
+    var asList = false
     @ViewBuilder let content: () -> Content
     private let columns = [GridItem(.adaptive(minimum: 104), spacing: 12, alignment: .top)]
 
     var body: some View {
-        LazyVGrid(columns: columns, spacing: 16, content: content)
-            .padding(.horizontal, PhoneLayout.gutter)
-            .padding(.vertical, 8)
+        Group {
+            if asList {
+                LazyVStack(alignment: .leading, spacing: 10, content: content)
+            } else {
+                LazyVGrid(columns: columns, spacing: 16, content: content)
+            }
+        }
+        .padding(.horizontal, PhoneLayout.gutter)
+        .padding(.vertical, 8)
+    }
+}
+
+/// View (Tiles or List) and Sort, for a folder.
+private struct PhoneFolderOptionsMenu: View {
+    @Binding var sortRaw: String
+    @Binding var viewRaw: String
+
+    var body: some View {
+        Menu {
+            Picker("View", selection: $viewRaw) {
+                ForEach(FolderViewMode.allCases) { mode in
+                    Label(mode.title, systemImage: mode == .tiles ? "square.grid.2x2" : "list.bullet")
+                        .tag(mode.rawValue)
+                }
+            }
+            Picker("Sort", selection: $sortRaw) {
+                ForEach(FolderSortOrder.allCases) { order in
+                    Text(order.title).tag(order.rawValue)
+                }
+            }
+        } label: {
+            Image(systemName: "arrow.up.arrow.down.circle")
+        }
+    }
+}
+
+/// A category in Tiles, drawn as a collection's folders are: a glass card
+/// with its symbol and name.
+private struct PhoneFolderTile: View {
+    let title: String
+    let symbol: String
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Image(systemName: symbol)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(12)
+            Text(title)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+                .padding(12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+        }
+        .frame(height: 104)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .modifier(LiquidGlassSurface(cornerRadius: 16))
+        .contentShape(Rectangle())
     }
 }
 
@@ -258,8 +354,49 @@ private struct PhoneFolderCard: View {
     let subtitle: String?
     let poster: String?
     let placeholder: String
+    /// List: a small poster beside the name.
+    var asRow = false
 
     var body: some View {
+        if asRow { row } else { card }
+    }
+
+    private var row: some View {
+        HStack(spacing: 12) {
+            artwork
+                .frame(width: 46, height: 46 / PhoneLayout.posterAspect)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(2)
+                if let subtitle {
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tertiary)
+        }
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private var artwork: some View {
+        if let poster {
+            PhoneArtwork(url: poster)
+        } else {
+            ZStack {
+                Color.white.opacity(0.08)
+                Image(systemName: placeholder)
+                    .font(.system(size: 16, weight: .regular))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var card: some View {
         VStack(alignment: .leading, spacing: 6) {
             Color.clear
                 .aspectRatio(1 / PhoneLayout.posterAspect, contentMode: .fit)

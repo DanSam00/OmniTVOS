@@ -815,6 +815,19 @@ private struct PlayerGlassCircleButtonBackground: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
+        #if os(macOS)
+        // One view throughout, the white faded over the glass: swapping the
+        // glass for a white circle tore the glass down and grew it back on
+        // every move between buttons, which read as a wobble.
+        Group {
+            if #available(macOS 26.0, *) {
+                content.glassEffect(.regular, in: Circle())
+            } else {
+                content.background(.ultraThinMaterial, in: Circle())
+            }
+        }
+        .overlay(Circle().fill(Color.white).opacity(filled ? 1 : 0))
+        #else
         if filled {
             content.background(Color.white, in: Circle())
         } else if #available(tvOS 26.0, macOS 26.0, *) {
@@ -822,6 +835,7 @@ private struct PlayerGlassCircleButtonBackground: ViewModifier {
         } else {
             content.background(.ultraThinMaterial, in: Circle())
         }
+        #endif
     }
 }
 
@@ -873,8 +887,10 @@ struct PlayerSettingsPanel: View {
         case subtitles = "Subtitles"
         case audio = "Audio"
         case speed = "Speed"
-        // Picture / aspect modes temporarily disabled.
-        // case picture = "Picture"
+        #if os(macOS)
+        // Fit, Fill and Stretch. Still off on the Apple TV.
+        case picture = "Zoom"
+        #endif
     }
 
     private enum StyleControl: Hashable {
@@ -963,6 +979,8 @@ struct PlayerSettingsPanel: View {
             var others: [Focus] = PlayerSeekSettings.validSteps.map { .seekStep($0) }
             others.append(.debugOverlay)
             return [speeds, others].filter { !$0.isEmpty }
+        case .picture:
+            return [PlayerAspectMode.allCases.map { .aspect($0.rawValue) }]
         }
     }
 
@@ -1025,8 +1043,8 @@ struct PlayerSettingsPanel: View {
             viewModel.setSeekStepSeconds(seconds)
         case .debugOverlay:
             viewModel.togglePlaybackDebugHUD()
-        case .aspect:
-            break
+        case .aspect(let raw):
+            if let mode = PlayerAspectMode(rawValue: raw) { viewModel.setAspectMode(mode) }
         case .style(let control):
             macActivateStyle(control)
         }
@@ -1132,6 +1150,9 @@ struct PlayerSettingsPanel: View {
                 case .subtitles: subtitlesPage
                 case .audio: audioPage
                 case .speed: speedPage
+                #if os(macOS)
+                case .picture: picturePage
+                #endif
                 }
             }
             .padding(.horizontal, 90)
@@ -2057,7 +2078,7 @@ struct PlayerSettingsPanel: View {
 
     private var picturePage: some View {
         VStack(alignment: .leading, spacing: 18) {
-            columnHeader("Aspect Ratio")
+            columnHeader("Zoom")
             Text(L10n.string("player_aspect_ratio_hint", fallback: "How the video fills the screen"))
                 .font(.system(size: 20, weight: .medium))
                 .foregroundColor(.white.opacity(0.5))

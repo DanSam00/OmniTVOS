@@ -138,7 +138,12 @@ class PlayerViewModel: ObservableObject {
     /// Netflix/Infuse-style metadata sheet while paused (shown after a short delay).
     @Published var showPauseOverlay: Bool = false
     /// How the video fills the display (Fit / Fill / Stretch).
+    #if os(macOS)
+    /// The Mac's Zoom page sets it for the film playing; each starts at Fit.
+    @Published var aspectMode: PlayerAspectMode = .fit
+    #else
     @Published var aspectMode: PlayerAspectMode = PlayerAspectMode.current
+    #endif
     /// Decoded frame size for aspect-mode scaling (0 until first frame).
     @Published private(set) var videoNaturalSize: CGSize = .zero
     private var pauseOverlayTask: Task<Void, Never>?
@@ -3708,9 +3713,9 @@ class PlayerViewModel: ObservableObject {
     }
 
     func setAspectMode(_ mode: PlayerAspectMode) {
-        #if os(iOS)
-        // The phone's Screen menu drives this; on the other platforms the
-        // modes stay off.
+        #if os(iOS) || os(macOS)
+        // The phone's Screen menu and the Mac's Zoom page drive this; on the
+        // Apple TV the modes stay off.
         aspectMode = mode
         engine.setAspectMode(mode)
         #else

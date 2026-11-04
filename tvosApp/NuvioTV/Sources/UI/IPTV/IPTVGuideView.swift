@@ -313,7 +313,7 @@ struct IPTVGuideView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
                 .background(Capsule().fill(Color.white.opacity(0.12)))
-                .overlay(Capsule().stroke(Color.white, lineWidth: highlighted ? 3 : 0))
+                .overlay(Capsule().stroke(focusColor, lineWidth: highlighted ? 3 : 0))
                 .foregroundColor(.white)
         }
         .buttonStyle(.plain)
@@ -330,10 +330,29 @@ struct IPTVGuideView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
                 .background(Capsule().fill(selected ? Color.white : Color.white.opacity(0.1)))
-                .overlay(Capsule().stroke(selected ? Color.black.opacity(0.6) : Color.white, lineWidth: highlighted ? 3 : 0))
+                .overlay(Capsule().stroke(selected ? selectedFocusColor : focusColor, lineWidth: highlighted ? 3 : 0))
                 .foregroundColor(selected ? .black : .white)
         }
         .buttonStyle(.plain)
+    }
+
+    /// The caret's outline: the accent chosen in Settings on the Mac, as
+    /// everywhere else there; white on the other platforms, as before.
+    private var focusColor: Color {
+        #if os(macOS)
+        AppFocusOutline.color
+        #else
+        Color.white
+        #endif
+    }
+
+    /// The same, on a selected (white) chip.
+    private var selectedFocusColor: Color {
+        #if os(macOS)
+        AppFocusOutline.color
+        #else
+        Color.black.opacity(0.6)
+        #endif
     }
 
     private var chipFontSize: CGFloat {
@@ -527,7 +546,7 @@ struct IPTVGuideView: View {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
-                    .stroke(Color.white, lineWidth: isCaret ? 3 : 0)
+                    .stroke(focusColor, lineWidth: isCaret ? 3 : 0)
             )
         }
         .buttonStyle(.plain)

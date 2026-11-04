@@ -1,5 +1,94 @@
 import SwiftUI
 
+/// How a folder's contents are ordered in Library → Folders, on every
+/// platform. Kept per profile.
+enum FolderSortOrder: String, CaseIterable, Identifiable {
+    /// As the provider or server lists them.
+    case standard
+    case alphabetical
+    case reverseAlphabetical
+    case recentlyAdded
+    case oldestAdded
+    case popular
+    case newestRelease
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .standard: return "Default"
+        case .alphabetical: return "A–Z"
+        case .reverseAlphabetical: return "Z–A"
+        case .recentlyAdded: return "Recently Added"
+        case .oldestAdded: return "Oldest Added"
+        case .popular: return "Most Popular"
+        case .newestRelease: return "Newest Release"
+        }
+    }
+
+    static let storageKey = "omni.library.folderSort"
+
+    static var current: FolderSortOrder {
+        get { FolderSortOrder(rawValue: ProfileSettings.current.string(forKey: storageKey) ?? "") ?? .standard }
+        set { ProfileSettings.current.set(newValue.rawValue, forKey: storageKey) }
+    }
+
+    /// Items without the value sorted on go last, in name order; folders stay
+    /// ahead of titles. Categories carry only names, so only the A–Z orders
+    /// move them.
+    func sorted<T>(
+        _ items: [T],
+        name: (T) -> String,
+        isFolder: (T) -> Bool = { _ in false },
+        added: (T) -> Date? = { _ in nil },
+        rating: (T) -> Double? = { _ in nil },
+        year: (T) -> Int? = { _ in nil }
+    ) -> [T] {
+        guard self != .standard else { return items }
+        func byName(_ a: T, _ b: T) -> Bool {
+            name(a).localizedStandardCompare(name(b)) == .orderedAscending
+        }
+        func byValue<V: Comparable>(_ a: T, _ b: T, _ value: (T) -> V?, descending: Bool) -> Bool {
+            switch (value(a), value(b)) {
+            case let (x?, y?) where x != y: return descending ? x > y : x < y
+            case (_?, nil): return true
+            case (nil, _?): return false
+            default: return byName(a, b)
+            }
+        }
+        return items.enumerated().sorted { lhs, rhs in
+            let a = lhs.element, b = rhs.element
+            if isFolder(a) != isFolder(b) { return isFolder(a) }
+            switch self {
+            case .standard: return lhs.offset < rhs.offset
+            case .alphabetical: return byName(a, b)
+            case .reverseAlphabetical: return byName(b, a)
+            case .recentlyAdded: return byValue(a, b, added, descending: true)
+            case .oldestAdded: return byValue(a, b, added, descending: false)
+            case .popular: return byValue(a, b, rating, descending: true)
+            case .newestRelease: return byValue(a, b, year, descending: true)
+            }
+        }.map(\.element)
+    }
+}
+
+/// Library → Folders drawn as cards (like a collection's folders) or as a
+/// list. Kept per profile.
+enum FolderViewMode: String, CaseIterable, Identifiable {
+    case tiles
+    case list
+
+    var id: String { rawValue }
+    var title: String { self == .tiles ? "Tiles" : "List" }
+
+    static let storageKey = "omni.library.folderView"
+
+    static var current: FolderViewMode {
+        get { FolderViewMode(rawValue: ProfileSettings.current.string(forKey: storageKey) ?? "") ?? .tiles }
+        set { ProfileSettings.current.set(newValue.rawValue, forKey: storageKey) }
+    }
+}
+
 /// Library → Folders on the Apple TV and the Mac: the viewer's own on-demand
 /// libraries as their sources arrange them. An IPTV provider's films and
 /// shows by its categories, and a Jellyfin server's libraries and folders.
@@ -31,6 +120,9 @@ final class LibraryFoldersModel: ObservableObject {
         let poster: String?
         let symbol: String
         let action: Action
+        var added: Date? = nil
+        var rating: Double? = nil
+        var year: Int? = nil
 
         var opensLevel: Bool {
             if case .push = action { return true }
@@ -48,8 +140,17 @@ final class LibraryFoldersModel: ObservableObject {
     static let backID = "folders.back"
 
     @Published private(set) var path: [Level] = [.root]
-    /// The current level's tiles; nil while they load.
+    /// The current level's tiles, in the chosen order; nil while they load.
     @Published private(set) var tiles: [Tile]?
+    @Published var sort = FolderSortOrder.current {
+        didSet {
+            FolderSortOrder.current = sort
+            if let loaded = cache[level] { tiles = sorted(loaded) }
+        }
+    }
+    @Published var viewMode = FolderViewMode.current {
+        didSet { FolderViewMode.current = viewMode }
+    }
     @Published private(set) var notice: String?
     @Published private(set) var focusRequest: FocusRequest?
     /// The tile a title's page was opened from, while that page is up and
@@ -70,12 +171,36 @@ final class LibraryFoldersModel: ObservableObject {
     var level: Level { path.last ?? .root }
     var isRoot: Bool { path.count <= 1 }
 
-    /// Categories and the root are lists; titles and Jellyfin folders are posters.
-    var usesGrid: Bool {
+    /// Titles and Jellyfin folders: posters as tiles. Sources and
+    /// categories are folders.
+    var holdsTitles: Bool {
         switch level {
         case .root, .iptvCategories: return false
         case .iptvEntries, .jellyfin: return true
         }
+    }
+
+    /// A grid of cards rather than a list of rows.
+    var usesGrid: Bool { viewMode == .tiles }
+
+    /// Folder cards a row, in Tiles (fixed, so the Mac's caret can count them).
+    static let folderTileColumns = 4
+
+    private func sorted(_ tiles: [Tile]) -> [Tile] {
+        sort.sorted(
+            tiles,
+            name: \.title,
+            isFolder: { $0.opensLevel && Self.holdsTitles($0) },
+            added: \.added,
+            rating: \.rating,
+            year: \.year
+        )
+    }
+
+    /// A folder among titles (a Jellyfin subfolder), kept ahead of them.
+    private static func holdsTitles(_ tile: Tile) -> Bool {
+        if case .push(.jellyfin) = tile.action { return true }
+        return false
     }
 
     var title: String {
@@ -131,16 +256,16 @@ final class LibraryFoldersModel: ObservableObject {
     private func load() async {
         let level = self.level
         if let cached = cache[level] {
-            tiles = cached
-            requestFocus(in: cached, level: level)
+            tiles = sorted(cached)
+            requestFocus(in: tiles ?? [], level: level)
             return
         }
         tiles = nil
         let loaded = Self.unique(await Self.tiles(for: level))
         cache[level] = loaded
         guard self.level == level else { return }
-        tiles = loaded
-        requestFocus(in: loaded, level: level)
+        tiles = sorted(loaded)
+        requestFocus(in: tiles ?? [], level: level)
     }
 
     private func requestFocus(in tiles: [Tile], level: Level) {
@@ -181,7 +306,10 @@ final class LibraryFoldersModel: ObservableObject {
                     subtitle: entry.year.map(String.init),
                     poster: entry.poster,
                     symbol: kind == .movies ? "film" : "tv",
-                    action: .open(contentID: entry.contentID, type: entry.type)
+                    action: .open(contentID: entry.contentID, type: entry.type),
+                    added: entry.added,
+                    rating: entry.rating,
+                    year: entry.year
                 )
             }
 
@@ -204,7 +332,10 @@ final class LibraryFoldersModel: ObservableObject {
                         symbol: type == "series" ? "tv" : "film",
                         action: synced
                             ? .open(contentID: contentID, type: type)
-                            : .notice("\(item.name) is in a library Omni hasn't synced. Turn that library on in Settings → Jellyfin, then sync.")
+                            : .notice("\(item.name) is in a library Omni hasn't synced. Turn that library on in Settings → Jellyfin, then sync."),
+                        added: item.added,
+                        rating: item.rating,
+                        year: item.year
                     )
                 }
                 guard item.isFolder else { return nil }
@@ -214,7 +345,8 @@ final class LibraryFoldersModel: ObservableObject {
                     subtitle: nil,
                     poster: poster,
                     symbol: "folder.fill",
-                    action: .push(.jellyfin(serverID: server.id, folderID: item.id, title: item.name))
+                    action: .push(.jellyfin(serverID: server.id, folderID: item.id, title: item.name)),
+                    added: item.added
                 )
             }
         }
@@ -329,6 +461,10 @@ struct LibraryFoldersView: View {
                 .padding(.bottom, 90)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            // A fresh scroll view per level and layout. Kept across them, a
+            // short level opened from deep in a long one sat scrolled past its
+            // own end: loaded, but blank until the Library was rebuilt.
+            .id("\(model.path.count)|\(model.level.hashValue)|\(model.viewMode.rawValue)")
             .focusSection()
             .onChange(of: macFocusedID) { _, id in
                 guard let id else { return }
@@ -384,6 +520,21 @@ struct LibraryFoldersView: View {
                     .font(.system(size: 24))
                     .foregroundColor(.white.opacity(0.6))
                     .frame(maxWidth: .infinity, minHeight: 300)
+            } else if model.usesGrid, !model.holdsTitles {
+                // Sources and categories as a collection's folders are drawn.
+                LazyVGrid(
+                    columns: Array(repeating: GridItem(.flexible(), spacing: 28), count: LibraryFoldersModel.folderTileColumns),
+                    alignment: .leading,
+                    spacing: 28
+                ) {
+                    ForEach(tiles) { tile in
+                        LibraryFolderTile(tile: tile, focus: $focusedID, macIsFocused: macFocusedID == tile.id) {
+                            activate(tile)
+                        }
+                        .disabled(isLocked(tile.id))
+                        .id(tile.id)
+                    }
+                }
             } else if model.usesGrid {
                 LazyVGrid(columns: gridColumns, alignment: .leading, spacing: LibraryGridMetrics.posterGap) {
                     ForEach(tiles) { tile in
@@ -502,10 +653,24 @@ private struct LibraryFolderRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 20) {
-                Image(systemName: tile.symbol)
-                    .font(.system(size: 28, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.8))
-                    .frame(width: 44)
+                if tile.poster != nil || !tile.opensLevel {
+                    // A title in List: its poster, small.
+                    CachedPosterArtwork(urlString: tile.poster, width: 64, height: 96, maximumWidth: 64) {
+                        ZStack {
+                            Rectangle().fill(Color.white.opacity(0.07))
+                            Image(systemName: tile.symbol)
+                                .font(.system(size: 22))
+                                .foregroundColor(.white.opacity(0.3))
+                        }
+                    }
+                    .frame(width: 64, height: 96)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                } else {
+                    Image(systemName: tile.symbol)
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.8))
+                        .frame(width: 44)
+                }
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(tile.title)
@@ -613,6 +778,75 @@ private struct LibraryFolderCard: View {
                 .frame(width: LibraryGridMetrics.posterWidth, alignment: .leading)
             }
             .scaleEffect(showsFocus ? 1.06 : 1)
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
+        .focused($isFocused)
+        .modifier(ExternalFocusBinding(binding: focus, id: tile.id))
+        .focusEffectDisabledIfAvailable()
+        .animation(.spring(response: 0.28, dampingFraction: 0.75), value: showsFocus)
+        .zIndex(showsFocus ? 1 : 0)
+    }
+}
+
+/// A source, library or category in Tiles, drawn as a collection's folders
+/// are on Home: a glass card with its symbol, and its name on it, since
+/// these folders have no artwork of their own.
+private struct LibraryFolderTile: View {
+    let tile: LibraryFoldersModel.Tile
+    let focus: FocusState<String?>.Binding
+    let macIsFocused: Bool
+    let action: () -> Void
+
+    @FocusState private var isFocused: Bool
+    @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
+
+    private var showsFocus: Bool {
+        #if os(macOS)
+        return macIsFocused
+        #else
+        return isFocused
+        #endif
+    }
+
+    private var cornerRadius: CGFloat {
+        AppCardStyle.cornerRadius(for: cardCornerRadiusSetting, fallback: 16)
+    }
+
+    var body: some View {
+        Button(action: action) {
+            ZStack(alignment: .topLeading) {
+                Image(systemName: tile.symbol)
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundColor(.white.opacity(showsFocus ? 0.9 : 0.55))
+                    .padding(24)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(tile.title)
+                        .font(.system(size: 26, weight: .bold))
+                        .foregroundColor(.white)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    if let subtitle = tile.subtitle {
+                        Text(subtitle)
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundColor(.white.opacity(0.55))
+                            .lineLimit(1)
+                    }
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 210)
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .modifier(LiquidGlassSurface(cornerRadius: cornerRadius, prominent: showsFocus))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(showsFocus ? AppFocusOutline.color : .clear, lineWidth: AppFocusOutline.width)
+            )
+            .shadow(color: .black.opacity(showsFocus ? 0.5 : 0.2), radius: showsFocus ? 16 : 6)
+            .scaleEffect(showsFocus ? 1.04 : 1)
         }
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()

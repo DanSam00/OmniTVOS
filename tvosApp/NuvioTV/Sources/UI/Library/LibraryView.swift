@@ -104,6 +104,8 @@ public struct LibraryView: View {
     @State private var macOpenContent = false
     @State private var macOpenWatched = false
     @State private var macOpenGenre = false
+    @State private var macOpenFolderView = false
+    @State private var macOpenFolderSort = false
 
     @FocusState private var focusedItemID: String?
     /// Last card focused in the grid, kept so returning from details (which
@@ -268,6 +270,34 @@ public struct LibraryView: View {
                 }
                 .disabled(overlayRestoreItemID != nil || overlayRestoreCloudItemID != nil)
                 .zIndex(1)
+                }
+
+                if sourceMode == .folders {
+                    // Folders: cards or a list, and the order inside.
+                    HStack(spacing: 16) {
+                        FilterMenu(
+                            label: "View: \(foldersModel.viewMode.title)",
+                            options: FolderViewMode.allCases.map { mode in
+                                FilterOption(mode.title, isSelected: foldersModel.viewMode == mode) {
+                                    foldersModel.viewMode = mode
+                                }
+                            },
+                            macIsFocused: macIsFocused(LibraryFocusBand.controls, "folderView"),
+                            macOpen: $macOpenFolderView
+                        )
+                        FilterMenu(
+                            label: "\(L10n.string("library_filter_sort", fallback: "Sort")): \(foldersModel.sort.title)",
+                            options: FolderSortOrder.allCases.map { order in
+                                FilterOption(order.title, isSelected: foldersModel.sort == order) {
+                                    foldersModel.sort = order
+                                }
+                            },
+                            macIsFocused: macIsFocused(LibraryFocusBand.controls, "folderSort"),
+                            macOpen: $macOpenFolderSort
+                        )
+                    }
+                    .disabled(foldersModel.restoringID != nil)
+                    .zIndex(1)
                 }
 
                 if sourceMode == .saved {
@@ -830,13 +860,16 @@ public struct LibraryView: View {
             items: sourceModes.map(\.rawValue)
         )]
         if sourceMode == .folders {
+            bands.append(MacFocusBand(id: LibraryFocusBand.controls, items: ["folderView", "folderSort"]))
             if !foldersModel.isRoot {
                 bands.append(MacFocusBand(id: LibraryFocusBand.folderBack, items: [LibraryFoldersModel.backID]))
             }
             bands.append(MacFocusBand(
                 id: LibraryFocusBand.folders,
                 items: (foldersModel.tiles ?? []).map(\.id),
-                columns: foldersModel.usesGrid ? macGridColumns : 1
+                columns: foldersModel.usesGrid
+                    ? (foldersModel.holdsTitles ? macGridColumns : LibraryFoldersModel.folderTileColumns)
+                    : 1
             ))
             return bands
         }
@@ -916,6 +949,8 @@ public struct LibraryView: View {
             case "group": macOpenGroup = true
             case "content": macOpenContent = true
             case "watched": macOpenWatched = true
+            case "folderView": macOpenFolderView = true
+            case "folderSort": macOpenFolderSort = true
             default: macOpenGenre = true
             }
             return

@@ -94,6 +94,12 @@ struct PhonePlayerControls: View {
             if UserDefaults.standard.bool(forKey: "OmniDebugPlayerPortrait") {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) { PhoneOrientation.request(.portrait) }
             }
+            // `-OmniDebugPauseAfter <seconds>`: pause then, to bring up the
+            // pause sheet without tapping.
+            let pauseAfter = UserDefaults.standard.double(forKey: "OmniDebugPauseAfter")
+            if pauseAfter > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + pauseAfter) { viewModel.pause() }
+            }
             #endif
         }
         .onDisappear {
@@ -105,6 +111,12 @@ struct PhonePlayerControls: View {
         .onChange(of: viewModel.status) { _, status in
             if status == .playing { scheduleHide() } else { hideTask?.cancel() }
         }
+        // The pause sheet takes over from the controls (landscape; upright
+        // already shows the details under the picture).
+        .onChange(of: viewModel.showPauseOverlay) { _, showing in
+            if showing, !isPortrait, panel == nil { isVisible = false }
+        }
+        .animation(.easeInOut(duration: 0.35), value: viewModel.showPauseOverlay)
         .onChange(of: viewModel.isSwitchingSource) { _, switching in
             if switching { panel = nil }
         }
@@ -221,6 +233,21 @@ struct PhonePlayerControls: View {
 
     private var landscapeLayout: some View {
         ZStack {
+            // "You're watching", as on the Apple TV and the Mac, once paused
+            // for a while with the controls away. Under the tap zones, so a
+            // tap brings the controls back as usual.
+            if viewModel.showPauseOverlay, !isVisible, panel == nil {
+                PauseOverlayView(
+                    title: viewModel.title,
+                    episodeLine: viewModel.pauseOverlayEpisodeLine,
+                    year: viewModel.pauseOverlayYear,
+                    description: viewModel.pauseOverlayDescription,
+                    cast: viewModel.pauseOverlayCast,
+                    logoURL: viewModel.pauseOverlayLogoURL
+                )
+                .transition(.opacity)
+            }
+
             // Full-screen tap target; also the double-tap-to-skip zones.
             HStack(spacing: 0) {
                 tapZone { viewModel.skipBackward() }
@@ -255,6 +282,11 @@ struct PhonePlayerControls: View {
             .onTapGesture {
                 isVisible.toggle()
                 if isVisible { scheduleHide() }
+                // Back from the pause sheet: it returns after a while still
+                // paused, as on the other platforms.
+                if isVisible, viewModel.showPauseOverlay || viewModel.status == .paused {
+                    viewModel.revealControls()
+                }
             }
     }
 

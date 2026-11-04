@@ -4,6 +4,24 @@ import Combine
 /// Metadata sheet shown while paused — logo/title, episode line, synopsis,
 /// cast chips, and a wall-clock in the corner. Video stays visible underneath.
 struct PauseOverlayView: View {
+    /// Sizes for the screen: the TV's 1080p canvas (Apple TV, Mac), or a
+    /// phone held sideways.
+    private enum M {
+        #if os(iOS)
+        static let labelSize: CGFloat = 12, logoWidth: CGFloat = 220, logoHeight: CGFloat = 56
+        static let titleSize: CGFloat = 28, episodeSize: CGFloat = 16, bodySize: CGFloat = 14
+        static let bodyWidth: CGFloat = 460, castLabelSize: CGFloat = 11, castSize: CGFloat = 12
+        static let castCount = 4, spacing: CGFloat = 8, sidePadding: CGFloat = 28, bottomPadding: CGFloat = 28
+        static let clockSize: CGFloat = 20, clockTop: CGFloat = 20, metaSize: CGFloat = 14
+        #else
+        static let labelSize: CGFloat = 22, logoWidth: CGFloat = 440, logoHeight: CGFloat = 120
+        static let titleSize: CGFloat = 52, episodeSize: CGFloat = 28, bodySize: CGFloat = 24
+        static let bodyWidth: CGFloat = 950, castLabelSize: CGFloat = 18, castSize: CGFloat = 20
+        static let castCount = 6, spacing: CGFloat = 14, sidePadding: CGFloat = 60, bottomPadding: CGFloat = 100
+        static let clockSize: CGFloat = 40, clockTop: CGFloat = 50, metaSize: CGFloat = 24
+        #endif
+    }
+
     let title: String
     let episodeLine: String?
     let year: Int?
@@ -15,15 +33,15 @@ struct PauseOverlayView: View {
         ZStack(alignment: .topTrailing) {
             gradients
 
-            PauseClock()
-                .padding(.top, 50)
-                .padding(.trailing, 60)
+            PauseClock(size: M.clockSize)
+                .padding(.top, M.clockTop)
+                .padding(.trailing, M.sidePadding)
 
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: M.spacing) {
                 Spacer()
 
                 Text(L10n.string("player_pause_youre_watching", fallback: "YOU'RE WATCHING"))
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.system(size: M.labelSize, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.5))
                     .kerning(2)
 
@@ -34,7 +52,7 @@ struct PauseOverlayView: View {
                             image
                                 .resizable()
                                 .aspectRatio(contentMode: .fit)
-                                .frame(maxWidth: 440, maxHeight: 120, alignment: .bottomLeading)
+                                .frame(maxWidth: M.logoWidth, maxHeight: M.logoHeight, alignment: .bottomLeading)
                         default:
                             titleText
                         }
@@ -47,34 +65,35 @@ struct PauseOverlayView: View {
 
                 if let episodeLine, !episodeLine.isEmpty {
                     Text(episodeLine)
-                        .font(.system(size: 28, weight: .semibold))
+                        .font(.system(size: M.episodeSize, weight: .semibold))
                         .foregroundStyle(.white)
                         .lineLimit(2)
                 }
 
                 if let description, !description.isEmpty {
                     Text(description)
-                        .font(.system(size: 24))
+                        .font(.system(size: M.bodySize))
                         .foregroundStyle(.white.opacity(0.72))
                         .lineLimit(3)
-                        .frame(maxWidth: 950, alignment: .leading)
+                        .frame(maxWidth: M.bodyWidth, alignment: .leading)
                         .padding(.top, 4)
                 }
 
                 if !cast.isEmpty {
                     Text(L10n.string("details_cast", fallback: "Cast").uppercased())
-                        .font(.system(size: 18, weight: .semibold))
+                        .font(.system(size: M.castLabelSize, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.45))
                         .kerning(2)
-                        .padding(.top, 18)
+                        .padding(.top, M.spacing)
 
-                    HStack(spacing: 12) {
-                        ForEach(cast.prefix(6), id: \.self) { member in
+                    HStack(spacing: M.spacing) {
+                        ForEach(cast.prefix(M.castCount), id: \.self) { member in
                             Text(member)
-                                .font(.system(size: 20, weight: .medium))
+                                .font(.system(size: M.castSize, weight: .medium))
                                 .foregroundStyle(.white)
-                                .padding(.horizontal, 18)
-                                .padding(.vertical, 10)
+                                .lineLimit(1)
+                                .padding(.horizontal, M.castSize * 0.9)
+                                .padding(.vertical, M.castSize * 0.5)
                                 .background(
                                     Color.white.opacity(0.12),
                                     in: RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -83,8 +102,8 @@ struct PauseOverlayView: View {
                     }
                 }
             }
-            .padding(.horizontal, 60)
-            .padding(.bottom, 100)
+            .padding(.horizontal, M.sidePadding)
+            .padding(.bottom, M.bottomPadding)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
         }
         .allowsHitTesting(false)
@@ -92,7 +111,7 @@ struct PauseOverlayView: View {
 
     private var titleText: some View {
         Text(title)
-            .font(.system(size: 52, weight: .heavy))
+            .font(.system(size: M.titleSize, weight: .heavy))
             .foregroundStyle(.white)
             .lineLimit(2)
     }
@@ -102,7 +121,7 @@ struct PauseOverlayView: View {
         let parts = [year.map(String.init), episodeCode].compactMap { $0 }.filter { !$0.isEmpty }
         if !parts.isEmpty {
             Text(parts.joined(separator: "  •  "))
-                .font(.system(size: 24, weight: .medium))
+                .font(.system(size: M.metaSize, weight: .medium))
                 .foregroundStyle(.white.opacity(0.7))
         }
     }
@@ -142,12 +161,13 @@ struct PauseOverlayView: View {
 }
 
 private struct PauseClock: View {
+    var size: CGFloat = 40
     @State private var now = Date()
     private let timer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
     var body: some View {
         Text(now, style: .time)
-            .font(.system(size: 40, weight: .regular))
+            .font(.system(size: size, weight: .regular))
             .foregroundStyle(.white.opacity(0.95))
             .onReceive(timer) { now = $0 }
     }

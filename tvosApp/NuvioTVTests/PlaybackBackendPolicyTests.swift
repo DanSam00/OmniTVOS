@@ -3126,3 +3126,33 @@ final class ContinueWatchingDismissStoreTests: XCTestCase {
     }
 
 }
+
+final class FolderSortOrderTests: XCTestCase {
+    private struct Item {
+        let name: String
+        var added: Date? = nil
+        var rating: Double? = nil
+        var year: Int? = nil
+        var folder = false
+    }
+
+    private func order(_ sort: FolderSortOrder, _ items: [Item]) -> [String] {
+        sort.sorted(items, name: \.name, isFolder: \.folder, added: \.added, rating: \.rating, year: \.year).map(\.name)
+    }
+
+    func testFolderSortsByTheChosenValueWithMissingValuesLast() {
+        let items = [
+            Item(name: "Beta", added: Date(timeIntervalSince1970: 200), rating: 7, year: 2020),
+            Item(name: "alpha", added: Date(timeIntervalSince1970: 300), year: 2024),
+            Item(name: "Gamma", rating: 9),
+            Item(name: "Zeta folder", folder: true),
+        ]
+        XCTAssertEqual(order(.standard, items), ["Beta", "alpha", "Gamma", "Zeta folder"])
+        XCTAssertEqual(order(.alphabetical, items), ["Zeta folder", "alpha", "Beta", "Gamma"])
+        XCTAssertEqual(order(.reverseAlphabetical, items), ["Zeta folder", "Gamma", "Beta", "alpha"])
+        XCTAssertEqual(order(.recentlyAdded, items), ["Zeta folder", "alpha", "Beta", "Gamma"])
+        XCTAssertEqual(order(.oldestAdded, items), ["Zeta folder", "Beta", "alpha", "Gamma"])
+        XCTAssertEqual(order(.popular, items), ["Zeta folder", "Gamma", "Beta", "alpha"])
+        XCTAssertEqual(order(.newestRelease, items), ["Zeta folder", "alpha", "Beta", "Gamma"])
+    }
+}

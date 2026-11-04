@@ -34,6 +34,9 @@ actor IPTVVODBrowser {
         let poster: String?
         let year: Int?
         let type: String
+        /// When the provider added it, and its rating, for sorting a folder.
+        var added: Date? = nil
+        var rating: Double? = nil
         var id: String { contentID }
     }
 
@@ -104,7 +107,12 @@ actor IPTVVODBrowser {
                 name: Self.displayName(title) ?? raw,
                 poster: ((entry[kind == .movies ? "stream_icon" : "cover"] as? String)?.vodNonBlank).flatMap(Self.webURL),
                 year: nameYear ?? released.flatMap { $0.count >= 4 ? Int($0.prefix(4)) : nil },
-                type: kind == .movies ? "movie" : "series"
+                type: kind == .movies ? "movie" : "series",
+                // Unix seconds: `added` for a film, `last_modified` for a show.
+                added: IPTVVODLibrary.stringValue(entry[kind == .movies ? "added" : "last_modified"])
+                    .flatMap(Double.init).flatMap { $0 > 0 ? Date(timeIntervalSince1970: $0) : nil },
+                rating: IPTVVODLibrary.stringValue(entry["rating"]).flatMap(Double.init)
+                    .flatMap { $0 > 0 ? $0 : nil }
             )
         }
         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }

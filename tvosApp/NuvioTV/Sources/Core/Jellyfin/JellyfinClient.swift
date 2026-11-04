@@ -17,6 +17,9 @@ struct JellyfinBrowseItem: Identifiable, Hashable {
     let isFolder: Bool
     let year: Int?
     let primaryImageTag: String?
+    /// When it was added to the server, and its rating, for sorting a folder.
+    var added: Date? = nil
+    var rating: Double? = nil
 
     /// A movie or show opens its page; anything else that holds items opens.
     var isTitle: Bool { type == "Movie" || type == "Series" }
@@ -144,7 +147,7 @@ struct JellyfinClient {
             "ParentId": parentId,
             "SortBy": "IsFolder,SortName",
             "SortOrder": "Descending,Ascending",
-            "Fields": "ProductionYear",
+            "Fields": "ProductionYear,DateCreated,CommunityRating",
             "EnableImageTypes": "Primary",
         ])
         try Self.validate(response, data: data)
@@ -157,15 +160,19 @@ struct JellyfinClient {
                 let IsFolder: Bool?
                 let ProductionYear: Int?
                 let ImageTags: ImageTags?
+                let DateCreated: String?
+                let CommunityRating: Double?
 
                 enum CodingKeys: String, CodingKey {
-                    case Id, Name, IsFolder, ProductionYear, ImageTags
+                    case Id, Name, IsFolder, ProductionYear, ImageTags, DateCreated, CommunityRating
                     case kind = "Type"
                 }
             }
             let Items: [Item]
         }
         let payload = try JSONDecoder().decode(Payload.self, from: data)
+        let dates = ISO8601DateFormatter()
+        dates.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return payload.Items.map {
             JellyfinBrowseItem(
                 id: $0.Id,
@@ -173,7 +180,15 @@ struct JellyfinClient {
                 type: $0.kind ?? "",
                 isFolder: $0.IsFolder ?? false,
                 year: $0.ProductionYear,
-                primaryImageTag: $0.ImageTags?.Primary
+                primaryImageTag: $0.ImageTags?.Primary,
+                // Jellyfin writes seven fractional digits, more than the
+                // formatter reads; the first three are plenty.
+                added: $0.DateCreated.flatMap { raw in
+                    dates.date(from: raw.replacingOccurrences(
+                        of: #"\.(\d{3})\d*"#, with: ".$1", options: .regularExpression
+                    ))
+                },
+                rating: $0.CommunityRating
             )
         }
     }
