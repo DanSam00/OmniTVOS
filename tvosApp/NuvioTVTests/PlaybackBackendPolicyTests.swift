@@ -3156,3 +3156,42 @@ final class FolderSortOrderTests: XCTestCase {
         XCTAssertEqual(order(.newestRelease, items), ["Zeta folder", "alpha", "Beta", "Gamma"])
     }
 }
+
+final class FolderRegionTests: XCTestCase {
+    func testReadsProviderCodes() {
+        XCTAssertEqual(FolderRegion.of("[EN] ACTION/WAR"), "English")
+        XCTAssertEqual(FolderRegion.of("[ALB] FILMET"), "Albania")
+        XCTAssertEqual(FolderRegion.of("UK | SKY CINEMA"), "United Kingdom")
+        XCTAssertEqual(FolderRegion.of("US: NETFLIX"), "United States")
+        XCTAssertEqual(FolderRegion.of("|AU| KIDS"), "Australia")
+        XCTAssertEqual(FolderRegion.of("EN - Action"), "English")
+        XCTAssertEqual(FolderRegion.of("FR | Films"), "France")
+        XCTAssertEqual(FolderRegion.of("EX-YU | FILMOVI"), "Ex-Yu")
+        XCTAssertEqual(FolderRegion.of("[SC] NORDIC SERIES"), "Scandinavia")
+        XCTAssertEqual(FolderRegion.of("[GE] NETFLIX"), "Germany")
+        XCTAssertEqual(FolderRegion.of("[CH] CHINA SERIES"), "China")
+        XCTAssertEqual(FolderRegion.of("CH | SRF"), "Switzerland")
+        XCTAssertEqual(FolderRegion.of("[PT-BR] SERIES SUB PT-BR"), "Brazil")
+        XCTAssertEqual(FolderRegion.of("[MULTI-LANG] NETFLIX"), "Multi-Language")
+        XCTAssertEqual(FolderRegion.of("[KU] KURDISH SERIES"), "Kurdish")
+    }
+
+    func testIgnoresNamesWithoutACode() {
+        XCTAssertNil(FolderRegion.of("Action"))
+        XCTAssertNil(FolderRegion.of("KIDS | Disney"))
+        XCTAssertNil(FolderRegion.of("TV | Shows"))
+        XCTAssertNil(FolderRegion.of("4K Movies"))
+        XCTAssertNil(FolderRegion.of("ACTION - War"))
+    }
+
+    func testChoicesNeedMoreThanOneCountry() {
+        XCTAssertNil(FolderRegion.choices(for: ["[EN] A", "[EN] B"]))
+        XCTAssertNil(FolderRegion.choices(for: ["Drama", "Comedy"]))
+        XCTAssertEqual(
+            FolderRegion.choices(for: ["UK | B", "[EN] A", "Drama"]),
+            ["English", "United Kingdom", FolderRegion.other]
+        )
+        XCTAssertTrue(FolderRegion.matches("Drama", region: FolderRegion.other))
+        XCTAssertFalse(FolderRegion.matches("[EN] A", region: "United Kingdom"))
+    }
+}

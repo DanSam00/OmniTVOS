@@ -184,6 +184,7 @@ struct CollectionFolderBrowseView: View {
             #endif
         }
         #if os(macOS)
+        .environment(\.macScreenOwner, "collections")
         .onChange(of: macBandSignature, initial: true) { _, _ in
             macFocus.update(macBands)
         }
@@ -1429,7 +1430,8 @@ struct CollectionFolderResultCard: View {
         .focusEffectDisabledIfAvailable()
         .titleActionsContextMenu(
             meta: meta,
-            onOpenDetails: action
+            onOpenDetails: action,
+            macIsFocused: macIsFocused
         )
         .animation(smoothFocus ? .spring(response: 0.28, dampingFraction: 0.75) : nil, value: focused)
         .zIndex(focused ? 1 : 0)

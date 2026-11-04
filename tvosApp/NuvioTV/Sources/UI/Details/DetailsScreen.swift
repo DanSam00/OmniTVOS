@@ -3311,7 +3311,7 @@ struct TvDetailsContent: View {
             // `onMoveCommand` never fired for it.
             .onAppear {
                 keyRouter.release(macKeyToken)
-                macKeyToken = keyRouter.claim()
+                macKeyToken = keyRouter.claim(owner: "details")
             }
             .onDisappear {
                 keyRouter.release(macKeyToken)
@@ -3323,28 +3323,17 @@ struct TvDetailsContent: View {
             // reaches it inside the scaled canvas. Nothing here holds SwiftUI
             // focus either, so the caret is the only thing that knows which
             // episode the viewer means.
-            .macHotKey("w", isEnabled: {
-                macFocus.row == .railList
-                    && macRailMode == .episodes
-                    && macSeasonEpisodes.indices.contains(macFocus.index)
-            }) {
-                guard let meta = uiState.meta,
-                      macSeasonEpisodes.indices.contains(macFocus.index) else { return }
-                let video = macSeasonEpisodes[macFocus.index]
-                let nowWatched = WatchedStore.toggleEpisode(
-                    meta: meta,
-                    season: video.season,
-                    episode: video.episode
-                )
-                // Only offer catch-up when marking watched. The episode the
-                // viewer picked is marked either way — Cancel declines the
-                // extras, it does not undo what they actually did.
-                guard nowWatched else { return }
-                let earlier = macUnwatchedEpisodesBefore(video, meta: meta)
-                guard !earlier.isEmpty else { return }
-                macCatchUpEpisodes = earlier
-                macShowCatchUpPrompt = true
+            .macHotKey("w", isEnabled: { macCaretEpisode != nil }) {
+                if let video = macCaretEpisode { macToggleWatched(video) }
             }
+            // ⌥↩ on an episode in the rail: the menu tvOS raises by holding
+            // Select on the episode card.
+            .macContextMenuRegistration(
+                title: macCaretEpisode.map { "Episode \($0.episode)" + ($0.title.isEmpty ? "" : " · \($0.title)") } ?? "",
+                isFocused: macCaretEpisode != nil,
+                tracksPointer: false
+            ) { macEpisodeActions }
+            .environment(\.macScreenOwner, "details")
             // D downloads: the caret's episode in the rail, else the title.
             .macHotKey("d", isEnabled: { onDownload != nil }) {
                 if macFocus.row == .railList, macRailMode == .episodes,
@@ -3948,6 +3937,51 @@ struct TvDetailsContent: View {
         display.dateStyle = .medium
         display.timeStyle = .none
         return display.string(from: date)
+    }
+
+    /// The episode the rail's caret is on, if it is on one.
+    private var macCaretEpisode: NuvioVideo? {
+        guard macFocus.row == .railList, macRailMode == .episodes,
+              macSeasonEpisodes.indices.contains(macFocus.index) else { return nil }
+        return macSeasonEpisodes[macFocus.index]
+    }
+
+    private func macToggleWatched(_ video: NuvioVideo) {
+        guard let meta = uiState.meta else { return }
+        let nowWatched = WatchedStore.toggleEpisode(
+            meta: meta,
+            season: video.season,
+            episode: video.episode
+        )
+        // Only offer catch-up when marking watched. The episode the
+        // viewer picked is marked either way — Cancel declines the
+        // extras, it does not undo what they actually did.
+        guard nowWatched else { return }
+        let earlier = macUnwatchedEpisodesBefore(video, meta: meta)
+        guard !earlier.isEmpty else { return }
+        macCatchUpEpisodes = earlier
+        macShowCatchUpPrompt = true
+    }
+
+    /// The caret's episode's menu, for right-click's twin, ⌥↩.
+    private var macEpisodeActions: [ContextAction] {
+        guard let video = macCaretEpisode, let meta = uiState.meta else { return [] }
+        let isWatched = WatchedStore.containsEpisode(meta: meta, season: video.season, episode: video.episode)
+        var actions = [ContextAction(label: L10n.string("action_play", fallback: "Play")) { onEpisodeSelected(video) }]
+        if let onEpisodePlayManually {
+            actions.append(ContextAction(label: L10n.string("action_select_stream_manually", fallback: "Choose Source Manually")) {
+                onEpisodePlayManually(video)
+            })
+        }
+        actions.append(ContextAction(
+            label: isWatched
+                ? L10n.string("details_mark_as_unwatched", fallback: "Mark as unwatched")
+                : L10n.string("details_mark_as_watched", fallback: "Mark as watched")
+        ) { macToggleWatched(video) })
+        if let onDownload {
+            actions.append(ContextAction(label: L10n.string("action_download", fallback: "Download")) { onDownload(video) })
+        }
+        return actions
     }
 
     private func macActivateRailHeader(_ index: Int) {

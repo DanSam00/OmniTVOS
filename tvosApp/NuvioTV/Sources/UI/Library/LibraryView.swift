@@ -104,7 +104,7 @@ public struct LibraryView: View {
     @State private var macOpenContent = false
     @State private var macOpenWatched = false
     @State private var macOpenGenre = false
-    @State private var macOpenFolderView = false
+    @State private var macOpenFolderCountry = false
     @State private var macOpenFolderSort = false
 
     @FocusState private var focusedItemID: String?
@@ -273,17 +273,12 @@ public struct LibraryView: View {
                 }
 
                 if sourceMode == .folders {
-                    // Folders: cards or a list, and the order inside.
+                    // Folders: cards or a list, the order inside, and the
+                    // country when the folders name more than one.
                     HStack(spacing: 16) {
-                        FilterMenu(
-                            label: "View: \(foldersModel.viewMode.title)",
-                            options: FolderViewMode.allCases.map { mode in
-                                FilterOption(mode.title, isSelected: foldersModel.viewMode == mode) {
-                                    foldersModel.viewMode = mode
-                                }
-                            },
-                            macIsFocused: macIsFocused(LibraryFocusBand.controls, "folderView"),
-                            macOpen: $macOpenFolderView
+                        FolderViewSwitch(
+                            mode: $foldersModel.viewMode,
+                            macFocusedItem: macFocusedControl
                         )
                         FilterMenu(
                             label: "\(L10n.string("library_filter_sort", fallback: "Sort")): \(foldersModel.sort.title)",
@@ -295,6 +290,20 @@ public struct LibraryView: View {
                             macIsFocused: macIsFocused(LibraryFocusBand.controls, "folderSort"),
                             macOpen: $macOpenFolderSort
                         )
+                        if let regions = foldersModel.regionChoices {
+                            FilterMenu(
+                                label: "Country: \(foldersModel.activeRegion ?? "All")",
+                                options: [FilterOption("All Countries", isSelected: foldersModel.activeRegion == nil) {
+                                    foldersModel.region = nil
+                                }] + regions.map { region in
+                                    FilterOption(region, isSelected: foldersModel.activeRegion == region) {
+                                        foldersModel.region = region
+                                    }
+                                },
+                                macIsFocused: macIsFocused(LibraryFocusBand.controls, "folderCountry"),
+                                macOpen: $macOpenFolderCountry
+                            )
+                        }
                     }
                     .disabled(foldersModel.restoringID != nil)
                     .zIndex(1)
@@ -397,6 +406,7 @@ public struct LibraryView: View {
             macFocus.syncClaim(isCurrent: macTabState.current == .library)
         }
         .onDisappear { macFocus.release() }
+        .environment(\.macScreenOwner, "library")
         .onChange(of: macTabState.current, initial: true) { _, tab in
             macFocus.update(macBands)
             macFocus.syncClaim(isCurrent: tab == .library)
@@ -424,6 +434,7 @@ public struct LibraryView: View {
         }
         .onChange(of: foldersModel.tiles?.map(\.id)) { _, _ in macFocus.update(macBands) }
         .onChange(of: foldersModel.path) { _, _ in macFocus.update(macBands) }
+        .onChange(of: foldersModel.regionChoices) { _, _ in macFocus.update(macBands) }
         .onChange(of: foldersAvailable) { _, _ in macFocus.update(macBands) }
         .onChange(of: foldersModel.focusRequest) { _, request in
             guard let request, sourceMode == .folders else { return }
@@ -843,6 +854,15 @@ public struct LibraryView: View {
 
     /// True when the macOS highlight is on this item; always false on tvOS,
     /// where the focus engine drives the same appearance.
+    /// The control the Mac's caret is on in the controls row, if any.
+    private var macFocusedControl: String? {
+        #if os(macOS)
+        return macFocus.bandID == LibraryFocusBand.controls ? macFocus.itemID : nil
+        #else
+        return nil
+        #endif
+    }
+
     private func macIsFocused(_ group: String, _ item: String) -> Bool {
         #if os(macOS)
         return macFocus.isFocused(group, item)
@@ -860,7 +880,11 @@ public struct LibraryView: View {
             items: sourceModes.map(\.rawValue)
         )]
         if sourceMode == .folders {
-            bands.append(MacFocusBand(id: LibraryFocusBand.controls, items: ["folderView", "folderSort"]))
+            bands.append(MacFocusBand(
+                id: LibraryFocusBand.controls,
+                items: FolderViewMode.allCases.map(FolderViewSwitch.macItemID(for:)) + ["folderSort"]
+                    + (foldersModel.regionChoices == nil ? [] : ["folderCountry"])
+            ))
             if !foldersModel.isRoot {
                 bands.append(MacFocusBand(id: LibraryFocusBand.folderBack, items: [LibraryFoldersModel.backID]))
             }
@@ -949,8 +973,12 @@ public struct LibraryView: View {
             case "group": macOpenGroup = true
             case "content": macOpenContent = true
             case "watched": macOpenWatched = true
-            case "folderView": macOpenFolderView = true
             case "folderSort": macOpenFolderSort = true
+            case "folderCountry": macOpenFolderCountry = true
+            case let id where id.hasPrefix("folderView."):
+                if let mode = FolderViewMode.allCases.first(where: { FolderViewSwitch.macItemID(for: $0) == id }) {
+                    foldersModel.viewMode = mode
+                }
             default: macOpenGenre = true
             }
             return
@@ -1057,7 +1085,8 @@ struct LibraryItemButton: View {
         .focusEffectDisabledIfAvailable()
         .titleActionsContextMenu(
             meta: item.asNuvioMeta,
-            onOpenDetails: action
+            onOpenDetails: action,
+            macIsFocused: macIsFocused
         )
         .animation(smoothFocus ? .spring(response: 0.28, dampingFraction: 0.75) : nil, value: showsFocusedAppearance)
         .zIndex(showsFocusedAppearance ? 1 : 0)

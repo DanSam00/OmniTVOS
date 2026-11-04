@@ -254,6 +254,9 @@ enum SettingsKey {
     /// Upcoming matches to be reminded of (`MatchReminders`), as JSON; synced
     /// so a reminder set on the Apple TV alerts on the iPhone and Mac.
     static let matchReminders = "omni.settings.matchReminders"
+    /// IPTV categories hidden from Library → Folders (`HiddenLibraryFolders`),
+    /// as JSON; synced, so a folder hidden on one device is hidden on all.
+    static let hiddenLibraryFolders = "omni.settings.hiddenLibraryFolders"
     static let cardCornerRadius = "nuvio.tv.settings.layout.cardCornerRadius"
     static let cardSize = "nuvio.tv.settings.layout.cardSize"
     static let liquidGlassCards = "nuvio.tv.settings.layout.liquidGlassCards"
@@ -411,7 +414,7 @@ enum SettingsKey {
     ]
 
     static let all = [
-        favouriteTeams, matchReminders,
+        favouriteTeams, matchReminders, hiddenLibraryFolders,
         profileName, profilePinEnabled, profileAutoSelectLast, profileRequireSelectionAfterBackground, kidsProfile,
         customAvatarPhoto,
         accountSyncWatchState,
@@ -8933,6 +8936,22 @@ private struct IPTVSettingsSection: View {
     @State private var sources: [IPTVSource] = IPTVSourceStore.sources()
     @State private var editing: IPTVSource?
     @State private var addingKind: IPTVSource.Kind?
+    @ObservedObject private var hiddenStore = HiddenLibraryFoldersStore.shared
+
+    private var hiddenFolders: [HiddenLibraryFolders.Folder] {
+        hiddenStore.folders
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private var hideHint: String {
+        #if os(macOS)
+        return "Right-click a folder in Library → Folders, or press ⌥↩ on it, to hide it."
+        #elseif os(iOS)
+        return "Touch and hold a folder in Library → Folders to hide it."
+        #else
+        return "Hold Select on a folder in Library → Folders to hide it."
+        #endif
+    }
 
     var body: some View {
         SettingsGroup(
@@ -8967,6 +8986,32 @@ private struct IPTVSettingsSection: View {
                     macRowID: "iptv.source.\(source.id)"
                 ) {
                     editing = source
+                }
+            }
+            // Folders hidden from Library → Folders, each shown again here.
+            if !sources.isEmpty {
+                let hidden = hiddenFolders
+                SettingsActionRow(
+                    title: "Hidden Folders",
+                    subtitle: hidden.isEmpty
+                        ? hideHint
+                        : "\(hidden.count) hidden from Library → Folders. Choose one to show it again.",
+                    value: hidden.count > 1 ? "Show All" : (hidden.isEmpty ? "None" : ""),
+                    accentColor: accentColor,
+                    macRowID: "iptv.hiddenFolders"
+                ) {
+                    if hidden.count > 1 { HiddenLibraryFolders.showAll() }
+                }
+                ForEach(hidden) { folder in
+                    SettingsActionRow(
+                        title: folder.name,
+                        subtitle: "\(folder.kindTitle) · hidden",
+                        value: "Show",
+                        accentColor: accentColor,
+                        macRowID: "iptv.hidden.\(folder.id)"
+                    ) {
+                        HiddenLibraryFolders.show(folder)
+                    }
                 }
             }
         }

@@ -6042,12 +6042,14 @@ struct TVHomeView: View {
                     }
                     .onAppear {
                         keyRouter.release(macKeyToken)
-                        macKeyToken = isFullScreenOverlayPresented ? nil : keyRouter.claim()
+                        macKeyToken = isFullScreenOverlayPresented ? nil : keyRouter.claim(owner: "home")
                     }
                     .onDisappear {
                         keyRouter.release(macKeyToken)
                         macKeyToken = nil
                     }
+                    // Right-click / ⌥↩ menus of Home's cards answer only to Home.
+                    .environment(\.macScreenOwner, "home")
                     // Home is the root and never disappears, so opening the
                     // player over it used to leave Home holding the front of
                     // the key router. It then swallowed every arrow and Escape
@@ -6061,7 +6063,7 @@ struct TVHomeView: View {
                             keyRouter.release(macKeyToken)
                             macKeyToken = nil
                         } else if macKeyToken == nil {
-                            macKeyToken = keyRouter.claim()
+                            macKeyToken = keyRouter.claim(owner: "home")
                         }
                     }
                     // Nothing on macOS focuses a card by itself — a click
@@ -10251,6 +10253,37 @@ private struct TVFeatureHeroView: View {
 
     private var isCarouselMode: Bool { overrideMeta == nil && overrideFolder == nil }
 
+    /// The slide's hold-Select menu as data, for the Mac's panel.
+    private var macSlideActions: [ContextAction] {
+        guard isCarouselMode, let activeItem, activeItem.cardKind != NSFWVisibility.toggleCardID else { return [] }
+        var actions = [ContextAction(label: L10n.string("action_resume", fallback: "Resume")) { onSelect(activeItem) }]
+        if let onStartFromBeginning {
+            actions.append(ContextAction(label: L10n.string("action_start_from_beginning", fallback: "Start from Beginning")) {
+                onStartFromBeginning(activeItem)
+            })
+        }
+        if let onOpenDetails {
+            actions.append(ContextAction(label: L10n.string("action_more_info", fallback: "More Info")) {
+                onOpenDetails(activeItem.meta)
+            })
+        }
+        if let onRemove {
+            actions.append(ContextAction(label: L10n.string("action_mark_watched", fallback: "Mark as Watched")) {
+                ContinueWatchingActions.markWatched(activeItem)
+            })
+            if activeItem.isRecommendation {
+                actions.append(ContextAction(label: L10n.string("action_not_interested", fallback: "Not Interested")) {
+                    ContinueWatchingActions.notInterested(activeItem)
+                })
+            }
+            actions.append(ContextAction(
+                label: L10n.string("action_remove_from_continue", fallback: "Remove from Continue Watching"),
+                isDestructive: true
+            ) { onRemove(activeItem) })
+        }
+        return actions
+    }
+
     /// What the block draws its focus treatment from.
     private var isHighlighted: Bool {
         #if os(macOS)
@@ -10420,6 +10453,8 @@ private struct TVFeatureHeroView: View {
                 }
             }
         }
+        // The same menu for right-click and ⌥↩ on the Mac.
+        .macContextMenu(title: activeItem?.meta.name ?? "", isFocused: macIsFocused) { macSlideActions }
         .focusSection()
         .onChange(of: isLeftGuardFocused) { _, focused in
             guard focused, !pagingGate.isPaging else { return }

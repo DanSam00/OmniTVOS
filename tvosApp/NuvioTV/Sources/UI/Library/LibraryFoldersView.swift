@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 /// How a folder's contents are ordered in Library → Folders, on every
 /// platform. Kept per profile.
@@ -89,6 +90,182 @@ enum FolderViewMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// IPTV categories the viewer has hidden from Library → Folders. Kept per
+/// profile and synced with the account; Settings → IPTV shows them again.
+///
+/// Keyed by kind and the provider's category id, which stays the same on
+/// every device signed in to the same provider. The name is kept only to
+/// list the folder in Settings.
+enum HiddenLibraryFolders {
+    struct Folder: Codable, Hashable, Identifiable {
+        /// `IPTVVODBrowser.Kind` raw value.
+        let kind: String
+        let categoryID: String
+        let name: String
+
+        var id: String { "\(kind)|\(categoryID)" }
+
+        var kindTitle: String {
+            (IPTVVODBrowser.Kind(rawValue: kind) ?? .movies).title
+        }
+    }
+
+    static let changedNotification = Notification.Name("omni.hiddenLibraryFolders.changed")
+
+    static func decode(_ raw: String) -> [Folder] {
+        guard let data = raw.data(using: .utf8),
+              let folders = try? JSONDecoder().decode([Folder].self, from: data)
+        else { return [] }
+        return folders
+    }
+
+    static var all: [Folder] {
+        decode(ProfileSettings.current.string(forKey: SettingsKey.hiddenLibraryFolders) ?? "")
+    }
+
+    static var hiddenIDs: Set<String> { Set(all.map(\.id)) }
+
+    static func hide(_ folder: Folder) {
+        var folders = all.filter { $0.id != folder.id }
+        folders.append(folder)
+        save(folders)
+    }
+
+    static func show(_ folder: Folder) {
+        save(all.filter { $0.id != folder.id })
+    }
+
+    static func showAll() {
+        save([])
+    }
+
+    private static func save(_ folders: [Folder]) {
+        // An empty list is still written: sync only sends keys that exist,
+        // so removing it would leave the account's last list to come back.
+        guard let data = try? JSONEncoder().encode(folders), let raw = String(data: data, encoding: .utf8) else { return }
+        ProfileSettings.current.set(raw, forKey: SettingsKey.hiddenLibraryFolders)
+        NotificationCenter.default.post(name: changedNotification, object: nil)
+        // Pushes the change to the account, like any other setting.
+        ProfileSettings.notifySettingsChanged()
+    }
+}
+
+/// `HiddenLibraryFolders` for views. `@AppStorage` does not hear writes made
+/// through `ProfileSettings` to a dotted key, so a hidden folder stayed on
+/// screen until the view was rebuilt.
+@MainActor
+final class HiddenLibraryFoldersStore: ObservableObject {
+    static let shared = HiddenLibraryFoldersStore()
+
+    @Published private(set) var folders = HiddenLibraryFolders.all
+    private var observers: Set<AnyCancellable> = []
+
+    var ids: Set<String> { Set(folders.map(\.id)) }
+
+    private init() {
+        NotificationCenter.default.publisher(for: HiddenLibraryFolders.changedNotification)
+            .merge(with: NotificationCenter.default.publisher(for: ProfileSettings.settingsChangedNotification))
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                let folders = HiddenLibraryFolders.all
+                if folders != self.folders { self.folders = folders }
+            }
+            .store(in: &observers)
+    }
+}
+
+/// The country (or language) an IPTV category is for, read from the code
+/// providers put in front of its name: "[EN] ACTION", "UK | SKY CINEMA",
+/// "US: NETFLIX", "|AU| KIDS". Library → Folders filters by it.
+enum FolderRegion {
+    static let storageKey = "omni.library.folderCountry"
+    /// The filter's value for titles with no code.
+    static let other = "Other"
+
+    /// The filter chosen, by display name; nil for every country.
+    static var current: String? {
+        get { ProfileSettings.current.string(forKey: storageKey)?.vodNonBlank }
+        set { ProfileSettings.current.set(newValue ?? "", forKey: storageKey) }
+    }
+
+    /// Codes providers use that are not ISO region codes, or that Locale
+    /// names in a way nobody would look for. Languages are named as such.
+    private static let names: [String: String] = [
+        "UK": "United Kingdom", "GB": "United Kingdom", "EN": "English",
+        "US": "United States", "USA": "United States",
+        "AU": "Australia", "AUS": "Australia", "NZ": "New Zealand",
+        "CA": "Canada", "CAN": "Canada", "IE": "Ireland", "IRL": "Ireland",
+        "IN": "India", "IND": "India", "PK": "Pakistan", "BD": "Bangladesh",
+        "FR": "France", "FRA": "France", "DE": "Germany", "GER": "Germany", "DEU": "Germany",
+        "ES": "Spain", "ESP": "Spain", "IT": "Italy", "ITA": "Italy",
+        "NL": "Netherlands", "NLD": "Netherlands", "BE": "Belgium", "BEL": "Belgium",
+        "PT": "Portugal", "POR": "Portugal", "BR": "Brazil", "BRA": "Brazil",
+        "TR": "Turkey", "TUR": "Turkey", "AR": "Arabic", "ARA": "Arabic", "ARAB": "Arabic",
+        "AL": "Albania", "ALB": "Albania", "EXYU": "Ex-Yu", "YU": "Ex-Yu",
+        "PL": "Poland", "POL": "Poland", "RO": "Romania", "ROM": "Romania",
+        "GR": "Greece", "GRE": "Greece", "SE": "Sweden", "SWE": "Sweden",
+        "NO": "Norway", "NOR": "Norway", "DK": "Denmark", "DEN": "Denmark",
+        "FI": "Finland", "FIN": "Finland", "RU": "Russia", "RUS": "Russia",
+        "LAT": "Latino", "LATAM": "Latino", "MX": "Mexico", "MEX": "Mexico",
+        "KR": "Korea", "KOR": "Korea", "JP": "Japan", "JPN": "Japan",
+        "CN": "China", "CHN": "China", "AFR": "Africa", "ZA": "South Africa",
+        "NG": "Nigeria", "PH": "Philippines", "PHI": "Philippines",
+        "CH": "Switzerland", "AT": "Austria", "HU": "Hungary", "CZ": "Czechia",
+        "SK": "Slovakia", "BG": "Bulgaria", "HR": "Croatia", "RS": "Serbia",
+        "BA": "Bosnia", "MK": "North Macedonia", "SI": "Slovenia",
+        "KU": "Kurdish", "KUR": "Kurdish", "PER": "Persian", "IR": "Iran",
+        "IL": "Israel", "VN": "Vietnam", "TH": "Thailand", "MY": "Malaysia",
+        "ID": "Indonesia", "SG": "Singapore", "CAR": "Caribbean",
+        // IPTV conventions that differ from ISO: these are languages or
+        // regions, not the countries Locale would name.
+        "SC": "Scandinavia", "NORDIC": "Scandinavia", "SW": "Sweden",
+        "GE": "Germany", "KO": "Korea", "PTBR": "Brazil",
+        "MULTI": "Multi-Language", "MULTILANG": "Multi-Language",
+    ]
+
+    /// Two letters that look like a code but are not one.
+    private static let notCodes: Set<String> = ["TV", "HD", "SD", "UHD", "FHD", "VIP", "PPV", "VOD", "NEW", "TOP", "ALL", "XXX", "OK"]
+
+    /// "[EN]", "UK |", "US:", "|AU|", "EN -": a short capitalised code
+    /// closed off from the rest of the name.
+    private static let pattern = try! NSRegularExpression(
+        pattern: #"^\s*[\[\(\|▎┃]?\s*([A-Z]{2,6}(?:-[A-Z]{2,4})?)\s*(?:[\]\)\|▎┃:]|\s[-–]\s)"#
+    )
+
+    /// The display name for a category's code, or nil when it has none.
+    static func of(_ name: String) -> String? {
+        let range = NSRange(name.startIndex..., in: name)
+        guard let match = pattern.firstMatch(in: name, range: range),
+              let codeRange = Range(match.range(at: 1), in: name)
+        else { return nil }
+        let code = name[codeRange].replacingOccurrences(of: "-", with: "")
+        guard !notCodes.contains(code) else { return nil }
+        // CH is Switzerland, except to the providers that file China there.
+        if code == "CH" { return name.uppercased().contains("CHIN") ? "China" : "Switzerland" }
+        if let known = names[code] { return known }
+        guard code.count == 2 else { return nil }
+        return Locale(identifier: "en").localizedString(forRegionCode: code)
+    }
+
+    /// The filter's choices for these names, by name; nil when there is
+    /// nothing to choose between.
+    static func choices(for names: [String]) -> [String]? {
+        var regions = Set<String>()
+        var hasOther = false
+        for name in names {
+            if let region = of(name) { regions.insert(region) } else { hasOther = true }
+        }
+        guard !regions.isEmpty, regions.count + (hasOther ? 1 : 0) > 1 else { return nil }
+        let sorted = regions.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        return hasOther ? sorted + [other] : sorted
+    }
+
+    static func matches(_ name: String, region: String) -> Bool {
+        (of(name) ?? other) == region
+    }
+}
+
 /// Library → Folders on the Apple TV and the Mac: the viewer's own on-demand
 /// libraries as their sources arrange them. An IPTV provider's films and
 /// shows by its categories, and a Jellyfin server's libraries and folders.
@@ -123,6 +300,8 @@ final class LibraryFoldersModel: ObservableObject {
         var added: Date? = nil
         var rating: Double? = nil
         var year: Int? = nil
+        /// An IPTV category, which the viewer can hide.
+        var hideable: HiddenLibraryFolders.Folder? = nil
 
         var opensLevel: Bool {
             if case .push = action { return true }
@@ -145,12 +324,23 @@ final class LibraryFoldersModel: ObservableObject {
     @Published var sort = FolderSortOrder.current {
         didSet {
             FolderSortOrder.current = sort
-            if let loaded = cache[level] { tiles = sorted(loaded) }
+            refilter()
         }
     }
     @Published var viewMode = FolderViewMode.current {
         didSet { FolderViewMode.current = viewMode }
     }
+    /// The country filter, by name; nil for every country. Kept when a level
+    /// has none of it, and only applied where it has.
+    @Published var region = FolderRegion.current {
+        didSet {
+            FolderRegion.current = region
+            refilter()
+        }
+    }
+    /// The countries this level's folders are for; nil when they are all
+    /// for one, or name none.
+    @Published private(set) var regionChoices: [String]?
     @Published private(set) var notice: String?
     @Published private(set) var focusRequest: FocusRequest?
     /// The tile a title's page was opened from, while that page is up and
@@ -162,6 +352,29 @@ final class LibraryFoldersModel: ObservableObject {
     private var openedTile: [Level: String] = [:]
     private var cache: [Level: [Tile]] = [:]
     private var loadedOnce = false
+    private var hiddenIDs = HiddenLibraryFolders.hiddenIDs
+    private var observers: Set<AnyCancellable> = []
+
+    init() {
+        // Hidden here, shown again in Settings, or changed on another device.
+        NotificationCenter.default.publisher(for: HiddenLibraryFolders.changedNotification)
+            .merge(with: NotificationCenter.default.publisher(for: ProfileSettings.settingsChangedNotification))
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                let ids = HiddenLibraryFolders.hiddenIDs
+                guard ids != self.hiddenIDs else { return }
+                self.hiddenIDs = ids
+                self.refilter()
+            }
+            .store(in: &observers)
+    }
+
+    /// The country filter in effect on this level.
+    var activeRegion: String? {
+        guard let region, regionChoices?.contains(region) == true else { return nil }
+        return region
+    }
 
     /// Whether there is anything to browse: the Library only offers Folders then.
     static var isAvailable: Bool {
@@ -185,6 +398,29 @@ final class LibraryFoldersModel: ObservableObject {
 
     /// Folder cards a row, in Tiles (fixed, so the Mac's caret can count them).
     static let folderTileColumns = 4
+
+    /// What the level shows: without hidden folders, in the chosen country
+    /// and order.
+    private func present(_ loaded: [Tile]) -> [Tile] {
+        let visible = loaded.filter { tile in
+            guard let folder = tile.hideable else { return true }
+            return !hiddenIDs.contains(folder.id)
+        }
+        regionChoices = FolderRegion.choices(for: visible.map(\.title))
+        let shown = activeRegion.map { region in visible.filter { FolderRegion.matches($0.title, region: region) } } ?? visible
+        return sorted(shown)
+    }
+
+    private func refilter() {
+        if let loaded = cache[level] { tiles = present(loaded) }
+    }
+
+    /// Takes an IPTV category out of Folders; Settings → IPTV brings it back.
+    func hide(_ tileID: String) {
+        guard let folder = tiles?.first(where: { $0.id == tileID })?.hideable else { return }
+        HiddenLibraryFolders.hide(folder)
+        notice = "“\(folder.name)” is hidden. Show it again in Settings → IPTV."
+    }
 
     private func sorted(_ tiles: [Tile]) -> [Tile] {
         sort.sorted(
@@ -256,15 +492,16 @@ final class LibraryFoldersModel: ObservableObject {
     private func load() async {
         let level = self.level
         if let cached = cache[level] {
-            tiles = sorted(cached)
+            tiles = present(cached)
             requestFocus(in: tiles ?? [], level: level)
             return
         }
         tiles = nil
+        regionChoices = nil
         let loaded = Self.unique(await Self.tiles(for: level))
         cache[level] = loaded
         guard self.level == level else { return }
-        tiles = sorted(loaded)
+        tiles = present(loaded)
         requestFocus(in: tiles ?? [], level: level)
     }
 
@@ -293,7 +530,8 @@ final class LibraryFoldersModel: ObservableObject {
                     subtitle: nil,
                     poster: nil,
                     symbol: "folder",
-                    action: .push(.iptvEntries(sourceID: sourceID, kind: kind, categoryID: category.id, title: category.name))
+                    action: .push(.iptvEntries(sourceID: sourceID, kind: kind, categoryID: category.id, title: category.name)),
+                    hideable: HiddenLibraryFolders.Folder(kind: kind.rawValue, categoryID: category.id, name: category.name)
                 )
             }
 
@@ -441,6 +679,9 @@ struct LibraryFoldersView: View {
     /// A title was just opened from here, so the page that comes up is ours
     /// (not one opened from another tab while the Library sits behind).
     @State private var openedTitle = false
+    /// A folder's hold-Select menu is up. tvOS hands the Menu press that
+    /// closes it to the screen as well, which would step back a level.
+    @State private var folderMenuShown = false
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -477,13 +718,20 @@ struct LibraryFoldersView: View {
         // a title's page over the Library, or the open sidebar, gets Menu.
         .background {
             if !model.isRoot {
-                MenuPressCatcher(isActive: { focusedID != nil }) { model.pop() }
+                MenuPressCatcher(isActive: { focusedID != nil }) {
+                    if folderMenuShown {
+                        folderMenuShown = false
+                    } else {
+                        model.pop()
+                    }
+                }
             }
         }
         #endif
         .task { await model.loadIfNeeded() }
         .onChange(of: focusedID) { _, id in
             guard let id else { return }
+            if id != lastFocusedID { folderMenuShown = false }
             lastFocusedID = id
             if !isOverlayPresented, id == model.restoringID { model.restoringID = nil }
         }
@@ -528,7 +776,10 @@ struct LibraryFoldersView: View {
                     spacing: 28
                 ) {
                     ForEach(tiles) { tile in
-                        LibraryFolderTile(tile: tile, focus: $focusedID, macIsFocused: macFocusedID == tile.id) {
+                        LibraryFolderTile(
+                            tile: tile, focus: $focusedID, macIsFocused: macFocusedID == tile.id,
+                            onHide: hideAction(tile), onMenuShown: { folderMenuShown = true }
+                        ) {
                             activate(tile)
                         }
                         .disabled(isLocked(tile.id))
@@ -547,7 +798,10 @@ struct LibraryFoldersView: View {
                 }
             } else {
                 ForEach(tiles) { tile in
-                    LibraryFolderRow(tile: tile, focus: $focusedID, macIsFocused: macFocusedID == tile.id) {
+                    LibraryFolderRow(
+                        tile: tile, focus: $focusedID, macIsFocused: macFocusedID == tile.id,
+                        onHide: hideAction(tile), onMenuShown: { folderMenuShown = true }
+                    ) {
                         activate(tile)
                     }
                     .disabled(isLocked(tile.id))
@@ -557,6 +811,14 @@ struct LibraryFoldersView: View {
         } else {
             BrandLoadingView(wordmarkWidth: 360)
                 .frame(maxWidth: .infinity, minHeight: 400)
+        }
+    }
+
+    private func hideAction(_ tile: LibraryFoldersModel.Tile) -> (() -> Void)? {
+        guard tile.hideable != nil else { return nil }
+        return {
+            folderMenuShown = false
+            model.hide(tile.id)
         }
     }
 
@@ -638,6 +900,8 @@ private struct LibraryFolderRow: View {
     let tile: LibraryFoldersModel.Tile
     let focus: FocusState<String?>.Binding
     let macIsFocused: Bool
+    var onHide: (() -> Void)? = nil
+    var onMenuShown: () -> Void = {}
     let action: () -> Void
 
     @FocusState private var isFocused: Bool
@@ -712,6 +976,7 @@ private struct LibraryFolderRow: View {
         .modifier(ExternalFocusBinding(binding: focus, id: tile.id))
         .focusEffectDisabledIfAvailable()
         .animation(.easeOut(duration: 0.15), value: showsFocus)
+        .modifier(FolderHideMenu(title: tile.title, macIsFocused: macIsFocused, onHide: onHide, onMenuShown: onMenuShown))
     }
 }
 
@@ -796,6 +1061,8 @@ private struct LibraryFolderTile: View {
     let tile: LibraryFoldersModel.Tile
     let focus: FocusState<String?>.Binding
     let macIsFocused: Bool
+    var onHide: (() -> Void)? = nil
+    var onMenuShown: () -> Void = {}
     let action: () -> Void
 
     @FocusState private var isFocused: Bool
@@ -855,5 +1122,103 @@ private struct LibraryFolderTile: View {
         .focusEffectDisabledIfAvailable()
         .animation(.spring(response: 0.28, dampingFraction: 0.75), value: showsFocus)
         .zIndex(showsFocus ? 1 : 0)
+        .modifier(FolderHideMenu(title: tile.title, macIsFocused: macIsFocused, onHide: onHide, onMenuShown: onMenuShown))
+    }
+}
+
+/// "Hide Folder" on an IPTV category: hold Select on the Apple TV,
+/// right-click or ⌥↩ on the Mac. Nothing on folders that can't be hidden.
+private struct FolderHideMenu: ViewModifier {
+    let title: String
+    let macIsFocused: Bool
+    let onHide: (() -> Void)?
+    let onMenuShown: () -> Void
+
+    static let label = "Hide Folder"
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let onHide {
+            content
+                #if os(tvOS)
+                .simultaneousGesture(LongPressGesture(minimumDuration: 0.5).onEnded { _ in onMenuShown() })
+                #endif
+                .contextMenu {
+                    Button(role: .destructive) {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: onHide)
+                    } label: {
+                        Label(Self.label, systemImage: "eye.slash")
+                    }
+                }
+                .macContextMenu(title: title, isFocused: macIsFocused) {
+                    [ContextAction(label: Self.label, isDestructive: true, perform: onHide)]
+                }
+        } else {
+            content
+        }
+    }
+}
+
+/// Tiles or List, as two icons side by side; the chosen one is filled.
+struct FolderViewSwitch: View {
+    @Binding var mode: FolderViewMode
+    /// Which icon the Mac's caret is on (`macItemID(for:)`), if either.
+    var macFocusedItem: String? = nil
+
+    static func macItemID(for mode: FolderViewMode) -> String { "folderView.\(mode.rawValue)" }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(FolderViewMode.allCases) { option in
+                FolderViewSwitchButton(
+                    option: option,
+                    isSelected: mode == option,
+                    macIsFocused: macFocusedItem == Self.macItemID(for: option)
+                ) {
+                    mode = option
+                }
+            }
+        }
+        .padding(4)
+        .modifier(GlassChipBackground(filled: false))
+    }
+}
+
+private struct FolderViewSwitchButton: View {
+    let option: FolderViewMode
+    let isSelected: Bool
+    let macIsFocused: Bool
+    let action: () -> Void
+
+    @FocusState private var isFocused: Bool
+
+    private var showsFocus: Bool {
+        #if os(macOS)
+        return macIsFocused
+        #else
+        return isFocused
+        #endif
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: option == .tiles ? "square.grid.2x2.fill" : "list.bullet")
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundColor(isSelected ? .black : .white.opacity(showsFocus ? 1 : 0.75))
+                .frame(width: 64, height: 52)
+                .background(Capsule().fill(Color.white.opacity(isSelected ? 1 : (showsFocus ? 0.18 : 0))))
+                .overlay(
+                    Capsule()
+                        .strokeBorder(showsFocus ? AppFocusOutline.color : .clear, lineWidth: showsFocus ? AppFocusOutline.width : 0)
+                )
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
+        .focused($isFocused)
+        .focusEffectDisabledIfAvailable()
+        .scaleEffect(showsFocus ? 1.06 : 1)
+        .animation(.easeOut(duration: 0.14), value: showsFocus)
+        .animation(.easeOut(duration: 0.14), value: isSelected)
+        .accessibilityLabel(option.title)
     }
 }

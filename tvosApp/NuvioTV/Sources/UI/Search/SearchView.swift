@@ -252,6 +252,7 @@ struct SearchView: View {
         }
         #if os(macOS)
         .onDisappear { macFocus.release() }
+        .environment(\.macScreenOwner, "search")
         .onChange(of: macTabState.current, initial: true) { _, tab in
             macFocus.update(macBands)
             macFocus.syncClaim(isCurrent: tab == .search)

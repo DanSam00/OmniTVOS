@@ -671,7 +671,8 @@ private struct DiscoverCard: View {
         .focusEffectDisabledIfAvailable()
         .titleActionsContextMenu(
             meta: meta,
-            onOpenDetails: action
+            onOpenDetails: action,
+            macIsFocused: macIsFocused
         )
         .onChange(of: focused) { _, isFocused in onFocusChange?(isFocused) }
         .animation(smoothFocus ? .spring(response: 0.28, dampingFraction: 0.75) : nil, value: showsFocusedAppearance)

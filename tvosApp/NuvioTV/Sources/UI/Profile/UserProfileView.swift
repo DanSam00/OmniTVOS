@@ -160,6 +160,10 @@ public struct UserProfileView: View {
                                 }
                             }
                         }
+                        .macContextMenu(title: profile.name, isFocused: isItemFocused(profile.id)) {
+                            guard onDeleteProfile != nil, profile.id != viewModel.primaryProfile?.id else { return [] }
+                            return [ContextAction(label: "Delete Profile", isDestructive: true) { profilePendingDelete = profile }]
+                        }
                     }
 
                     AddProfileButton(
@@ -254,6 +258,7 @@ public struct UserProfileView: View {
             macFocus.syncClaim(isCurrent: macOwnsKeyboard)
         }
         .onDisappear { macFocus.release() }
+        .environment(\.macScreenOwner, "profiles")
         .onChange(of: viewModel.profiles.map(\.id)) { _, _ in macFocus.update(macBands) }
         .onChange(of: accountSyncError) { _, _ in macFocus.update(macBands) }
         .onChange(of: macOwnsKeyboard) { _, owns in macFocus.syncClaim(isCurrent: owns) }

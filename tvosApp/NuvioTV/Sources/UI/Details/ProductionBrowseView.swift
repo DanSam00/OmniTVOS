@@ -216,6 +216,7 @@ private struct CompanyBrowseContent: View {
             macFocus.syncClaim(isCurrent: true)
         }
         .onDisappear { macFocus.release() }
+        .environment(\.macScreenOwner, "companyBrowse")
         .onChange(of: macBandSignature, initial: true) { _, _ in
             macFocus.update(macBands)
         }
@@ -613,6 +614,7 @@ struct PersonBrowseView: View {
             macFocus.syncClaim(isCurrent: true)
         }
         .onDisappear { macFocus.release() }
+        .environment(\.macScreenOwner, "personBrowse")
         .onChange(of: titles.map(\.id), initial: true) { _, _ in
             macFocus.update(macBands)
         }
@@ -806,7 +808,8 @@ private struct ProductionBrowseCard: View {
         .focusEffectDisabledIfAvailable()
         .titleActionsContextMenu(
             meta: title.asMeta,
-            onOpenDetails: onSelect
+            onOpenDetails: onSelect,
+            macIsFocused: isFocused
         )
         .scaleEffect(isFocused ? 1.06 : 1)
         .animation(smoothFocus ? .spring(response: 0.28, dampingFraction: 0.75) : nil, value: isFocused)

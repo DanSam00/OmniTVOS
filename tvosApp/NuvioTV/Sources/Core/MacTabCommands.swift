@@ -168,8 +168,9 @@ final class MacKeyRouter: ObservableObject {
     /// sample put most of the main thread in that graph churn.
     let presses = PassthroughSubject<Press, Never>()
 
-    /// Claims in order, each with the moment it was made.
-    private var stack: [(token: UUID, order: Int)] = []
+    /// Claims in order, each with the moment it was made and the screen that
+    /// made it (see `frontOwner`).
+    private var stack: [(token: UUID, order: Int, owner: String)] = []
     /// Each barrier masks every claim made before it.
     private var barriers: [(token: UUID, order: Int)] = []
     /// Orders claims and barriers against each other.
@@ -180,12 +181,20 @@ final class MacKeyRouter: ObservableObject {
     private init() {}
 
     /// Take the front position. Returns the token to release later.
-    func claim() -> UUID {
+    /// `owner` names the screen, so right-click menus registered by its items
+    /// can be told apart from a screen's behind it (`MacContextMenu`).
+    func claim(owner: String = "") -> UUID {
         installMonitorIfNeeded()
         let token = UUID()
         nextOrder += 1
-        stack.append((token, nextOrder))
+        stack.append((token, nextOrder, owner))
         return token
+    }
+
+    /// The screen holding the keys, by the name it claimed with.
+    var frontOwner: String? {
+        guard isRoutable else { return nil }
+        return stack.last?.owner
     }
 
     func release(_ token: UUID?) {
@@ -265,6 +274,12 @@ final class MacKeyRouter: ObservableObject {
             }
         }
         guard !stack.isEmpty, isRoutable else { return event }
+        // ⌥↩ opens the right-click menu of whatever the caret is on. Inside
+        // an open dropdown it is just Return.
+        if key == .activate, event.modifierFlags.contains(.option), !MacOptionPanel.shared.isPresented {
+            if !MacContextMenu.shared.openFocused() { NSSound.beep() }
+            return nil
+        }
         sequence &+= 1
         let press = Press(key: key, sequence: sequence)
         latest = press
@@ -421,7 +436,7 @@ final class MacScreenFocus: ObservableObject {
     func syncClaim(isCurrent: Bool) {
         if isCurrent {
             guard token == nil else { return }
-            token = MacKeyRouter.shared.claim()
+            token = MacKeyRouter.shared.claim(owner: name)
             MacDiagnostics.log("screen.claim \(name) bands=\(bands.map { "\($0.id):\($0.items.count)" })")
         } else {
             guard token != nil else { return }
@@ -964,6 +979,161 @@ final class MacOptionPanel: ObservableObject {
             dismiss()
         }
         return true
+    }
+}
+
+/// Right-click menus on the Mac, also opened from the keyboard with ⌥↩.
+///
+/// SwiftUI's `.contextMenu` cannot be opened programmatically, and the caret
+/// model never gives anything SwiftUI focus, so a keyboard user had no way to
+/// reach any of them. A right-click inside the scaled canvas was unreliable
+/// too. So anything with a menu registers its actions here (see
+/// `macContextMenu`): the caret's item for ⌥↩, the item under the pointer
+/// for a right-click. Both open the same in-canvas panel every dropdown uses.
+@MainActor
+final class MacContextMenu {
+    static let shared = MacContextMenu()
+
+    /// One view's menu. A reference, so the view can refresh its title and
+    /// actions on every render without re-registering.
+    final class Box {
+        var title = ""
+        var actions: () -> [ContextAction] = { [] }
+        /// The screen the item belongs to: its `macScreenOwner`, else whoever
+        /// held the keys when the caret arrived.
+        var owner = ""
+        var order = 0
+    }
+
+    private struct WeakBox {
+        weak var box: Box?
+    }
+
+    /// Every item a caret is on. More than one screen keeps a caret: Home's
+    /// stays on its card under a show page, and every tab keeps its own.
+    private var focused: [WeakBox] = []
+    private weak var hovered: Box?
+    private var monitor: Any?
+    private var nextOrder = 0
+
+    private init() {}
+
+    func setFocused(_ box: Box, _ isFocused: Bool, owner: String?) {
+        installMonitorIfNeeded()
+        focused.removeAll { $0.box == nil || $0.box === box }
+        guard isFocused else { return }
+        nextOrder += 1
+        box.order = nextOrder
+        box.owner = owner ?? MacKeyRouter.shared.frontOwner ?? ""
+        focused.append(WeakBox(box: box))
+    }
+
+    func setHovered(_ box: Box, _ isHovered: Bool) {
+        installMonitorIfNeeded()
+        if isHovered {
+            hovered = box
+        } else if hovered === box {
+            hovered = nil
+        }
+    }
+
+    func remove(_ box: Box) {
+        focused.removeAll { $0.box == nil || $0.box === box }
+        if hovered === box { hovered = nil }
+    }
+
+    /// ⌥↩: the menu of whatever the caret is on, on the screen in front.
+    /// - Returns: true when there was one to open.
+    @discardableResult
+    func openFocused() -> Bool {
+        guard let front = MacKeyRouter.shared.frontOwner, !front.isEmpty,
+              let box = focused.compactMap(\.box).filter({ $0.owner == front }).max(by: { $0.order < $1.order })
+        else {
+            MacDiagnostics.log("contextMenu.none front=\(MacKeyRouter.shared.frontOwner ?? "-") candidates=\(focused.compactMap { $0.box?.owner })")
+            return false
+        }
+        return present(box)
+    }
+
+    private func present(_ box: Box) -> Bool {
+        let actions = box.actions()
+        guard !actions.isEmpty else { return false }
+        MacDiagnostics.log("contextMenu.open \(box.title) actions=\(actions.count)")
+        MacOptionPanel.shared.present(
+            title: box.title,
+            options: actions.map { action in
+                FilterOption(action.label, isSelected: false, apply: action.perform)
+            }
+        )
+        return true
+    }
+
+    private func installMonitorIfNeeded() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { [weak self] event in
+            guard let self else { return event }
+            return MainActor.assumeIsolated {
+                guard !MacOptionPanel.shared.isPresented,
+                      !event.isForAlertSheet,
+                      let hovered = self.hovered,
+                      self.present(hovered)
+                else { return event }
+                return nil
+            }
+        }
+    }
+}
+
+private struct MacContextMenuModifier: ViewModifier {
+    let title: String
+    let isFocused: Bool
+    let tracksPointer: Bool
+    let actions: () -> [ContextAction]
+
+    @State private var box = MacContextMenu.Box()
+    @Environment(\.macScreenOwner) private var owner
+
+    func body(content: Content) -> some View {
+        // Kept current on every render: the actions read state that changes
+        // while the item stays focused (the carousel's slide, a watched mark).
+        box.title = title
+        box.actions = actions
+        return content
+            .onChange(of: isFocused, initial: true) { _, focused in
+                MacContextMenu.shared.setFocused(box, focused, owner: owner)
+            }
+            .onHover { inside in
+                guard tracksPointer else { return }
+                MacContextMenu.shared.setHovered(box, inside)
+            }
+            .onDisappear { MacContextMenu.shared.remove(box) }
+    }
+}
+
+extension View {
+    /// A menu for this item that right-click and ⌥↩ both open (macOS).
+    /// `isFocused` is the caret; `tracksPointer` lets a right-click on the
+    /// view itself open it — off for menus registered by a whole screen on
+    /// behalf of whichever row its caret is on.
+    func macContextMenuRegistration(
+        title: String,
+        isFocused: Bool,
+        tracksPointer: Bool = true,
+        actions: @escaping () -> [ContextAction]
+    ) -> some View {
+        modifier(MacContextMenuModifier(title: title, isFocused: isFocused, tracksPointer: tracksPointer, actions: actions))
+    }
+}
+
+private struct MacScreenOwnerKey: EnvironmentKey {
+    static let defaultValue: String? = nil
+}
+
+extension EnvironmentValues {
+    /// The screen a view belongs to, by the name it claims the key router with.
+    var macScreenOwner: String? {
+        get { self[MacScreenOwnerKey.self] }
+        set { self[MacScreenOwnerKey.self] = newValue }
     }
 }
 

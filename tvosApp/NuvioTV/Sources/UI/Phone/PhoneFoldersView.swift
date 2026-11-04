@@ -56,11 +56,35 @@ private struct PhoneIPTVCategoriesView: View {
     @State private var filter = ""
     @AppStorage(FolderSortOrder.storageKey) private var sortRaw = FolderSortOrder.standard.rawValue
     @AppStorage(FolderViewMode.storageKey) private var viewRaw = FolderViewMode.tiles.rawValue
+    @AppStorage(FolderRegion.storageKey) private var regionRaw = ""
+    @ObservedObject private var hiddenStore = HiddenLibraryFoldersStore.shared
+
+    private var visible: [IPTVVODBrowser.Category] {
+        let hidden = hiddenStore.ids
+        return (categories ?? []).filter { !hidden.contains(folder(for: $0).id) }
+    }
+
+    private var regions: [String]? { FolderRegion.choices(for: visible.map(\.name)) }
 
     private var shown: [IPTVVODBrowser.Category] {
-        let all = (FolderSortOrder(rawValue: sortRaw) ?? .standard).sorted(categories ?? [], name: \.name)
+        var all = (FolderSortOrder(rawValue: sortRaw) ?? .standard).sorted(visible, name: \.name)
+        if let region = PhoneFolderToolbar.activeRegion(regionRaw, in: regions) {
+            all = all.filter { FolderRegion.matches($0.name, region: region) }
+        }
         let needle = filter.trimmingCharacters(in: .whitespaces)
         return needle.isEmpty ? all : all.filter { $0.name.localizedCaseInsensitiveContains(needle) }
+    }
+
+    private func folder(for category: IPTVVODBrowser.Category) -> HiddenLibraryFolders.Folder {
+        HiddenLibraryFolders.Folder(kind: kind.rawValue, categoryID: category.id, name: category.name)
+    }
+
+    private func hideButton(_ category: IPTVVODBrowser.Category) -> some View {
+        Button(role: .destructive) {
+            HiddenLibraryFolders.hide(folder(for: category))
+        } label: {
+            Label("Hide Folder", systemImage: "eye.slash")
+        }
     }
 
     var body: some View {
@@ -72,6 +96,8 @@ private struct PhoneIPTVCategoriesView: View {
                     } label: {
                         Text(category.name)
                     }
+                    .contextMenu { hideButton(category) }
+                    .swipeActions { hideButton(category).labelStyle(.iconOnly) }
                 }
                 .listStyle(.plain)
             } else {
@@ -84,6 +110,7 @@ private struct PhoneIPTVCategoriesView: View {
                                 PhoneFolderTile(title: category.name, symbol: kind == .movies ? "film" : "tv")
                             }
                             .buttonStyle(.plain)
+                            .contextMenu { hideButton(category) }
                         }
                     }
                     .padding(.horizontal, PhoneLayout.gutter)
@@ -91,7 +118,7 @@ private struct PhoneIPTVCategoriesView: View {
                 }
             }
         }
-        .toolbar { ToolbarItem(placement: .topBarTrailing) { PhoneFolderOptionsMenu(sortRaw: $sortRaw, viewRaw: $viewRaw) } }
+        .toolbar { PhoneFolderToolbar(sortRaw: $sortRaw, viewRaw: $viewRaw, regionRaw: $regionRaw, regions: regions) }
         .overlay {
             if categories == nil {
                 ProgressView()
@@ -117,11 +144,17 @@ private struct PhoneIPTVEntriesView: View {
     @State private var filter = ""
     @AppStorage(FolderSortOrder.storageKey) private var sortRaw = FolderSortOrder.standard.rawValue
     @AppStorage(FolderViewMode.storageKey) private var viewRaw = FolderViewMode.tiles.rawValue
+    @AppStorage(FolderRegion.storageKey) private var regionRaw = ""
+
+    private var regions: [String]? { FolderRegion.choices(for: (entries ?? []).map(\.name)) }
 
     private var shown: [IPTVVODBrowser.Entry] {
-        let all = (FolderSortOrder(rawValue: sortRaw) ?? .standard).sorted(
+        var all = (FolderSortOrder(rawValue: sortRaw) ?? .standard).sorted(
             entries ?? [], name: \.name, added: \.added, rating: \.rating, year: \.year
         )
+        if let region = PhoneFolderToolbar.activeRegion(regionRaw, in: regions) {
+            all = all.filter { FolderRegion.matches($0.name, region: region) }
+        }
         let needle = filter.trimmingCharacters(in: .whitespaces)
         return needle.isEmpty ? all : all.filter { $0.name.localizedCaseInsensitiveContains(needle) }
     }
@@ -140,7 +173,7 @@ private struct PhoneIPTVEntriesView: View {
                 }
             }
         }
-        .toolbar { ToolbarItem(placement: .topBarTrailing) { PhoneFolderOptionsMenu(sortRaw: $sortRaw, viewRaw: $viewRaw) } }
+        .toolbar { PhoneFolderToolbar(sortRaw: $sortRaw, viewRaw: $viewRaw, regionRaw: $regionRaw, regions: regions) }
         .overlay {
             if entries == nil {
                 ProgressView()
@@ -235,7 +268,7 @@ private struct PhoneJellyfinFolderView: View {
                 PhoneFoldersEmpty(text: "This folder is empty.")
             }
         }
-        .toolbar { ToolbarItem(placement: .topBarTrailing) { PhoneFolderOptionsMenu(sortRaw: $sortRaw, viewRaw: $viewRaw) } }
+        .toolbar { PhoneFolderToolbar(sortRaw: $sortRaw, viewRaw: $viewRaw, regionRaw: .constant(""), regions: nil) }
         .searchable(text: $filter, placement: .navigationBarDrawer(displayMode: .always), prompt: "Titles")
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
@@ -296,26 +329,56 @@ private struct PhoneFolderItems<Content: View>: View {
     }
 }
 
-/// View (Tiles or List) and Sort, for a folder.
-private struct PhoneFolderOptionsMenu: View {
+/// A folder's toolbar: Tiles or List as two icons, then a menu with the
+/// order and, where the folders name more than one, the country.
+private struct PhoneFolderToolbar: ToolbarContent {
     @Binding var sortRaw: String
     @Binding var viewRaw: String
+    @Binding var regionRaw: String
+    let regions: [String]?
 
-    var body: some View {
-        Menu {
+    /// The chosen country, if this level has it.
+    static func activeRegion(_ raw: String, in regions: [String]?) -> String? {
+        guard !raw.isEmpty, regions?.contains(raw) == true else { return nil }
+        return raw
+    }
+
+    var body: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
             Picker("View", selection: $viewRaw) {
                 ForEach(FolderViewMode.allCases) { mode in
-                    Label(mode.title, systemImage: mode == .tiles ? "square.grid.2x2" : "list.bullet")
+                    Image(systemName: mode == .tiles ? "square.grid.2x2" : "list.bullet")
+                        .accessibilityLabel(mode.title)
                         .tag(mode.rawValue)
                 }
             }
-            Picker("Sort", selection: $sortRaw) {
-                ForEach(FolderSortOrder.allCases) { order in
-                    Text(order.title).tag(order.rawValue)
+            .pickerStyle(.segmented)
+            .fixedSize()
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Menu {
+                Picker("Sort", selection: $sortRaw) {
+                    ForEach(FolderSortOrder.allCases) { order in
+                        Text(order.title).tag(order.rawValue)
+                    }
                 }
+                if let regions {
+                    Picker("Country", selection: Binding(
+                        get: { Self.activeRegion(regionRaw, in: regions) ?? "" },
+                        set: { regionRaw = $0 }
+                    )) {
+                        Text("All Countries").tag("")
+                        ForEach(regions, id: \.self) { region in
+                            Text(region).tag(region)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+            } label: {
+                Image(systemName: Self.activeRegion(regionRaw, in: regions) == nil
+                      ? "line.3.horizontal.decrease.circle"
+                      : "line.3.horizontal.decrease.circle.fill")
             }
-        } label: {
-            Image(systemName: "arrow.up.arrow.down.circle")
         }
     }
 }

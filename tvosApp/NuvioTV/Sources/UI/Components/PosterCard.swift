@@ -263,7 +263,8 @@ struct PosterCard: View {
             onStartFromBeginning: onStartFromBeginning,
             onRemoveFromContinueWatching: onRemoveFromContinueWatching,
             onMarkWatched: onMarkWatched,
-            onNotInterested: onNotInterested
+            onNotInterested: onNotInterested,
+            macIsFocused: macCaretIsOnCard
         )
             .onChange(of: isFocused) { _, focused in
                 if focused {
@@ -760,6 +761,15 @@ struct PosterCard: View {
         return macFocusedCardKey == (externalFocusValue ?? meta.id)
     }
     #endif
+
+    /// The Mac's caret is on this card (its ⌥↩ menu); false elsewhere.
+    private var macCaretIsOnCard: Bool {
+        #if os(macOS)
+        return isMacExternallyFocused
+        #else
+        return false
+        #endif
+    }
 
     private var showsPosterTitle: Bool {
         effectivePosterLabels
@@ -1326,7 +1336,8 @@ struct PosterGridCard: View {
         .modifier(OptionalMoveCommandHandler(handler: onMove))
         .titleActionsContextMenu(
             meta: meta,
-            onOpenDetails: action
+            onOpenDetails: action,
+            macIsFocused: macIsFocused
         )
         .onChange(of: focused) { _, isFocused in
             if isFocused { onFocus?(meta) }
@@ -2558,6 +2569,50 @@ struct TitleActionsMenuContent: View {
         }
     }
 
+    /// The same menu as data, for the Mac's right-click / ⌥↩ panel.
+    var actions: [ContextAction] {
+        var actions: [ContextAction] = []
+        if continueProgress != nil || continueIsUpNext {
+            if let onOpenDetails {
+                actions.append(ContextAction(label: L10n.string("action_go_to_details", fallback: "Go to details"), perform: onOpenDetails))
+            }
+            if let onPlayManually {
+                actions.append(ContextAction(label: L10n.string("action_play_manually", fallback: "Play manually"), perform: onPlayManually))
+            }
+            if let onStartFromBeginning, !continueIsUpNext {
+                actions.append(ContextAction(label: L10n.string("action_start_from_beginning", fallback: "Start from beginning"), perform: onStartFromBeginning))
+            }
+            if let onMarkWatched {
+                actions.append(ContextAction(label: L10n.string("action_mark_watched", fallback: "Mark as Watched"), perform: onMarkWatched))
+            }
+            if let onNotInterested {
+                actions.append(ContextAction(label: L10n.string("action_not_interested", fallback: "Not Interested"), perform: onNotInterested))
+            }
+            if let onRemoveFromContinueWatching {
+                actions.append(ContextAction(label: L10n.string("action_remove", fallback: "Remove"), isDestructive: true, perform: onRemoveFromContinueWatching))
+            }
+        } else {
+            let inLibrary = LibraryStore.contains(metaId: meta.id, type: meta.type)
+            let isItemWatched = WatchedStore.contains(meta: meta)
+            if let onOpenDetails {
+                actions.append(ContextAction(label: L10n.string("action_go_to_details", fallback: "Go to details"), perform: onOpenDetails))
+            }
+            actions.append(ContextAction(
+                label: inLibrary
+                    ? L10n.string("action_remove_from_library", fallback: "Remove from library")
+                    : L10n.string("action_add_to_library", fallback: "Add to library"),
+                perform: { toggleLibrary(currentlyInLibrary: inLibrary) }
+            ))
+            actions.append(ContextAction(
+                label: isItemWatched
+                    ? L10n.string("details_mark_as_unwatched", fallback: "Mark as unwatched")
+                    : L10n.string("details_mark_as_watched", fallback: "Mark as watched"),
+                perform: { toggleWatched() }
+            ))
+        }
+        return actions
+    }
+
     private func toggleLibrary(currentlyInLibrary: Bool) {
         guard TraktSettingsStore.librarySourceMode != .local else {
             _ = LibraryStore.toggle(meta: meta)
@@ -2604,22 +2659,53 @@ struct TitleActionsContextMenu: ViewModifier {
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onMarkWatched: (() -> Void)? = nil
     var onNotInterested: (() -> Void)? = nil
+    /// The Mac's caret is on this title: ⌥↩ opens the menu.
+    var macIsFocused = false
+
+    private var menu: TitleActionsMenuContent {
+        TitleActionsMenuContent(
+            meta: meta,
+            onOpenDetails: onOpenDetails,
+            continueProgress: continueProgress,
+            continueIsUpNext: continueIsUpNext,
+            onPlayManually: onPlayManually,
+            onStartFromBeginning: onStartFromBeginning,
+            onRemoveFromContinueWatching: onRemoveFromContinueWatching,
+            onMarkWatched: onMarkWatched,
+            onNotInterested: onNotInterested
+        )
+    }
 
     func body(content: Content) -> some View {
         content
-            .contextMenu {
-                TitleActionsMenuContent(
-                    meta: meta,
-                    onOpenDetails: onOpenDetails,
-                    continueProgress: continueProgress,
-                    continueIsUpNext: continueIsUpNext,
-                    onPlayManually: onPlayManually,
-                    onStartFromBeginning: onStartFromBeginning,
-                    onRemoveFromContinueWatching: onRemoveFromContinueWatching,
-                    onMarkWatched: onMarkWatched,
-                    onNotInterested: onNotInterested
-                )
-            }
+            .contextMenu { menu }
+            .macContextMenu(title: meta.name, isFocused: macIsFocused) { menu.actions }
+    }
+}
+
+/// One item of a right-click or long-press menu, as data, so the Mac can
+/// draw the menu in its own panel and open it from the keyboard (⌥↩).
+struct ContextAction {
+    let label: String
+    var isDestructive = false
+    let perform: () -> Void
+}
+
+extension View {
+    /// A menu that right-click and ⌥↩ open on the Mac (`MacContextMenu`).
+    /// Nothing on other platforms, which keep their `.contextMenu`.
+    @ViewBuilder
+    func macContextMenu(
+        title: String,
+        isFocused: Bool,
+        tracksPointer: Bool = true,
+        actions: @escaping () -> [ContextAction]
+    ) -> some View {
+        #if os(macOS)
+        macContextMenuRegistration(title: title, isFocused: isFocused, tracksPointer: tracksPointer, actions: actions)
+        #else
+        self
+        #endif
     }
 }
 
@@ -2633,7 +2719,8 @@ extension View {
         onStartFromBeginning: (() -> Void)? = nil,
         onRemoveFromContinueWatching: (() -> Void)? = nil,
         onMarkWatched: (() -> Void)? = nil,
-        onNotInterested: (() -> Void)? = nil
+        onNotInterested: (() -> Void)? = nil,
+        macIsFocused: Bool = false
     ) -> some View {
         modifier(
             TitleActionsContextMenu(
@@ -2645,7 +2732,8 @@ extension View {
                 onStartFromBeginning: onStartFromBeginning,
                 onRemoveFromContinueWatching: onRemoveFromContinueWatching,
                 onMarkWatched: onMarkWatched,
-                onNotInterested: onNotInterested
+                onNotInterested: onNotInterested,
+                macIsFocused: macIsFocused
             )
         )
     }
