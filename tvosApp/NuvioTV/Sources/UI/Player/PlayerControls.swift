@@ -1222,6 +1222,11 @@ struct PlayerSettingsPanel: View {
                 #endif
                 }
             }
+            #if os(macOS)
+            // The Mac caret isn't real focus, so no scroll view follows it on
+            // its own: scroll whichever column holds it just far enough to show it.
+            .modifier(MacCaretScroller(caret: macFocus))
+            #endif
             .padding(.horizontal, 90)
             .padding(.top, 64)
             .padding(.bottom, 44)
@@ -1507,6 +1512,7 @@ struct PlayerSettingsPanel: View {
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
         .focused($focus, equals: focusKey)
+        .macCaretID(focusKey)
         .focusEffectDisabledIfAvailable()
     }
 
@@ -1599,6 +1605,7 @@ struct PlayerSettingsPanel: View {
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
         .focused($focus, equals: .option(option.id))
+        .macCaretID(Focus.option(option.id))
         .focusEffectDisabledIfAvailable()
     }
 
@@ -1741,6 +1748,7 @@ struct PlayerSettingsPanel: View {
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
         .focused($focus, equals: .style(focusKey))
+        .macCaretID(Focus.style(focusKey))
         .focusEffectDisabledIfAvailable()
     }
 
@@ -1760,6 +1768,7 @@ struct PlayerSettingsPanel: View {
             .buttonStyle(PosterCardButtonStyle())
             .nuvioFocusable()
             .focused($focus, equals: .style(focusKey))
+            .macCaretID(Focus.style(focusKey))
             .focusEffectDisabledIfAvailable()
         }
     }
@@ -1797,6 +1806,7 @@ struct PlayerSettingsPanel: View {
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
         .focused($focus, equals: .style(.color(hex)))
+        .macCaretID(Focus.style(.color(hex)))
         .focusEffectDisabledIfAvailable()
         .scaleEffect(isFocused ? 1.14 : 1)
         .zIndex(isFocused ? 1 : 0)
@@ -1836,6 +1846,7 @@ struct PlayerSettingsPanel: View {
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
         .focused($focus, equals: .style(.backgroundColor(hex)))
+        .macCaretID(Focus.style(.backgroundColor(hex)))
         .focusEffectDisabledIfAvailable()
         .scaleEffect(isFocused ? 1.14 : 1)
         .zIndex(isFocused ? 1 : 0)
@@ -1943,6 +1954,7 @@ struct PlayerSettingsPanel: View {
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
         .focused($focus, equals: .audio(track.id))
+        .macCaretID(Focus.audio(track.id))
         .focusEffectDisabledIfAvailable()
     }
 
@@ -2074,6 +2086,7 @@ struct PlayerSettingsPanel: View {
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
         .focused($focus, equals: .audioControl(focusKey))
+        .macCaretID(Focus.audioControl(focusKey))
         .focusEffectDisabledIfAvailable()
         .disabled(disabled)
     }
@@ -2193,6 +2206,7 @@ struct PlayerSettingsPanel: View {
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
         .focused($focus, equals: .aspect(mode.rawValue))
+        .macCaretID(Focus.aspect(mode.rawValue))
         .focusEffectDisabledIfAvailable()
     }
 
@@ -2226,6 +2240,7 @@ struct PlayerSettingsPanel: View {
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
         .focused($focus, equals: focusKey)
+        .macCaretID(focusKey)
         .focusEffectDisabledIfAvailable()
     }
 
@@ -2279,4 +2294,36 @@ struct SystemAudioRoutePicker: UIViewRepresentable {
         uiView.activeTintColor = activeTintColor
     }
     #endif
+}
+
+
+#if os(macOS)
+/// Scrolls the scroll view holding the caret just far enough to show it.
+private struct MacCaretScroller<ID: Hashable>: ViewModifier {
+    let caret: ID?
+
+    func body(content: Content) -> some View {
+        ScrollViewReader { proxy in
+            content.onChange(of: caret) { _, newValue in
+                guard let newValue else { return }
+                withAnimation(.easeOut(duration: 0.18)) {
+                    proxy.scrollTo(newValue, anchor: nil)
+                }
+            }
+        }
+    }
+}
+#endif
+
+private extension View {
+    /// Tags a panel control so the Mac caret can scroll to it. Nothing on tvOS,
+    /// where the focus engine scrolls by itself.
+    @ViewBuilder
+    func macCaretID<ID: Hashable>(_ id: ID) -> some View {
+        #if os(macOS)
+        self.id(id)
+        #else
+        self
+        #endif
+    }
 }
