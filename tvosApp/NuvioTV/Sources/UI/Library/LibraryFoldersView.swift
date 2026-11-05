@@ -302,6 +302,8 @@ final class LibraryFoldersModel: ObservableObject {
         var year: Int? = nil
         /// An IPTV category, which the viewer can hide.
         var hideable: HiddenLibraryFolders.Folder? = nil
+        /// Wide artwork the source itself has for a title, if any.
+        var backdrop: String? = nil
 
         var opensLevel: Bool {
             if case .push = action { return true }
@@ -554,7 +556,8 @@ final class LibraryFoldersModel: ObservableObject {
                     action: .open(contentID: entry.contentID, type: entry.type),
                     added: entry.added,
                     rating: entry.rating,
-                    year: entry.year
+                    year: entry.year,
+                    backdrop: entry.backdrop
                 )
             }
 
@@ -686,6 +689,8 @@ struct LibraryFoldersView: View {
     /// A title was just opened from here, so the page that comes up is ours
     /// (not one opened from another tab while the Library sits behind).
     @State private var openedTitle = false
+    /// The titles grid's width, for which way a focused card widens.
+    @State private var gridWidth: CGFloat = 0
     /// A folder's hold-Select menu is up. tvOS hands the Menu press that
     /// closes it to the screen as well, which would step back a level.
     @State private var folderMenuShown = false
@@ -795,14 +800,22 @@ struct LibraryFoldersView: View {
                 }
             } else if model.usesGrid {
                 LazyVGrid(columns: titleColumns, alignment: .leading, spacing: LibraryGridMetrics.posterGap) {
-                    ForEach(tiles) { tile in
-                        LibraryFolderCard(tile: tile, focus: $focusedID, macIsFocused: macFocusedID == tile.id) {
+                    ForEach(Array(tiles.enumerated()), id: \.element.id) { index, tile in
+                        LibraryFolderCard(
+                            tile: tile, focus: $focusedID, macIsFocused: macFocusedID == tile.id,
+                            widensLeftward: widensLeftward(at: index)
+                        ) {
                             activate(tile)
                         }
                         .disabled(isLocked(tile.id))
                         .id(tile.id)
                     }
                 }
+                .background(GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { gridWidth = proxy.size.width }
+                        .onChange(of: proxy.size.width) { _, width in gridWidth = width }
+                })
             } else {
                 ForEach(tiles) { tile in
                     LibraryFolderRow(
@@ -819,6 +832,18 @@ struct LibraryFoldersView: View {
             BrandLoadingView(wordmarkWidth: 360)
                 .frame(maxWidth: .infinity, minHeight: 400)
         }
+    }
+
+    /// A focused title near the right edge widens to its left, so its
+    /// backdrop stays on screen.
+    private func widensLeftward(at index: Int) -> Bool {
+        let card = LibraryFoldersModel.titleCardSize
+        let step = card.width + LibraryGridMetrics.posterGap
+        guard gridWidth > 0 else { return false }
+        let columns = max(Int((gridWidth + LibraryGridMetrics.posterGap) / step), 1)
+        let extra = LibraryFolderCard.backdropWidth(height: card.height) - card.width
+        let spans = Int((extra / step).rounded(.up))
+        return index % columns + spans > columns - 1
     }
 
     /// Columns as wide as the chosen card size.
@@ -1001,7 +1026,17 @@ private struct LibraryFolderCard: View {
     let tile: LibraryFoldersModel.Tile
     let focus: FocusState<String?>.Binding
     let macIsFocused: Bool
+    /// Widen over the cards to the left rather than the right.
+    var widensLeftward = false
     let action: () -> Void
+
+    /// 16:9 at the poster's height, as Home's focused cards widen.
+    static func backdropWidth(height: CGFloat) -> CGFloat { (height * 16 / 9).rounded() }
+
+    @AppStorage(SettingsKey.focusedPosterBackdropEnabled) private var expandsOnFocus = true
+    @AppStorage(SettingsKey.focusedPosterBackdropDelay) private var expandDelay = 3
+    /// The backdrop to widen into, once found and the delay has passed.
+    @State private var expandedBackdrop: String?
 
     @FocusState private var isFocused: Bool
     @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
@@ -1031,9 +1066,80 @@ private struct LibraryFolderCard: View {
     /// say what it is, so it always shows its name.
     private var showsLabel: Bool { posterLabels || tile.opensLevel || tile.poster == nil }
 
+    private var isExpanded: Bool { showsFocus && expandedBackdrop != nil }
+    private var cardWidth: CGFloat { isExpanded ? Self.backdropWidth(height: height) : width }
+
     var body: some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 10) {
+                ZStack(alignment: .bottomLeading) {
+                    poster
+                        .opacity(isExpanded ? 0 : 1)
+                    if isExpanded, let expandedBackdrop {
+                        backdrop(expandedBackdrop)
+                            .transition(.opacity)
+                    }
+                }
+                .frame(width: cardWidth, height: height)
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .modifier(LiquidGlassCardModifier(cornerRadius: cornerRadius, isFocused: showsFocus, isEnabled: liquidGlassCards))
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .stroke(
+                            showsFocus ? AppFocusOutline.color : .clear,
+                            lineWidth: focusHighlighter ? AppFocusOutline.emphasizedWidth : AppFocusOutline.width
+                        )
+                )
+                .shadow(color: .black.opacity(showsFocus ? 0.5 : 0.2), radius: showsFocus ? 16 : 6)
+
+                if showsLabel {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(tile.title)
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(showsFocus ? .white : .white.opacity(0.78))
+                            .lineLimit(2)
+                        if let subtitle = tile.subtitle {
+                            Text(subtitle)
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundColor(.white.opacity(0.45))
+                        }
+                    }
+                    .frame(width: cardWidth, alignment: .leading)
+                }
+            }
+            // The cell keeps the poster's width; a widened card spills over
+            // its neighbours (it is drawn above them) instead of reflowing
+            // the grid.
+            .frame(width: width, alignment: widensLeftward ? .trailing : .leading)
+            .scaleEffect(showsFocus && !isExpanded ? 1.06 : 1, anchor: widensLeftward ? .trailing : .leading)
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
+        .focused($isFocused)
+        .modifier(ExternalFocusBinding(binding: focus, id: tile.id))
+        .focusEffectDisabledIfAvailable()
+        .animation(smoothFocus ? .spring(response: 0.3, dampingFraction: 1.0) : nil, value: isExpanded)
+        .animation(smoothFocus ? .spring(response: 0.28, dampingFraction: 0.75) : nil, value: showsFocus)
+        .zIndex(showsFocus ? 1 : 0)
+        // Focused long enough: find the title's backdrop and widen into it,
+        // as Home's cards do. Titles only; folders have nothing to show.
+        .task(id: showsFocus) {
+            expandedBackdrop = nil
+            guard showsFocus, expandsOnFocus, !tile.opensLevel, case .open(_, let type) = tile.action else { return }
+            try? await Task.sleep(nanoseconds: UInt64(max(expandDelay, 0)) * 1_000_000_000)
+            guard !Task.isCancelled, showsFocus else { return }
+            let found: String?
+            if let own = tile.backdrop {
+                found = own
+            } else {
+                found = await TitleBackdrops.shared.backdrop(title: tile.title, year: tile.year, type: type)
+            }
+            guard !Task.isCancelled, showsFocus, let found else { return }
+            expandedBackdrop = found
+        }
+    }
+
+    private var poster: some View {
                 CachedPosterArtwork(
                     urlString: tile.poster,
                     width: width,
@@ -1048,41 +1154,24 @@ private struct LibraryFolderCard: View {
                     }
                 }
                 .frame(width: width, height: height)
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                .modifier(LiquidGlassCardModifier(cornerRadius: cornerRadius, isFocused: showsFocus, isEnabled: liquidGlassCards))
-                .overlay(
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .stroke(
-                            showsFocus ? AppFocusOutline.color : .clear,
-                            lineWidth: focusHighlighter ? AppFocusOutline.emphasizedWidth : AppFocusOutline.width
-                        )
-                )
-                .shadow(color: .black.opacity(showsFocus ? 0.5 : 0.2), radius: showsFocus ? 16 : 6)
+    }
 
-                if showsLabel {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(tile.title)
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundColor(showsFocus ? .white : .white.opacity(0.78))
-                        .lineLimit(2)
-                    if let subtitle = tile.subtitle {
-                        Text(subtitle)
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundColor(.white.opacity(0.45))
-                    }
-                }
-                .frame(width: width, alignment: .leading)
-                }
+    /// The backdrop, with the title over it: wide art rarely carries one.
+    private func backdrop(_ url: String) -> some View {
+        let wide = Self.backdropWidth(height: height)
+        return ZStack(alignment: .bottomLeading) {
+            CachedPosterArtwork(urlString: url, width: wide, height: height, maximumWidth: wide) {
+                poster
             }
-            .scaleEffect(showsFocus ? 1.06 : 1)
+            .frame(width: wide, height: height)
+            LinearGradient(colors: [.clear, .black.opacity(0.75)], startPoint: .center, endPoint: .bottom)
+            Text(tile.title)
+                .font(.system(size: 24, weight: .bold))
+                .foregroundColor(.white)
+                .lineLimit(2)
+                .shadow(color: .black.opacity(0.6), radius: 4)
+                .padding(18)
         }
-        .buttonStyle(PosterCardButtonStyle())
-        .nuvioFocusable()
-        .focused($isFocused)
-        .modifier(ExternalFocusBinding(binding: focus, id: tile.id))
-        .focusEffectDisabledIfAvailable()
-        .animation(smoothFocus ? .spring(response: 0.28, dampingFraction: 0.75) : nil, value: showsFocus)
-        .zIndex(showsFocus ? 1 : 0)
     }
 }
 
@@ -1252,5 +1341,76 @@ private struct FolderViewSwitchButton: View {
         .animation(.easeOut(duration: 0.14), value: showsFocus)
         .animation(.easeOut(duration: 0.14), value: isSelected)
         .accessibilityLabel(option.title)
+    }
+}
+
+/// Wide artwork for a title that came without any (an IPTV film, a Jellyfin
+/// item), found on Cinemeta by its name and year: its background, else the
+/// metahub backdrop for its IMDb id. Looked up only when a card has been
+/// focused long enough to widen, and remembered for the session.
+actor TitleBackdrops {
+    static let shared = TitleBackdrops()
+
+    private var found: [String: String?] = [:]
+    private var pending: [String: Task<String?, Never>] = [:]
+
+    func backdrop(title: String, year: Int?, type: String) async -> String? {
+        let name = Self.searchName(title)
+        let key = "\(type)|\(Self.key(name))|\(year ?? 0)"
+        guard !Self.key(name).isEmpty else { return nil }
+        if let known = found[key] { return known }
+        if let task = pending[key] { return await task.value }
+        let task = Task { await Self.lookup(name: name, year: year, type: type == "series" ? "series" : "movie") }
+        pending[key] = task
+        let result = await task.value
+        pending[key] = nil
+        found[key] = result
+        return result
+    }
+
+    private static func lookup(name: String, year: Int?, type: String) async -> String? {
+        guard let query = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let url = URL(string: "https://v3-cinemeta.strem.io/catalog/\(type)/top/search=\(query).json")
+        else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        guard let (data, _) = try? await URLSession.shared.data(for: request),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let metas = json["metas"] as? [[String: Any]] else { return nil }
+        let wanted = key(name)
+        func yearOf(_ meta: [String: Any]) -> Int? {
+            let raw = (meta["releaseInfo"] as? String) ?? (meta["year"] as? String) ?? ""
+            return Int(raw.prefix(4))
+        }
+        let sameName = metas.filter { key(($0["name"] as? String) ?? "") == wanted }
+        let best = sameName.first { meta in
+            guard let year, let other = yearOf(meta) else { return true }
+            return abs(other - year) <= 1
+        }
+        guard let best else { return nil }
+        if let background = (best["background"] as? String), !background.isEmpty { return background }
+        if let id = best["imdb_id"] as? String ?? best["id"] as? String, id.hasPrefix("tt") {
+            return "https://images.metahub.space/background/medium/\(id)/img"
+        }
+        return nil
+    }
+
+    /// The film's own name: without a provider's language prefix ("EN - ",
+    /// "[EN] ", "UK | "), a year in brackets, or trailing tags ("3D", "4K").
+    static func searchName(_ raw: String) -> String {
+        var text = raw
+        text = text.replacingOccurrences(of: #"^\s*(\[[A-Za-z\-]{2,6}\]|[A-Z]{2,4}\s*[|:\-–])\s*"#, with: "", options: .regularExpression)
+        text = text.replacingOccurrences(of: #"\s*[\(\[][^\)\]]*[\)\]]\s*"#, with: " ", options: .regularExpression)
+        let tags: Set<String> = ["3d", "4k", "uhd", "fhd", "hd", "hdr", "sd", "multi", "vostfr", "sub", "dub", "dubbed", "subbed", "imax"]
+        var words = text.split(separator: " ").map(String.init)
+        while let last = words.last, tags.contains(last.lowercased()) { words.removeLast() }
+        return words.joined(separator: " ").trimmingCharacters(in: .whitespaces)
+    }
+
+    static func key(_ name: String) -> String {
+        name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+            .replacingOccurrences(of: "&", with: " and ")
+            .replacingOccurrences(of: "[^a-z0-9]+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
     }
 }

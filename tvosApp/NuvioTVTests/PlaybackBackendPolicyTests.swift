@@ -3256,3 +3256,13 @@ final class StreamSortExtrasTests: XCTestCase {
         XCTAssertEqual(StreamSortOption(rawValueOrSync: "SIZE_ASC"), .sizeAscending)
     }
 }
+
+final class TitleBackdropNameTests: XCTestCase {
+    func testProviderNamesAreCleanedForSearch() {
+        XCTAssertEqual(TitleBackdrops.searchName("Godzilla: King of the Monsters 3D"), "Godzilla: King of the Monsters")
+        XCTAssertEqual(TitleBackdrops.searchName("EN - The Martian (2015) 4K"), "The Martian")
+        XCTAssertEqual(TitleBackdrops.searchName("[EN] Tarzan 3D"), "Tarzan")
+        XCTAssertEqual(TitleBackdrops.searchName("UK | Top Boy"), "Top Boy")
+        XCTAssertEqual(TitleBackdrops.key("Alita: Battle Angel"), "alita battle angel")
+    }
+}
