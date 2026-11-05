@@ -435,6 +435,10 @@ public struct LibraryView: View {
         .onChange(of: foldersModel.tiles?.map(\.id)) { _, _ in macFocus.update(macBands) }
         .onChange(of: foldersModel.path) { _, _ in macFocus.update(macBands) }
         .onChange(of: foldersModel.regionChoices) { _, _ in macFocus.update(macBands) }
+        // Tiles and List lay the same folders out differently: the caret's
+        // columns have to change with them, or Left/Right kept moving as a
+        // list (or Up/Down as a grid) after a switch.
+        .onChange(of: foldersModel.viewMode) { _, _ in macFocus.update(macBands) }
         .onChange(of: foldersAvailable) { _, _ in macFocus.update(macBands) }
         .onChange(of: foldersModel.focusRequest) { _, request in
             guard let request, sourceMode == .folders else { return }
@@ -892,7 +896,7 @@ public struct LibraryView: View {
                 id: LibraryFocusBand.folders,
                 items: (foldersModel.tiles ?? []).map(\.id),
                 columns: foldersModel.usesGrid
-                    ? (foldersModel.holdsTitles ? macGridColumns : LibraryFoldersModel.folderTileColumns)
+                    ? (foldersModel.holdsTitles ? macFolderTitleColumns : LibraryFoldersModel.folderTileColumns)
                     : 1
             ))
             return bands
@@ -918,6 +922,14 @@ public struct LibraryView: View {
             )
         }
         return bands
+    }
+
+    /// A folder's titles are sized by Settings' card size, so their grid
+    /// has its own column count.
+    private var macFolderTitleColumns: Int {
+        let available = MacTVCanvas<EmptyView>.canvasSize.width - LibraryGridMetrics.pageInset * 2 - 24
+        let step = LibraryFoldersModel.titleCardSize.width + LibraryGridMetrics.posterGap
+        return max(Int((available + LibraryGridMetrics.posterGap) / step), 1)
     }
 
     /// The grid is `.adaptive`, so the column count follows the width the

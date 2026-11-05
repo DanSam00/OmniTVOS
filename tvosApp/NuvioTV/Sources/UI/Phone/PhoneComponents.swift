@@ -604,6 +604,8 @@ struct PhoneSourceFilterBar: View {
     @Binding var sort: StreamSortOption
     @Binding var cachedOnly: Bool
     let showsCachedOnly: Bool
+    /// Format, codec, audio or size (`StreamExtraFilter`).
+    var extra: Binding<StreamExtraFilter>? = nil
     /// White on the player's dark panel; the system's colours in a sheet.
     var onDarkBackground = false
     var horizontalInset: CGFloat = 16
@@ -639,12 +641,23 @@ struct PhoneSourceFilterBar: View {
                 Menu {
                     ForEach(StreamSortOption.allCases, id: \.self) { option in
                         Button { sort = option } label: {
-                            menuLabel(L10n.optionLabel(option.rawValue), selected: sort == option)
+                            menuLabel(option.title, selected: sort == option)
                         }
                     }
                 } label: {
-                    chip(L10n.format("details_sort_format", fallback: "Sort: %@", L10n.optionLabel(sort.rawValue)),
+                    chip(L10n.format("details_sort_format", fallback: "Sort: %@", sort.title),
                          isActive: sort != .quality)
+                }
+                if let extra {
+                    Menu {
+                        ForEach(StreamExtraFilter.allCases) { option in
+                            Button { extra.wrappedValue = option } label: {
+                                menuLabel(option.title, selected: extra.wrappedValue == option)
+                            }
+                        }
+                    } label: {
+                        chip(extra.wrappedValue.chipTitle, isActive: extra.wrappedValue != .any)
+                    }
                 }
                 if showsCachedOnly {
                     Button { cachedOnly.toggle() } label: {

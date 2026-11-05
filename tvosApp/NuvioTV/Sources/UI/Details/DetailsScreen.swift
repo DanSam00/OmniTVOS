@@ -2489,13 +2489,105 @@ enum StreamResolutionFilter: String, CaseIterable, Identifiable {
     }
 }
 
+/// The Sources list's one extra filter, beside Provider and Res: a picture
+/// format, a codec, Atmos sound, or a size limit for a slow connection. One
+/// choice rather than several chips, so the row still fits a phone and the
+/// Mac's rail.
+enum StreamExtraFilter: String, CaseIterable, Identifiable {
+    case any = "Any"
+    case hdr = "HDR"
+    case dolbyVision = "DolbyVision"
+    case sdr = "SDR"
+    case hevc = "HEVC"
+    case h264 = "H264"
+    case av1 = "AV1"
+    case atmos = "Atmos"
+    case under2GB = "Under2GB"
+    case under5GB = "Under5GB"
+    case under15GB = "Under15GB"
+    case over15GB = "Over15GB"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .any: return L10n.string("action_all", fallback: "All")
+        case .hdr: return "HDR / Dolby Vision"
+        case .dolbyVision: return "Dolby Vision"
+        case .sdr: return "SDR only"
+        case .hevc: return "HEVC (H.265)"
+        case .h264: return "H.264"
+        case .av1: return "AV1"
+        case .atmos: return "Dolby Atmos"
+        case .under2GB: return "Under 2 GB"
+        case .under5GB: return "Under 5 GB"
+        case .under15GB: return "Under 15 GB"
+        case .over15GB: return "Over 15 GB"
+        }
+    }
+
+    /// The chip's label: short enough for a row of chips.
+    var chipTitle: String {
+        switch self {
+        case .any: return "Filter"
+        case .hdr: return "HDR"
+        case .sdr: return "SDR"
+        case .hevc: return "HEVC"
+        default: return title
+        }
+    }
+
+    static var current: StreamExtraFilter {
+        get { StreamExtraFilter(rawValue: ProfileSettings.current.string(forKey: SettingsKey.streamExtraFilter) ?? "") ?? .any }
+        set { ProfileSettings.current.set(newValue.rawValue, forKey: SettingsKey.streamExtraFilter) }
+    }
+
+    private static let gigabyte: Int64 = 1_073_741_824
+
+    /// Streams whose format or size is unknown are left out once a filter is
+    /// chosen: they cannot honestly be said to match.
+    func matches(_ facts: StreamPickerListBuilder.StreamFacts) -> Bool {
+        let tags = facts.tags
+        switch self {
+        case .any: return true
+        case .hdr: return tags.isHDR || tags.isDolbyVision
+        case .dolbyVision: return tags.isDolbyVision
+        case .sdr: return !tags.isHDR && !tags.isDolbyVision
+        case .hevc: return tags.isHEVC
+        case .h264: return tags.isAVC
+        case .av1: return tags.isAV1
+        case .atmos: return tags.isAtmos
+        case .under2GB: return facts.sizeBytes > 0 && facts.sizeBytes < 2 * Self.gigabyte
+        case .under5GB: return facts.sizeBytes > 0 && facts.sizeBytes < 5 * Self.gigabyte
+        case .under15GB: return facts.sizeBytes > 0 && facts.sizeBytes < 15 * Self.gigabyte
+        case .over15GB: return facts.sizeBytes >= 15 * Self.gigabyte
+        }
+    }
+}
+
 enum StreamSortOption: String, CaseIterable, Identifiable {
     case `default` = "Default"
     case quality = "Quality"
+    /// Largest file first.
     case size = "Size"
+    case sizeAscending = "SizeAscending"
+    /// Highest bitrate (Mb/s) first.
+    case bitrate = "Bitrate"
+    case bitrateAscending = "BitrateAscending"
     case name = "Name"
 
     var id: String { rawValue }
+
+    /// What the menus and chips say.
+    var title: String {
+        switch self {
+        case .size: return "Largest File"
+        case .sizeAscending: return "Smallest File"
+        case .bitrate: return "Highest Bitrate"
+        case .bitrateAscending: return "Lowest Bitrate"
+        default: return L10n.optionLabel(rawValue)
+        }
+    }
 
     init?(rawValueOrSync: String) {
         let upper = rawValueOrSync.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
@@ -2504,8 +2596,10 @@ enum StreamSortOption: String, CaseIterable, Identifiable {
             self = .default
         case "QUALITY", "QUALITY_DESC":
             self = .quality
-        case "SIZE", "SIZE_DESC", "SIZE_ASC":
+        case "SIZE", "SIZE_DESC":
             self = .size
+        case "SIZE_ASC":
+            self = .sizeAscending
         case "NAME":
             self = .name
         default:
@@ -2580,7 +2674,8 @@ enum StreamPickerListBuilder {
         sortOption: StreamSortOption,
         includeDebrid: Bool,
         cachedOnly: Bool = false,
-        resolutionFilter: StreamResolutionFilter = .any
+        resolutionFilter: StreamResolutionFilter = .any,
+        extraFilter: StreamExtraFilter = .any
     ) -> [NuvioStream] {
         // Everything playable is listed. The viewer opened this to choose, and
         // the resolution chip above it is how they narrow it down.
@@ -2595,9 +2690,10 @@ enum StreamPickerListBuilder {
         // Decorated once and carried through both steps: the filter asks the
         // same questions the sort does.
         let facts = decorated(playable)
-        let kept = resolutionFilter == .any
-            ? facts
-            : facts.filter { resolutionFilter.matches(resolution: $0.resolution) }
+        let kept = facts.filter {
+            (resolutionFilter == .any || resolutionFilter.matches(resolution: $0.resolution))
+                && extraFilter.matches($0)
+        }
         return sorted(kept, by: sortOption).map(\.stream)
     }
 
@@ -2609,10 +2705,12 @@ enum StreamPickerListBuilder {
         sortOption: StreamSortOption,
         includeDebrid: Bool,
         cachedOnly: Bool = false,
-        resolutionFilter: StreamResolutionFilter = .any
+        resolutionFilter: StreamResolutionFilter = .any,
+        extraFilter: StreamExtraFilter = .any
     ) -> StreamPickerListCacheKey {
         StreamPickerListCacheKey(
             resolutionFilter: resolutionFilter,
+            extraFilter: extraFilter,
             revision: revision,
             selectedAddonId: selectedAddonId,
             sortOption: sortOption,
@@ -2654,6 +2752,9 @@ enum StreamPickerListBuilder {
         let quality: DebridStreamQuality
         let sizeBytes: Int64
         let isHardwareAccelerated: Bool
+        let tags: StreamQualityTags
+        /// Mb/s the stream states, 0 when it does not.
+        let bitrate: Double
     }
 
     static func decorated(_ streams: [NuvioStream]) -> [StreamFacts] {
@@ -2670,7 +2771,9 @@ enum StreamPickerListBuilder {
                     || SmartPlaybackSelector.isLowQualityOrTicketStream(stream, resolution: resolution),
                 quality: streamQuality(for: stream),
                 sizeBytes: sizeBytes(for: stream),
-                isHardwareAccelerated: tags.isHardwareAccelerated()
+                isHardwareAccelerated: tags.isHardwareAccelerated(),
+                tags: tags,
+                bitrate: bitrate(for: stream)
             )
         }
     }
@@ -2699,10 +2802,25 @@ enum StreamPickerListBuilder {
                 // Tier 5: Preserved original offset
                 return $0.offset < $1.offset
             }
-        case .size:
+        case .size, .sizeAscending:
+            let ascending = option == .sizeAscending
             return facts.sorted {
                 if $0.isBad != $1.isBad { return !$0.isBad && $1.isBad }
-                if $0.sizeBytes != $1.sizeBytes { return $0.sizeBytes > $1.sizeBytes }
+                // An unknown size goes last either way.
+                if ($0.sizeBytes > 0) != ($1.sizeBytes > 0) { return $0.sizeBytes > 0 }
+                if $0.sizeBytes != $1.sizeBytes {
+                    return ascending ? $0.sizeBytes < $1.sizeBytes : $0.sizeBytes > $1.sizeBytes
+                }
+                return $0.offset < $1.offset
+            }
+        case .bitrate, .bitrateAscending:
+            let ascending = option == .bitrateAscending
+            return facts.sorted {
+                if $0.isBad != $1.isBad { return !$0.isBad && $1.isBad }
+                if ($0.bitrate > 0) != ($1.bitrate > 0) { return $0.bitrate > 0 }
+                if $0.bitrate != $1.bitrate {
+                    return ascending ? $0.bitrate < $1.bitrate : $0.bitrate > $1.bitrate
+                }
                 return $0.offset < $1.offset
             }
         case .name:
@@ -2768,6 +2886,23 @@ enum StreamPickerListBuilder {
 
     /// Best-effort file size in bytes matching Android TV's `StreamTextSizeParser`:
     /// structured videoSize field first, then free-text parsing as last resort.
+    /// The bitrate a stream states in its own text ("11.0 Mbps", "4.6 Mb/s",
+    /// "800 kbps"), in Mb/s; 0 when it states none.
+    static func bitrate(for stream: NuvioStream) -> Double {
+        let text = "\(stream.name ?? "") \(stream.description ?? "") \(stream.filename ?? "")"
+        guard let match = bitratePattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let valueRange = Range(match.range(at: 1), in: text),
+              let unitRange = Range(match.range(at: 2), in: text),
+              let value = Double(text[valueRange].replacingOccurrences(of: ",", with: "."))
+        else { return 0 }
+        return text[unitRange].lowercased().hasPrefix("k") ? value / 1000 : value
+    }
+
+    private static let bitratePattern = try! NSRegularExpression(
+        pattern: #"(\d+(?:[.,]\d+)?)\s*(mbps|mb/s|mbit/s|kbps|kb/s|kbit/s)"#,
+        options: .caseInsensitive
+    )
+
     static func sizeBytes(for stream: NuvioStream) -> Int64 {
         if let videoSize = stream.videoSize, videoSize > 0 {
             return videoSize
@@ -2811,6 +2946,7 @@ final class MacStreamListCache {
 struct StreamPickerListCacheKey: Equatable {
     /// Part of the key: changing the filter must rebuild the list.
     var resolutionFilter: StreamResolutionFilter = .any
+    var extraFilter: StreamExtraFilter = .any
     let revision: UInt64
     let selectedAddonId: String?
     let sortOption: StreamSortOption
@@ -2962,6 +3098,7 @@ struct TvDetailsContent: View {
     @State private var macRailOptionIndex = 0
     @AppStorage(SettingsKey.streamSortOption) private var macSortOption: StreamSortOption = .quality
     @AppStorage(SettingsKey.streamResolutionFilter) private var macResolutionFilter: StreamResolutionFilter = .any
+    @AppStorage(SettingsKey.streamExtraFilter) private var macExtraFilter: StreamExtraFilter = .any
     @AppStorage(SettingsKey.cachedOnlyStreams) private var macCachedOnly = false
     @State private var macSelectedAddonId: String?
     /// The scroll proxy lives inside the reader, but the key handler has to sit
@@ -3376,6 +3513,7 @@ struct TvDetailsContent: View {
             .onChange(of: macRailSeason) { _, _ in macPublishRailCounts() }
             .onChange(of: macSelectedAddonId) { _, _ in macPublishRailCounts() }
             .onChange(of: macResolutionFilter) { _, _ in macPublishRailCounts() }
+            .onChange(of: macExtraFilter) { _, _ in macPublishRailCounts() }
             .onChange(of: macSortOption) { _, _ in macPublishRailCounts() }
             .onChange(of: macCachedOnly) { _, _ in macPublishRailCounts() }
             .onChange(of: isStreamsPresented?.wrappedValue ?? false) { _, showingStreams in
@@ -3700,7 +3838,8 @@ struct TvDetailsContent: View {
             sortOption: macSortOption,
             includeDebrid: includeDebrid,
             cachedOnly: macCachedOnly,
-            resolutionFilter: macResolutionFilter
+            resolutionFilter: macResolutionFilter,
+            extraFilter: macExtraFilter
         )
     }
 
@@ -3720,7 +3859,8 @@ struct TvDetailsContent: View {
             sortOption: macSortOption,
             includeDebrid: includeDebrid,
             cachedOnly: macCachedOnly,
-            resolutionFilter: macResolutionFilter
+            resolutionFilter: macResolutionFilter,
+            extraFilter: macExtraFilter
         )
         // A class, not `@State`: reading a computed property during a body pass
         // cannot publish state without re-entering the update it is part of.
@@ -3811,10 +3951,21 @@ struct TvDetailsContent: View {
             ))
             entries.append(MacRailHeaderEntry(
                 item: MacRailHeaderItem(
-                    label: L10n.format("details_sort_format", fallback: "Sort: %@", L10n.optionLabel(macSortOption.rawValue)),
+                    label: L10n.format("details_sort_format", fallback: "Sort: %@", macSortOption.title),
                     isActive: macSortOption != .quality
                 ),
                 action: { macOpenRailOptions(macSortOptionList()) }
+            ))
+            entries.append(MacRailHeaderEntry(
+                item: MacRailHeaderItem(label: macExtraFilter.chipTitle, isActive: macExtraFilter != .any),
+                action: {
+                    macOpenRailOptions(MacPickerOptionList(
+                        title: "Filter sources",
+                        options: StreamExtraFilter.allCases.map { option in
+                            MacPickerOption(label: option.title, isSelected: macExtraFilter == option, apply: { macExtraFilter = option })
+                        }
+                    ))
+                }
             ))
             if includeDebrid {
                 // Without this the setting still filtered — `playableStreams`
@@ -4180,7 +4331,7 @@ struct TvDetailsContent: View {
             title: L10n.string("details_sort_streams_by", fallback: "Sort streams by"),
             options: StreamSortOption.allCases.map { option in
                 MacPickerOption(
-                    label: L10n.optionLabel(option.rawValue),
+                    label: option.title,
                     isSelected: macSortOption == option,
                     apply: { macSortOption = option }
                 )
@@ -6779,10 +6930,13 @@ private struct TvStreamPickerOverlay: View {
     @AppStorage(SettingsKey.streamResolutionFilter)
     private var resolutionFilter: StreamResolutionFilter = .any
     @State private var showResolutionOptions = false
+    @AppStorage(SettingsKey.streamExtraFilter) private var extraFilter: StreamExtraFilter = .any
+    @State private var showExtraOptions = false
     @State private var showProviderOptions = false
 
     private let filterAllKey = "filter::all"
     private let resolutionKey = "filter::resolution"
+    private let extraKey = "filter::extra"
     private let sortKey = "filter::sort"
     private let cachedKey = "filter::cached"
     private func filterKey(_ addonId: String) -> String { "filter::\(addonId)" }
@@ -6795,7 +6949,8 @@ private struct TvStreamPickerOverlay: View {
             sortOption: sortOption,
             includeDebrid: includeDebrid,
             cachedOnly: cachedOnly,
-            resolutionFilter: resolutionFilter
+            resolutionFilter: resolutionFilter,
+            extraFilter: extraFilter
         )
     }
 
@@ -6913,7 +7068,8 @@ private struct TvStreamPickerOverlay: View {
             sortOption: sortOption,
             includeDebrid: includeDebrid,
             cachedOnly: cachedOnly,
-            resolutionFilter: resolutionFilter
+            resolutionFilter: resolutionFilter,
+            extraFilter: extraFilter
         )
         displayedStreams = refreshedStreams
         displayedStreamsCacheKey = key
@@ -7059,7 +7215,7 @@ private struct TvStreamPickerOverlay: View {
             // Sort remains pinned to the trailing edge instead of moving with
             // the add-on scroller.
             TvStreamFilterButton(
-                title: L10n.format("details_sort_format", fallback: "Sort: %@", L10n.optionLabel(sortOption.rawValue)),
+                title: L10n.format("details_sort_format", fallback: "Sort: %@", sortOption.title),
                 isSelected: sortOption != .quality,
                 focusBinding: $focusedItem,
                 focusValue: sortKey,
@@ -7072,7 +7228,21 @@ private struct TvStreamPickerOverlay: View {
                 titleVisibility: .visible
             ) {
                 ForEach(StreamSortOption.allCases) { option in
-                    Button(L10n.optionLabel(option.rawValue)) { sortOption = option }
+                    Button(option.title) { sortOption = option }
+                }
+            }
+
+            TvStreamFilterButton(
+                title: extraFilter.chipTitle,
+                isSelected: extraFilter != .any,
+                focusBinding: $focusedItem,
+                focusValue: extraKey,
+                action: { showExtraOptions = true }
+            )
+            .fixedSize(horizontal: true, vertical: false)
+            .confirmationDialog("Filter sources", isPresented: $showExtraOptions, titleVisibility: .visible) {
+                ForEach(StreamExtraFilter.allCases) { option in
+                    Button(extraFilter == option ? "✓  \(option.title)" : option.title) { extraFilter = option }
                 }
             }
         }

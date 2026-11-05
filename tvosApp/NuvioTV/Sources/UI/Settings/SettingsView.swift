@@ -338,6 +338,9 @@ enum SettingsKey {
     static let preferHardwareDecodedStreams = "nuvio.tv.settings.playback.preferHardwareDecodedStreams"
     static let streamSortOption = "nuvio.tv.settings.playback.streamSortOption"
     static let streamResolutionFilter = "nuvio.tv.settings.playback.streamResolutionFilter"
+    /// The Sources list's extra filter (`StreamExtraFilter`): format, codec,
+    /// audio or a size limit.
+    static let streamExtraFilter = "omni.settings.playback.streamExtraFilter"
     static let streamBadgeRules = "nuvio.tv.settings.playback.streamBadgeRules"
     static let showFileSizeBadges = "nuvio.tv.settings.playback.showFileSizeBadges"
     static let showAddonLogo = "nuvio.tv.settings.playback.showAddonLogo"
@@ -7031,7 +7034,8 @@ private struct PlaybackSettingsView: View {
                     subtitle: L10n.string("tvos_settings_stream_sort_subtitle", fallback: "Default ordering when opening sources (Quality merges all add-ons and ranks by 4K/1080p)"),
                     selection: $streamSortOption,
                     options: streamSortModes,
-                    accentColor: accentColor
+                    accentColor: accentColor,
+                    label: { StreamSortOption(rawValue: $0)?.title ?? L10n.optionLabel($0) }
                 )
             }
 
@@ -14117,6 +14121,8 @@ private struct SettingsOptionRow: View {
     @Binding var selection: String
     let options: [String]
     let accentColor: Color
+    /// How a stored value reads; the shared option labels by default.
+    var label: (String) -> String = { L10n.optionLabel($0) }
 
     @FocusState private var isFocused: Bool
 
@@ -14128,7 +14134,7 @@ private struct SettingsOptionRow: View {
                 Spacer(minLength: SettingsPhoneMetrics.isPhone ? 8 : 24)
 
                 HStack(spacing: 10) {
-                    Text(L10n.optionLabel(currentStored))
+                    Text(label(currentStored))
                         .font(.system(size: 19, weight: .bold))
                         .foregroundColor(.white)
                         .lineLimit(1)

@@ -399,6 +399,13 @@ final class LibraryFoldersModel: ObservableObject {
     /// Folder cards a row, in Tiles (fixed, so the Mac's caret can count them).
     static let folderTileColumns = 4
 
+    /// A title's poster in a folder, at the card size chosen in Settings, as
+    /// Home's rows draw it.
+    static var titleCardSize: CGSize {
+        let raw = ProfileSettings.current.string(forKey: SettingsKey.cardSize)
+        return CGSize(width: AppCardStyle.posterWidth(for: raw), height: AppCardStyle.posterHeight(for: raw))
+    }
+
     /// What the level shows: without hidden folders, in the chosen country
     /// and order.
     private func present(_ loaded: [Tile]) -> [Tile] {
@@ -787,7 +794,7 @@ struct LibraryFoldersView: View {
                     }
                 }
             } else if model.usesGrid {
-                LazyVGrid(columns: gridColumns, alignment: .leading, spacing: LibraryGridMetrics.posterGap) {
+                LazyVGrid(columns: titleColumns, alignment: .leading, spacing: LibraryGridMetrics.posterGap) {
                     ForEach(tiles) { tile in
                         LibraryFolderCard(tile: tile, focus: $focusedID, macIsFocused: macFocusedID == tile.id) {
                             activate(tile)
@@ -812,6 +819,12 @@ struct LibraryFoldersView: View {
             BrandLoadingView(wordmarkWidth: 360)
                 .frame(maxWidth: .infinity, minHeight: 400)
         }
+    }
+
+    /// Columns as wide as the chosen card size.
+    private var titleColumns: [GridItem] {
+        let width = LibraryFoldersModel.titleCardSize.width
+        return [GridItem(.adaptive(minimum: width, maximum: width), spacing: LibraryGridMetrics.posterGap, alignment: .top)]
     }
 
     private func hideAction(_ tile: LibraryFoldersModel.Tile) -> (() -> Void)? {
@@ -962,13 +975,15 @@ private struct LibraryFolderRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(Color.white.opacity(showsFocus ? 0.18 : 0.06))
+                    .fill(Color.white.opacity(showsFocus ? 0.16 : 0.06))
             )
+            // Drawn inside the row and not scaled: a full-width row that grew
+            // on focus ran off both edges of the screen. Settings rows light
+            // up the same way.
             .overlay(
                 RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .stroke(showsFocus ? AppFocusOutline.color : .clear, lineWidth: showsFocus ? AppFocusOutline.width : 0)
+                    .strokeBorder(showsFocus ? AppFocusOutline.color : .clear, lineWidth: AppFocusOutline.width)
             )
-            .scaleEffect(showsFocus ? 1.015 : 1)
         }
         .buttonStyle(PosterCardButtonStyle())
         .nuvioFocusable()
@@ -991,6 +1006,11 @@ private struct LibraryFolderCard: View {
     @FocusState private var isFocused: Bool
     @AppStorage(SettingsKey.cardCornerRadius) private var cardCornerRadiusSetting = AppCardStyle.defaultCornerRadiusRaw
     @AppStorage(SettingsKey.liquidGlassCards) private var liquidGlassCards = true
+    // The poster style chosen in Settings → Layout, as Home's cards follow it.
+    @AppStorage(SettingsKey.cardSize) private var cardSizeSetting = AppCardStyle.defaultCardSizeRaw
+    @AppStorage(SettingsKey.posterLabels) private var posterLabels = false
+    @AppStorage(SettingsKey.focusHighlighter) private var focusHighlighter = false
+    @AppStorage(SettingsKey.smoothFocus) private var smoothFocus = true
 
     private var showsFocus: Bool {
         #if os(macOS)
@@ -1004,14 +1024,21 @@ private struct LibraryFolderCard: View {
         AppCardStyle.cornerRadius(for: cardCornerRadiusSetting, fallback: 16)
     }
 
+    private var width: CGFloat { AppCardStyle.posterWidth(for: cardSizeSetting) }
+    private var height: CGFloat { AppCardStyle.posterHeight(for: cardSizeSetting) }
+
+    /// Titles follow Poster Labels; a folder among them has no artwork to
+    /// say what it is, so it always shows its name.
+    private var showsLabel: Bool { posterLabels || tile.opensLevel || tile.poster == nil }
+
     var body: some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 10) {
                 CachedPosterArtwork(
                     urlString: tile.poster,
-                    width: LibraryGridMetrics.posterWidth,
-                    height: LibraryGridMetrics.posterHeight,
-                    maximumWidth: LibraryGridMetrics.posterWidth
+                    width: width,
+                    height: height,
+                    maximumWidth: width
                 ) {
                     ZStack {
                         Rectangle().fill(Color.white.opacity(0.07))
@@ -1020,15 +1047,19 @@ private struct LibraryFolderCard: View {
                             .foregroundColor(.white.opacity(0.3))
                     }
                 }
-                .frame(width: LibraryGridMetrics.posterWidth, height: LibraryGridMetrics.posterHeight)
+                .frame(width: width, height: height)
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                 .modifier(LiquidGlassCardModifier(cornerRadius: cornerRadius, isFocused: showsFocus, isEnabled: liquidGlassCards))
                 .overlay(
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .stroke(showsFocus ? AppFocusOutline.color : .clear, lineWidth: AppFocusOutline.width)
+                        .stroke(
+                            showsFocus ? AppFocusOutline.color : .clear,
+                            lineWidth: focusHighlighter ? AppFocusOutline.emphasizedWidth : AppFocusOutline.width
+                        )
                 )
                 .shadow(color: .black.opacity(showsFocus ? 0.5 : 0.2), radius: showsFocus ? 16 : 6)
 
+                if showsLabel {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(tile.title)
                         .font(.system(size: 20, weight: .semibold))
@@ -1040,7 +1071,8 @@ private struct LibraryFolderCard: View {
                             .foregroundColor(.white.opacity(0.45))
                     }
                 }
-                .frame(width: LibraryGridMetrics.posterWidth, alignment: .leading)
+                .frame(width: width, alignment: .leading)
+                }
             }
             .scaleEffect(showsFocus ? 1.06 : 1)
         }
@@ -1049,7 +1081,7 @@ private struct LibraryFolderCard: View {
         .focused($isFocused)
         .modifier(ExternalFocusBinding(binding: focus, id: tile.id))
         .focusEffectDisabledIfAvailable()
-        .animation(.spring(response: 0.28, dampingFraction: 0.75), value: showsFocus)
+        .animation(smoothFocus ? .spring(response: 0.28, dampingFraction: 0.75) : nil, value: showsFocus)
         .zIndex(showsFocus ? 1 : 0)
     }
 }

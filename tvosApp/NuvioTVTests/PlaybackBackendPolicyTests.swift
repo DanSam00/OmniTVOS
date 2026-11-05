@@ -3229,3 +3229,30 @@ final class MatchTwinTests: XCTestCase {
         XCTAssertFalse(RelatedMatches.isSameMatch(c, teams: teams, as: a))
     }
 }
+
+final class StreamSortExtrasTests: XCTestCase {
+    private func stream(_ name: String, _ description: String) -> NuvioStream {
+        NuvioStream(url: "https://example.test/\(name)", name: name, description: description, addonName: "Test")
+    }
+
+    func testBitrateIsReadFromTheStreamText() {
+        XCTAssertEqual(StreamPickerListBuilder.bitrate(for: stream("a", "10.9 Mbps|small delay")), 10.9, accuracy: 0.01)
+        XCTAssertEqual(StreamPickerListBuilder.bitrate(for: stream("b", "800 kbps")), 0.8, accuracy: 0.01)
+        XCTAssertEqual(StreamPickerListBuilder.bitrate(for: stream("c", "1080p WEB-DL")), 0)
+    }
+
+    func testBitrateSortsBothWaysWithUnknownLast() {
+        let streams = [stream("low 1080p", "2.0 Mbps"), stream("none 1080p", "x"), stream("high 1080p", "9.0 Mbps")]
+        let down = StreamPickerListBuilder.sorted(streams, by: .bitrate).map { $0.name ?? "" }
+        let up = StreamPickerListBuilder.sorted(streams, by: .bitrateAscending).map { $0.name ?? "" }
+        XCTAssertEqual(down, ["high 1080p", "low 1080p", "none 1080p"])
+        XCTAssertEqual(up, ["low 1080p", "high 1080p", "none 1080p"])
+    }
+
+    func testSizeSortsBothWaysWithUnknownLast() {
+        let streams = [stream("big 1080p", "💾 12.5 GB"), stream("none 1080p", "x"), stream("small 1080p", "💾 1.2 GB")]
+        XCTAssertEqual(StreamPickerListBuilder.sorted(streams, by: .size).map { $0.name ?? "" }, ["big 1080p", "small 1080p", "none 1080p"])
+        XCTAssertEqual(StreamPickerListBuilder.sorted(streams, by: .sizeAscending).map { $0.name ?? "" }, ["small 1080p", "big 1080p", "none 1080p"])
+        XCTAssertEqual(StreamSortOption(rawValueOrSync: "SIZE_ASC"), .sizeAscending)
+    }
+}

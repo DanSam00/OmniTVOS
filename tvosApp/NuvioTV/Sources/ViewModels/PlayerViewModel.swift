@@ -3297,6 +3297,10 @@ class PlayerViewModel: ObservableObject {
         get { StreamResolutionFilter(rawValue: ProfileSettings.current.string(forKey: SettingsKey.streamResolutionFilter) ?? "") ?? .any }
         set { ProfileSettings.current.set(newValue.rawValue, forKey: SettingsKey.streamResolutionFilter); macFiltersChanged() }
     }
+    var macSourceExtra: StreamExtraFilter {
+        get { StreamExtraFilter.current }
+        set { StreamExtraFilter.current = newValue; macFiltersChanged() }
+    }
     var macSourceCachedOnly: Bool {
         get { ProfileSettings.current.bool(forKey: SettingsKey.cachedOnlyStreams) }
         set { ProfileSettings.current.set(newValue, forKey: SettingsKey.cachedOnlyStreams); macFiltersChanged() }
@@ -3322,7 +3326,7 @@ class PlayerViewModel: ObservableObject {
     var macDisplayedSources: [NuvioStream] {
         let key = [
             String(availableSources.count), availableSources.first?.id ?? "", availableSources.last?.id ?? "",
-            macSourceProvider ?? "*", macSourceSort.rawValue, macSourceResolution.rawValue,
+            macSourceProvider ?? "*", macSourceSort.rawValue, macSourceResolution.rawValue, macSourceExtra.rawValue,
             String(macSourceCachedOnly), String(macSourceIncludesDebrid)
         ].joined(separator: "|")
         if let cache = macSourcesCache, cache.key == key { return cache.streams }
@@ -3340,7 +3344,8 @@ class PlayerViewModel: ObservableObject {
             sortOption: macSourceSort,
             includeDebrid: macSourceIncludesDebrid,
             cachedOnly: macSourceCachedOnly,
-            resolutionFilter: macSourceResolution
+            resolutionFilter: macSourceResolution,
+            extraFilter: macSourceExtra
         )
         macSourcesCache = (key, streams)
         return streams
@@ -3348,10 +3353,10 @@ class PlayerViewModel: ObservableObject {
 
     /// The chips, in order. Cached-only is offered only with a debrid service,
     /// as on the episode page.
-    enum MacSourceFilter: CaseIterable { case provider, resolution, sort, cache }
+    enum MacSourceFilter: CaseIterable { case provider, resolution, sort, extra, cache }
 
     var macSourceFilters: [MacSourceFilter] {
-        macSourceIncludesDebrid ? MacSourceFilter.allCases : [.provider, .resolution, .sort]
+        macSourceIncludesDebrid ? MacSourceFilter.allCases : [.provider, .resolution, .sort, .extra]
     }
 
     func macSourceFilterLabel(_ filter: MacSourceFilter) -> (label: String, isActive: Bool) {
@@ -3364,8 +3369,10 @@ class PlayerViewModel: ObservableObject {
             return (L10n.format("details_resolution_format", fallback: "Res: %@", macSourceResolution.title),
                     macSourceResolution != .any)
         case .sort:
-            return (L10n.format("details_sort_format", fallback: "Sort: %@", L10n.optionLabel(macSourceSort.rawValue)),
+            return (L10n.format("details_sort_format", fallback: "Sort: %@", macSourceSort.title),
                     macSourceSort != .quality)
+        case .extra:
+            return (macSourceExtra.chipTitle, macSourceExtra != .any)
         case .cache:
             return (macSourceCachedOnly
                         ? L10n.string("details_cached_only", fallback: "Cached only")
@@ -3388,6 +3395,8 @@ class PlayerViewModel: ObservableObject {
             macSourceResolution = next(macSourceResolution, in: StreamResolutionFilter.allCases)
         case .sort:
             macSourceSort = next(macSourceSort, in: StreamSortOption.allCases)
+        case .extra:
+            macSourceExtra = next(macSourceExtra, in: StreamExtraFilter.allCases)
         case .cache:
             macSourceCachedOnly.toggle()
         }

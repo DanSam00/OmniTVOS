@@ -1778,6 +1778,7 @@ private struct PhoneSourcesPanel: View {
                     sort: Binding(get: { viewModel.macSourceSort }, set: { viewModel.macSourceSort = $0 }),
                     cachedOnly: Binding(get: { viewModel.macSourceCachedOnly }, set: { viewModel.macSourceCachedOnly = $0 }),
                     showsCachedOnly: viewModel.macSourceIncludesDebrid,
+                    extra: Binding(get: { viewModel.macSourceExtra }, set: { viewModel.macSourceExtra = $0 }),
                     onDarkBackground: true,
                     horizontalInset: 0
                 )

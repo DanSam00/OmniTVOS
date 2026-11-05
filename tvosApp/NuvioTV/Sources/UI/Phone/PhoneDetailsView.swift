@@ -1201,6 +1201,7 @@ private struct PhoneSourcesSheet: View {
     @AppStorage(SettingsKey.streamSortOption) private var sortOption: StreamSortOption = .quality
     @AppStorage(SettingsKey.streamResolutionFilter) private var resolutionFilter: StreamResolutionFilter = .any
     @AppStorage(SettingsKey.cachedOnlyStreams) private var cachedOnly = false
+    @AppStorage(SettingsKey.streamExtraFilter) private var extraFilter: StreamExtraFilter = .any
     @State private var selectedAddonId: String?
 
     private var includesDebrid: Bool { DebridResolver(store: ProfileSettings.current).isEnabled }
@@ -1219,7 +1220,8 @@ private struct PhoneSourcesSheet: View {
             sortOption: sortOption,
             includeDebrid: includesDebrid,
             cachedOnly: cachedOnly,
-            resolutionFilter: resolutionFilter
+            resolutionFilter: resolutionFilter,
+            extraFilter: extraFilter
         )
         guard isPickingDownload else { return all }
         let debrid = DebridResolver(store: ProfileSettings.current).isEnabled
@@ -1278,7 +1280,8 @@ private struct PhoneSourcesSheet: View {
                         resolution: $resolutionFilter,
                         sort: $sortOption,
                         cachedOnly: $cachedOnly,
-                        showsCachedOnly: includesDebrid
+                        showsCachedOnly: includesDebrid,
+                        extra: $extraFilter
                     )
                     .background(.bar)
                 }

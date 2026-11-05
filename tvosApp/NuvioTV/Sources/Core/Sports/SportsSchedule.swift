@@ -373,9 +373,12 @@ enum SportsSchedule {
             let name = fold(channel.name)
             let group = fold(channel.group)
             var score = 0
-            let teamHits = zip(teams, teamWords).filter { name.contains($0.0) || name.contains($0.1) }.count
+            // Whole words only: "Jazz" is not "DJAZZ TV", a music channel.
+            let padded = " \(name) "
+            func has(_ phrase: String) -> Bool { padded.contains(" \(phrase) ") }
+            let teamHits = zip(teams, teamWords).filter { has($0.0) || has($0.1) }.count
             score += teamHits * 10
-            if teamHits < 2, words.contains(where: { name.contains($0) }) { score += 5 }
+            if teamHits < 2, words.contains(where: has) { score += 5 }
             if score > 0, group.contains("sport") { score += 2 }
             if score >= 5 { scored.append((channel, score)) }
         }

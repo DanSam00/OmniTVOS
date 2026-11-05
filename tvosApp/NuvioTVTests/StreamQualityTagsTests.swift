@@ -691,7 +691,7 @@ final class StreamQualityTagsTests: XCTestCase {
         XCTAssertEqual(StreamSortOption(rawValueOrSync: "DEFAULT"), .default)
         XCTAssertEqual(StreamSortOption(rawValueOrSync: "Default"), .default)
         XCTAssertEqual(StreamSortOption(rawValueOrSync: "SIZE_DESC"), .size)
-        XCTAssertEqual(StreamSortOption(rawValueOrSync: "SIZE_ASC"), .size)
+        XCTAssertEqual(StreamSortOption(rawValueOrSync: "SIZE_ASC"), .sizeAscending)
         XCTAssertEqual(StreamSortOption(rawValueOrSync: "Size"), .size)
         XCTAssertEqual(StreamSortOption(rawValueOrSync: "NAME"), .name)
         XCTAssertEqual(StreamSortOption(rawValueOrSync: "Name"), .name)
