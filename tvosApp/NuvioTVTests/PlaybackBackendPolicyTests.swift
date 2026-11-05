@@ -3195,3 +3195,37 @@ final class FolderRegionTests: XCTestCase {
         XCTAssertFalse(FolderRegion.matches("[EN] A", region: "United Kingdom"))
     }
 }
+
+@MainActor
+final class MatchTwinTests: XCTestCase {
+    private func listing(_ id: String, _ name: String, type: String, genres: [String], released: String? = nil) -> NuvioMeta {
+        NuvioMeta(
+            id: id, name: name, description: nil, posterUrl: nil, backgroundUrl: nil, logoUrl: nil,
+            imdbId: nil, tmdbId: nil, type: type, year: nil, genres: genres, rating: nil,
+            releaseInfo: nil, runtime: nil, cast: nil, director: nil, writer: nil,
+            certification: nil, country: nil, released: released
+        )
+    }
+
+    func testSameMatchAcrossAddons() {
+        let nuvio = listing("nuvio_sport_123", "🔴 LIVE: Detroit Pistons vs Philadelphia 76ers", type: "tv", genres: ["BASKETBALL", "NBA"])
+        let streamed = listing("streamed:basketball-detroit-pistons-phil", "Detroit Pistons vs Philadelphia 76ers", type: "sport", genres: ["Basketball", "NBA"])
+        let reversed = listing("x:1", "76ers @ Pistons", type: "sport", genres: ["Basketball"])
+        let other = listing("x:2", "Detroit Pistons vs Boston Celtics", type: "sport", genres: ["Basketball"])
+        let teams = FixtureArtwork.teams(in: nuvio.name)!
+        XCTAssertTrue(FixtureArtwork.isMatch(nuvio))
+        XCTAssertTrue(RelatedMatches.isSameMatch(streamed, teams: teams, as: nuvio))
+        XCTAssertTrue(RelatedMatches.isSameMatch(reversed, teams: teams, as: nuvio))
+        XCTAssertFalse(RelatedMatches.isSameMatch(other, teams: teams, as: nuvio))
+        XCTAssertFalse(RelatedMatches.isSameMatch(nuvio, teams: teams, as: nuvio))
+    }
+
+    func testDifferentDaysAreDifferentMatches() {
+        let a = listing("a:1", "Flamengo vs Grêmio", type: "sport", genres: ["Football"], released: "2026-11-05T22:00:00Z")
+        let b = listing("b:1", "Flamengo vs Gremio", type: "tv", genres: ["Football"], released: "2026-11-06T09:00:00Z")
+        let c = listing("c:1", "Flamengo vs Grêmio", type: "sport", genres: ["Football"], released: "2026-11-12T22:00:00Z")
+        let teams = FixtureArtwork.teams(in: a.name)!
+        XCTAssertTrue(RelatedMatches.isSameMatch(b, teams: teams, as: a))
+        XCTAssertFalse(RelatedMatches.isSameMatch(c, teams: teams, as: a))
+    }
+}

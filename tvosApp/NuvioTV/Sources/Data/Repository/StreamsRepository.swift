@@ -104,6 +104,47 @@ final class StreamsRepository: ObservableObject {
 
     private static let iptvVODGroupId = "omni.iptv.vod"
 
+    /// The match this id opens, when it is one: a sports add-on's listing
+    /// as its catalog or page cached it. Add-on ids carry colons of their
+    /// own ("streamed:123"), so the whole id first.
+    private static func matchMeta(videoId: String) -> NuvioMeta? {
+        guard !SportsSchedule.isFixtureID(videoId), !videoId.hasPrefix("iptv") else { return nil }
+        let repository = CinemetaCatalogRepository()
+        guard let meta = repository.cachedMetadata(for: videoId)
+            ?? repository.cachedMetadata(for: baseContentId(from: videoId)),
+              FixtureArtwork.isMatch(meta) else { return nil }
+        return meta
+    }
+
+    /// The add-ons to ask about a match's other listings, each with the ids
+    /// it lists the match under.
+    nonisolated private static func twinTargets(
+        _ twins: [RelatedMatches.Twin],
+        urls: [URL],
+        manifests: [URL: StreamAddonManifest]
+    ) -> [StreamAddonTarget] {
+        var targets: [StreamAddonTarget] = []
+        for twin in twins {
+            guard let url = urls.first(where: { manifests[$0]?.id == twin.addonId }),
+                  let manifest = manifests[url],
+                  manifest.supportsResource("stream", type: twin.meta.type, id: twin.meta.id)
+            else { continue }
+            let addonId = stableAddonId(manifest: manifest, manifestURL: url)
+            if let index = targets.firstIndex(where: { $0.addonId == addonId }) {
+                targets[index].requests.append((twin.meta.type, twin.meta.id))
+            } else {
+                targets.append(StreamAddonTarget(
+                    addonId: addonId,
+                    displayName: manifest.displayName ?? CinemetaCatalogRepository.streamAddonName(for: url),
+                    manifestURL: url,
+                    logo: manifest.logo,
+                    requests: [(twin.meta.type, twin.meta.id)]
+                ))
+            }
+        }
+        return targets
+    }
+
     /// Whether this title is looked for in the IPTV providers' films and shows.
     private static func searchesIPTVLibrary(type: String, videoId: String) -> Bool {
         guard !videoId.hasPrefix("iptv"),
@@ -144,10 +185,22 @@ final class StreamsRepository: ObservableObject {
         )
     }
 
-    /// A fixture's live channels from the viewer's own IPTV playlists.
+    /// A match's live channels from the viewer's own IPTV playlists: a
+    /// fixture from Omni's schedule, or a match a sports add-on lists.
     private func sportsStreamGroup(videoId: String) async -> AddonStreamGroup? {
-        guard SportsSchedule.isFixtureID(videoId) else { return nil }
-        let streams = await SportsSchedule.liveStreams(forContentID: videoId)
+        let streams: [NuvioStream]
+        if SportsSchedule.isFixtureID(videoId) {
+            streams = await SportsSchedule.liveStreams(forContentID: videoId)
+        } else if IPTVSourceStore.sources().contains(where: \.enabled),
+                  // Add-on ids carry colons of their own ("sportsstreams:123"),
+                  // so the whole id first.
+                  let meta = CinemetaCatalogRepository().cachedMetadata(for: videoId)
+                    ?? CinemetaCatalogRepository().cachedMetadata(for: Self.baseContentId(from: videoId)),
+                  FixtureArtwork.isMatch(meta) {
+            streams = await SportsSchedule.liveStreams(forListing: meta)
+        } else {
+            return nil
+        }
         guard !streams.isEmpty else { return nil }
         return AddonStreamGroup(
             addonId: "omni.iptv.sports",
@@ -357,6 +410,11 @@ final class StreamsRepository: ObservableObject {
         let iptvVOD: Task<AddonStreamGroup?, Never>? = Self.searchesIPTVLibrary(type: type, videoId: videoId)
             ? Task { await self.iptvVODGroup(type: type, videoId: videoId) }
             : nil
+        // A match is listed by each sports add-on under its own id: find the
+        // others, so one match shows every add-on's streams together.
+        let twinsTask: Task<[RelatedMatches.Twin], Never>? = Self.matchMeta(videoId: videoId).map { meta in
+            Task { await RelatedMatches.twins(of: meta) }
+        }
         state = StreamsDiscoveryState(
             requestKey: requestKey,
             revision: state.revision &+ 1,
@@ -400,7 +458,7 @@ final class StreamsRepository: ObservableObject {
             )
         }
 
-        guard !targets.isEmpty else {
+        guard !targets.isEmpty || twinsTask != nil else {
             let ownedGroups = ownedGroups + [await iptvVOD?.value].compactMap { $0 ?? nil }
             guard activeRequestKey == requestKey else { return }
             state = StreamsDiscoveryState(
@@ -436,19 +494,49 @@ final class StreamsRepository: ObservableObject {
             hasResolvedTargets: true
         )
 
-        await withTaskGroup(of: GroupUpdate.self) { group in
+        // Streams per add-on from the title's own id and from its twins,
+        // kept apart so whichever lands second adds to the first.
+        var ownStreams: [String: AddonStreamGroup] = [:]
+        var twinStreams: [String: [NuvioStream]] = [:]
+        await withTaskGroup(of: (updates: [GroupUpdate], twin: Bool).self) { group in
             for target in targets {
                 group.addTask {
-                    await Self.fetchAddonGroup(target: target, type: type, videoId: videoId)
+                    ([await Self.fetchAddonGroup(target: target, type: type, videoId: videoId)], false)
+                }
+            }
+            if let twinsTask {
+                group.addTask {
+                    let twins = await twinsTask.value
+                    let twinTargets = Self.twinTargets(twins, urls: enabledURLs, manifests: manifestsByURL)
+                    var updates: [GroupUpdate] = []
+                    await withTaskGroup(of: GroupUpdate.self) { inner in
+                        for target in twinTargets {
+                            inner.addTask { await Self.fetchAddonGroup(target: target, type: type, videoId: videoId) }
+                        }
+                        for await update in inner { updates.append(update) }
+                    }
+                    return (updates, true)
                 }
             }
 
-            for await update in group {
+            for await result in group {
                 guard !Task.isCancelled else { break }
                 guard self.activeRequestKey == requestKey else { break }
-                // Keep isAnyLoading true for the whole stream phase so the last
-                // group completing cannot drop observers before external subtitles.
-                apply(update: update, requestKey: requestKey, forceLoading: true)
+                for update in result.updates {
+                    if result.twin {
+                        twinStreams[update.addonId, default: []] += update.group.streams
+                    } else {
+                        ownStreams[update.addonId] = update.group
+                    }
+                    var merged = ownStreams[update.addonId] ?? update.group
+                    let own = Set(merged.streams.map(\.id))
+                    merged.streams += (twinStreams[update.addonId] ?? []).filter { !own.contains($0.id) }
+                    if !merged.streams.isEmpty { merged.error = nil }
+                    merged.isLoading = ownStreams[update.addonId] == nil && targets.contains { $0.addonId == update.addonId }
+                    // Keep isAnyLoading true for the whole stream phase so the last
+                    // group completing cannot drop observers before external subtitles.
+                    apply(update: GroupUpdate(addonId: update.addonId, group: merged), requestKey: requestKey, forceLoading: true)
+                }
             }
         }
 
@@ -489,7 +577,14 @@ final class StreamsRepository: ObservableObject {
 
     private func apply(update: GroupUpdate, requestKey: String, forceLoading: Bool) {
         var groups = state.groups
-        guard let index = groups.firstIndex(where: { $0.addonId == update.addonId }) else { return }
+        guard let index = groups.firstIndex(where: { $0.addonId == update.addonId }) else {
+            // An add-on reached only through a twin listing: shown once it
+            // has something.
+            guard !update.group.streams.isEmpty else { return }
+            groups.append(update.group)
+            publish(groups: groups, requestKey: requestKey, forceLoading: forceLoading)
+            return
+        }
         groups[index] = update.group
         publish(groups: groups, requestKey: requestKey, forceLoading: forceLoading)
     }
@@ -520,6 +615,9 @@ final class StreamsRepository: ObservableObject {
         let displayName: String
         let manifestURL: URL
         let logo: String?
+        /// What to ask it for. The title itself, unless this add-on lists the
+        /// same match under an id of its own (`RelatedMatches.twins`).
+        var requests: [(type: String, id: String)] = []
     }
 
     private struct GroupUpdate {
@@ -545,6 +643,27 @@ final class StreamsRepository: ObservableObject {
         type: String,
         videoId: String
     ) async -> GroupUpdate {
+        guard target.requests.count <= 1 else {
+            // Several listings of one match in this add-on: all of them.
+            var streams: [NuvioStream] = []
+            var lastError: String?
+            for request in target.requests {
+                var single = target
+                single.requests = [request]
+                let update = await fetchAddonGroup(target: single, type: request.type, videoId: request.id)
+                streams += update.group.streams.filter { new in !streams.contains { $0.id == new.id } }
+                lastError = update.group.error ?? lastError
+            }
+            return GroupUpdate(
+                addonId: target.addonId,
+                group: AddonStreamGroup(
+                    addonId: target.addonId, displayName: target.displayName, streams: streams,
+                    isLoading: false, error: streams.isEmpty ? lastError : nil
+                )
+            )
+        }
+        let type = target.requests.first?.type ?? type
+        let videoId = target.requests.first?.id ?? videoId
         guard let streamURL = AddonTransportUrls.buildResourceURL(
             manifestURL: target.manifestURL,
             resource: "stream",

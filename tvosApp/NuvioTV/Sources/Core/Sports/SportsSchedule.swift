@@ -339,13 +339,29 @@ enum SportsSchedule {
     static func liveStreams(forContentID id: String) async -> [NuvioStream] {
         if meta(forContentID: id) == nil { _ = await fixtures() }
         guard let meta = meta(forContentID: id) else { return [] }
-        let channels = await IPTVLibrary.shared.allChannels()
-        guard !channels.isEmpty else { return [] }
-
         let league = leagues.first { $0.name == meta.genres?.first }
             ?? meta.genres?.first.map { League(id: $0, name: $0, channelWords: [$0]) }
-        let teams = meta.name
-            .components(separatedBy: " vs. ")
+        let teams = meta.name.components(separatedBy: " vs. ")
+        return await liveStreams(teams: teams, league: league)
+    }
+
+    /// The same for a match listed by a sports add-on (Omni X): its teams
+    /// from the title, its competition — else its sport — from the genres.
+    @MainActor
+    static func liveStreams(forListing meta: NuvioMeta) async -> [NuvioStream] {
+        guard let parsed = FixtureArtwork.teams(in: meta.name) else { return [] }
+        let filing = RelatedMatches.filing(of: meta)
+        let league: League? = filing.competition.flatMap { competition in
+            let wanted = fold(competition)
+            return leagues.first { fold($0.name).contains(wanted) || wanted.contains(fold($0.name)) }
+        } ?? (filing.competition ?? filing.sport).map { League(id: $0, name: $0, channelWords: [$0]) }
+        return await liveStreams(teams: [parsed.home, parsed.away], league: league)
+    }
+
+    private static func liveStreams(teams teamNames: [String], league: League?) async -> [NuvioStream] {
+        let channels = await IPTVLibrary.shared.allChannels()
+        guard !channels.isEmpty else { return [] }
+        let teams = teamNames
             .map(fold)
             .filter { $0.count >= 3 }
         let teamWords = teams.map { $0.split(separator: " ").map(String.init).filter { $0.count >= 4 }.last ?? $0 }

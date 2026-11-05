@@ -126,6 +126,104 @@ enum RelatedMatches {
         return Array(others.filter { seen.insert($0.id).inserted }.prefix(limit))
     }
 
+    // MARK: The same match in other add-ons
+
+    /// A listing of the same match by another add-on (or another catalog of
+    /// the same one), with the add-on that serves it.
+    struct Twin {
+        let meta: NuvioMeta
+        /// The add-on's manifest id.
+        let addonId: String
+    }
+
+    /// Every other listing of this match. Films and episodes share an IMDb id
+    /// that every add-on answers to; a match does not — each sports add-on
+    /// files it under its own id ("nuvio_sport_…", "streamed:…") and serves
+    /// streams only for that. So the sports catalogs of every type are read
+    /// (first page, kept ten minutes) for the same two teams on the same day.
+    static func twins(of meta: NuvioMeta) async -> [Twin] {
+        guard let teams = FixtureArtwork.teams(in: meta.name) else { return [] }
+        let catalogs = await repository.availableAddonCatalogs().filter { catalog in
+            guard !catalog.genreRequired else { return false }
+            let type = catalog.type.lowercased()
+            let name = catalog.catalogName.lowercased()
+            // Where matches are listed: sports, TV and event catalogs, or any
+            // catalog named for a sport. Not every add-on's films and clips.
+            let namedForSport = name.contains("sport") || sportNames.contains { name.contains($0) }
+            return namedForSport || ["sport", "tv", "channel", "event", "live"].contains { type.contains($0) }
+        }
+        var found: [Twin] = []
+        await withTaskGroup(of: (String, [NuvioMeta])?.self) { group in
+            for catalog in catalogs {
+                let key = catalog.addonId + "|" + catalog.type + "|" + catalog.catalogId + "|1"
+                if let cached = pages[key], Date().timeIntervalSince(cached.at) < lifetime {
+                    found += cached.items.filter { isSameMatch($0, teams: teams, as: meta) }
+                        .map { Twin(meta: $0, addonId: catalog.addonId) }
+                    continue
+                }
+                group.addTask { [repository] in
+                    guard let page = try? await repository.browseCatalog(
+                        addonId: catalog.addonId,
+                        contentType: catalog.type,
+                        catalogId: catalog.catalogId,
+                        skip: 0,
+                        genre: nil
+                    ), !page.items.isEmpty else { return nil }
+                    await MainActor.run { pages[key] = (page.items, Date()) }
+                    return (catalog.addonId, page.items)
+                }
+            }
+            for await result in group {
+                guard let (addonId, items) = result else { continue }
+                found += items.filter { isSameMatch($0, teams: teams, as: meta) }
+                    .map { Twin(meta: $0, addonId: addonId) }
+            }
+        }
+        var seen: Set<String> = [meta.id]
+        return found.filter { seen.insert($0.meta.id).inserted }
+    }
+
+    /// Both teams, either way round ("76ers" is "Philadelphia 76ers"), and,
+    /// when both listings carry a date, within a day of each other.
+    static func isSameMatch(_ candidate: NuvioMeta, teams: (home: String, away: String, suffix: String?), as meta: NuvioMeta) -> Bool {
+        guard candidate.id != meta.id, let other = FixtureArtwork.teams(in: candidate.name) else { return false }
+        let mine = [teamKey(teams.home), teamKey(teams.away)]
+        let theirs = [teamKey(other.home), teamKey(other.away)]
+        let straight = sameTeam(mine[0], theirs[0]) && sameTeam(mine[1], theirs[1])
+        let swapped = sameTeam(mine[0], theirs[1]) && sameTeam(mine[1], theirs[0])
+        guard straight || swapped else { return false }
+        if let a = date(of: meta), let b = date(of: candidate), abs(a.timeIntervalSince(b)) > 30 * 3600 { return false }
+        return true
+    }
+
+    private static func teamKey(_ name: String) -> [String] {
+        name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+            .replacingOccurrences(of: "[^a-z0-9 ]", with: " ", options: .regularExpression)
+            .split(separator: " ")
+            .map(String.init)
+            .filter { !["fc", "afc", "cf", "sc", "the", "de", "club"].contains($0) }
+    }
+
+    /// One name inside the other ("Pistons" / "Detroit Pistons"), or the
+    /// same distinctive last word.
+    private static func sameTeam(_ a: [String], _ b: [String]) -> Bool {
+        guard !a.isEmpty, !b.isEmpty else { return false }
+        let x = a.joined(separator: " "), y = b.joined(separator: " ")
+        if x == y || " \(x) ".contains(" \(y) ") || " \(y) ".contains(" \(x) ") { return true }
+        guard let lastA = a.last, let lastB = b.last, lastA.count >= 4 else { return false }
+        return lastA == lastB
+    }
+
+    private static func date(of meta: NuvioMeta) -> Date? {
+        guard let raw = meta.released, !raw.isEmpty else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: raw) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: raw)
+    }
+
     private static func isSameCompetition(_ candidate: NuvioMeta, _ competition: String) -> Bool {
         filing(of: candidate).competition?.caseInsensitiveCompare(competition) == .orderedSame
     }
