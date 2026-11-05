@@ -109,7 +109,7 @@ class PlayerViewModel: ObservableObject {
     /// Current mpv `sub-delay`, in milliseconds. Per-session, not persisted.
     @Published var subtitleDelayMs: Int = 0
     @Published private(set) var subtitleStyle = SubtitleStyle.current
-    /// Session-only override used when AI Subtitle auto-select is disabled.
+    /// Per-playback switch, needed when AI Subtitle auto-select is disabled.
     @Published private(set) var isAISubtitleTranslationManuallyEnabled = false
     /// Current mpv `audio-delay`, in milliseconds. Per-session, not persisted.
     @Published var audioDelayMs: Int = 0
@@ -2655,29 +2655,37 @@ class PlayerViewModel: ObservableObject {
         engine.applySubtitleStyle()
     }
 
-    /// Auto-select begins translation at playback. When it is disabled, expose
-    /// an explicit per-session switch in the player without changing the
-    /// user's global integration preference.
-    var canManuallyToggleAISubtitleTranslation: Bool {
+    /// The player's AI Translation switch shows on every playback except
+    /// trailers and live streams, so translation can be turned on or off from
+    /// the player as well as from Settings.
+    var showsAISubtitleTranslationSwitch: Bool {
+        Self.shouldShowAISubtitleOutcome(subtitle: subtitle, isLiveStream: isLiveStream)
+    }
+
+    /// Whether translation is running for this playback. The player switch and
+    /// Settings → Subtitle Style write the same setting; with Auto-select off
+    /// in Settings it also needs the per-playback switch.
+    var isAISubtitleTranslationOn: Bool {
         let settings = AISubtitleTranslationSettings.current()
         return settings.isEnabled
             && !settings.apiKey.isEmpty
-            && !settings.autoSelect
-            && Self.shouldShowAISubtitleOutcome(subtitle: subtitle, isLiveStream: isLiveStream)
+            && (settings.autoSelect || isAISubtitleTranslationManuallyEnabled)
     }
 
-    func setAISubtitleTranslationManuallyEnabled(_ enabled: Bool) {
+    func setAISubtitleTranslationOn(_ on: Bool) {
         let settings = AISubtitleTranslationSettings.current()
-        guard settings.isEnabled, !settings.apiKey.isEmpty else {
-            showPlayerToast("Set up AI Subtitles in Settings → Integrations")
+        guard !settings.apiKey.isEmpty else {
+            showPlayerToast("Add an API key in Settings → Integrations → AI Subtitles")
             return
         }
-        isAISubtitleTranslationManuallyEnabled = enabled
+        AISubtitleSwitch.write(on)
+        // Always assigned, so the panel redraws even when the value is unchanged.
+        isAISubtitleTranslationManuallyEnabled = on
         switch activeEngineKind {
         case .aether:
-            aetherController.subtitleTranslationState.setManualActivation(enabled)
+            aetherController.subtitleTranslationState.setManualActivation(on)
         case .mpv:
-            playerController.subtitleTranslationState.setManualActivation(enabled)
+            playerController.subtitleTranslationState.setManualActivation(on)
         }
     }
 

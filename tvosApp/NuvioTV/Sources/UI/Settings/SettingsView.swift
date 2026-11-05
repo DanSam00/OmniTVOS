@@ -815,6 +815,52 @@ enum AISubtitleProvider: String, CaseIterable, Identifiable {
     }
 }
 
+/// The on/off switch for AI subtitle translation. Settings → Subtitle Style,
+/// the Integrations sheet and the player's subtitle panel all write this one
+/// setting. Views observe it here rather than through `@AppStorage`, which
+/// misses writes made from the player.
+@MainActor
+final class AISubtitleSwitch: ObservableObject {
+    @Published private(set) var isOn = false
+    @Published private(set) var hasKey = false
+    private var observers: [NSObjectProtocol] = []
+
+    init() {
+        refresh()
+        let center = NotificationCenter.default
+        for name in [
+            ProfileSettings.settingsChangedNotification,
+            UserDefaults.didChangeNotification,
+            AISubtitleKeyStore.changedNotification,
+        ] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.refresh() }
+            })
+        }
+    }
+
+    deinit {
+        observers.forEach(NotificationCenter.default.removeObserver)
+    }
+
+    func set(_ on: Bool) {
+        Self.write(on)
+        refresh()
+    }
+
+    nonisolated static func write(_ on: Bool) {
+        ProfileSettings.current.set(on, forKey: SettingsKey.aiSubtitlesEnabled)
+        ProfileSettings.notifySettingsChanged()
+    }
+
+    private func refresh() {
+        let settings = AISubtitleTranslationSettings.current()
+        let key = !settings.apiKey.isEmpty
+        if hasKey != key { hasKey = key }
+        if isOn != settings.isEnabled { isOn = settings.isEnabled }
+    }
+}
+
 /// Device-local AI subtitle credentials. The non-secret enable/model
 /// preferences remain per-profile in UserDefaults, while keys stay in Keychain.
 enum AISubtitleKeyStore {
@@ -7277,6 +7323,7 @@ struct SubtitleStyleEditor: View {
     @AppStorage(SubtitleStyleKey.backgroundEnabled) private var backgroundEnabled = SubtitleStyleDefaults.backgroundEnabled
     @AppStorage(SubtitleStyleKey.backgroundColor) private var backgroundColor = SubtitleStyleDefaults.backgroundColor
     @AppStorage(SubtitleStyleKey.backgroundOpacity) private var backgroundOpacity = SubtitleStyleDefaults.backgroundOpacity
+    @StateObject private var aiSwitch = AISubtitleSwitch()
 
     private var style: SubtitleStyle {
         SubtitleStyle(
@@ -7364,6 +7411,23 @@ struct SubtitleStyleEditor: View {
                     step: 5,
                     suffix: "%",
                     accentColor: accentColor
+                )
+            }
+
+            SettingsGroup(
+                title: L10n.string("settings_ai_subtitles_title", fallback: "AI Subtitles"),
+                subtitle: aiSwitch.hasKey
+                    ? "Translate subtitles live while you watch. The player's subtitle panel has the same switch."
+                    : "Add an API key in Integrations → AI Subtitles to turn this on."
+            ) {
+                SettingsToggleRow(
+                    title: L10n.string("settings_ai_subtitles_action_title", fallback: "AI Subtitle Translation"),
+                    subtitle: aiSwitch.hasKey
+                        ? "Provider, model and language are in Integrations → AI Subtitles"
+                        : "Needs an API key first",
+                    isOn: Binding(get: { aiSwitch.isOn && aiSwitch.hasKey }, set: { aiSwitch.set($0) }),
+                    accentColor: accentColor,
+                    enabled: aiSwitch.hasKey
                 )
             }
 

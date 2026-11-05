@@ -1447,9 +1447,9 @@ private struct PhoneSubtitlesPanel: View {
                 onPlus: { viewModel.setSubtitleDelayMs(viewModel.subtitleDelayMs + 100) },
                 onReset: { viewModel.setSubtitleDelayMs(0) }
             )
-            if viewModel.canManuallyToggleAISubtitleTranslation {
-                PhonePanelToggle(title: "AI Translation", isOn: viewModel.isAISubtitleTranslationManuallyEnabled) {
-                    viewModel.setAISubtitleTranslationManuallyEnabled(!viewModel.isAISubtitleTranslationManuallyEnabled)
+            if viewModel.showsAISubtitleTranslationSwitch {
+                PhonePanelToggle(title: "AI Translation", isOn: viewModel.isAISubtitleTranslationOn) {
+                    viewModel.setAISubtitleTranslationOn(!viewModel.isAISubtitleTranslationOn)
                 }
             }
 

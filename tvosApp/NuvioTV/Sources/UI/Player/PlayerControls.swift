@@ -985,16 +985,75 @@ struct PlayerSettingsPanel: View {
     }
 
     private var macStyleColumn: [Focus] {
-        var controls: [StyleControl] = [.delayMinus, .delayPlus]
-        if viewModel.canManuallyToggleAISubtitleTranslation { controls.append(.aiTranslation) }
-        controls += [.sizeMinus, .sizePlus, .bold]
-        controls += Self.palette.map { .color($0) }
-        controls += [.opacityMinus, .opacityPlus, .outline, .background]
+        macStyleRows.flatMap { $0 }
+    }
+
+    /// The style column as it is laid out: one entry per line on screen, so
+    /// left and right move along a stepper or the colour swatches, and up and
+    /// down move between lines.
+    private var macStyleRows: [[Focus]] {
+        var rows: [[StyleControl]] = [[.delayMinus, .delayPlus]]
+        if viewModel.showsAISubtitleTranslationSwitch { rows.append([.aiTranslation]) }
+        rows.append([.sizeMinus, .sizePlus])
+        rows.append([.bold])
+        rows.append(Self.palette.map { .color($0) })
+        rows.append([.opacityMinus, .opacityPlus])
+        rows.append([.outline])
+        rows.append([.background])
         if style.backgroundEnabled {
-            controls += Self.backgroundPalette.map { .backgroundColor($0) }
-            controls += [.backgroundOpacityMinus, .backgroundOpacityPlus]
+            rows.append(Self.backgroundPalette.map { .backgroundColor($0) })
+            rows.append([.backgroundOpacityMinus, .backgroundOpacityPlus])
         }
-        return controls.map { .style($0) }
+        return rows.map { $0.map { .style($0) } }
+    }
+
+    /// Up, down, left and right inside the style column. Returns false when the
+    /// move leaves the column, so the caller moves between columns instead.
+    private func macMoveInStyle(_ key: MacKey) -> Bool {
+        guard let macFocus else { return false }
+        let rows = macStyleRows
+        guard let row = rows.firstIndex(where: { $0.contains(macFocus) }),
+              let item = rows[row].firstIndex(of: macFocus) else { return false }
+        switch key {
+        case .up:
+            if row == 0 {
+                self.macFocus = .tab(tab)
+            } else {
+                let target = rows[row - 1]
+                self.macFocus = target[Self.nearestIndex(item, from: rows[row].count, to: target.count)]
+            }
+            return true
+        case .down:
+            if row + 1 < rows.count {
+                let target = rows[row + 1]
+                self.macFocus = target[Self.nearestIndex(item, from: rows[row].count, to: target.count)]
+            }
+            return true
+        case .left:
+            if item > 0 {
+                self.macFocus = rows[row][item - 1]
+            } else {
+                // Off the left edge: into the column beside it, level with this line.
+                let columns = macColumns
+                guard columns.count > 1 else { return true }
+                let target = columns[columns.count - 2]
+                self.macFocus = target[min(row, target.count - 1)]
+            }
+            return true
+        case .right:
+            if item + 1 < rows[row].count { self.macFocus = rows[row][item + 1] }
+            return true
+        case .activate, .back:
+            return false
+        }
+    }
+
+    /// Keeps the caret on the same side when moving between lines of
+    /// different lengths: from a stepper's "+" down to the last swatch, say.
+    private static func nearestIndex(_ index: Int, from count: Int, to targetCount: Int) -> Int {
+        guard targetCount > 1, count > 1 else { return 0 }
+        if index == count - 1 { return targetCount - 1 }
+        return min(index, targetCount - 1)
     }
 
     /// Where the caret is now, as (column, row). Nil while it is on the tabs.
@@ -1055,11 +1114,9 @@ struct PlayerSettingsPanel: View {
         case .delayMinus: viewModel.setSubtitleDelayMs(viewModel.subtitleDelayMs - 50)
         case .delayPlus: viewModel.setSubtitleDelayMs(viewModel.subtitleDelayMs + 50)
         case .aiTranslation:
-            viewModel.setAISubtitleTranslationManuallyEnabled(
-                !viewModel.isAISubtitleTranslationManuallyEnabled
-            )
+            viewModel.setAISubtitleTranslationOn(!viewModel.isAISubtitleTranslationOn)
         case .sizeMinus: updateStyle { $0.textSize = max($0.textSize - 5, 60) }
-        case .sizePlus: updateStyle { $0.textSize = min($0.textSize + 5, 200) }
+        case .sizePlus: updateStyle { $0.textSize = min($0.textSize + 5, 220) }
         case .bold: updateStyle { $0.bold.toggle() }
         case .color(let hex): updateStyle { $0.textColorHex = hex }
         case .opacityMinus: updateStyle { $0.textOpacity = max($0.textOpacity - 5, 20) }
@@ -1105,6 +1162,10 @@ struct PlayerSettingsPanel: View {
             return
         }
 
+        let styleColumnIndex = tab == .subtitles && columns.last == macStyleColumn
+            ? columns.count - 1 : nil
+        if position.column == styleColumnIndex, macMoveInStyle(key) { return }
+
         switch key {
         case .back:
             // Closed above, before the caret sees the key.
@@ -1126,6 +1187,12 @@ struct PlayerSettingsPanel: View {
             macFocus = target[min(position.row, target.count - 1)]
         case .right:
             guard position.column + 1 < columns.count else { return }
+            if position.column + 1 == styleColumnIndex {
+                // Land at the start of the line level with the caret.
+                let rows = macStyleRows
+                macFocus = rows[min(position.row, rows.count - 1)].first
+                return
+            }
             let target = columns[position.column + 1]
             macFocus = target[min(position.row, target.count - 1)]
         case .activate:
@@ -1551,15 +1618,13 @@ struct PlayerSettingsPanel: View {
                         onPlus: { viewModel.setSubtitleDelayMs(viewModel.subtitleDelayMs + 50) }
                     )
 
-                    if viewModel.canManuallyToggleAISubtitleTranslation {
+                    if viewModel.showsAISubtitleTranslationSwitch {
                         toggleRow(
                             title: "AI Translation",
-                            isOn: viewModel.isAISubtitleTranslationManuallyEnabled,
+                            isOn: viewModel.isAISubtitleTranslationOn,
                             focusKey: .aiTranslation
                         ) {
-                            viewModel.setAISubtitleTranslationManuallyEnabled(
-                                !viewModel.isAISubtitleTranslationManuallyEnabled
-                            )
+                            viewModel.setAISubtitleTranslationOn(!viewModel.isAISubtitleTranslationOn)
                         }
                     }
 
