@@ -14,6 +14,9 @@ import com.nuvio.app.features.p2p.P2pStreamingState
 import com.nuvio.app.features.p2p.formatP2pMegabytes
 import com.nuvio.app.features.p2p.formatP2pSpeed
 import com.nuvio.app.isIos
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.hazeSource
+import dev.chrisbanes.haze.rememberHazeState
 import kotlinx.coroutines.launch
 import nuvio.composeapp.generated.resources.*
 
@@ -82,6 +85,7 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
         }
     }
     val gestureCallbacks = rememberSurfaceGestureCallbacks()
+    val hazeState = rememberHazeState()
 
     Box(
         modifier = Modifier
@@ -123,7 +127,7 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
                 sourceResponseHeaders = activeSourceResponseHeaders,
                 externalSubtitles = externalSubtitles,
                 streamType = activeStreamType,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().hazeSource(state = hazeState),
                 playWhenReady = shouldPlay,
                 resizeMode = resizeMode,
                 onControllerReady = { controller ->
@@ -174,7 +178,7 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
             )
         }
 
-        RenderPlayerControls(displayedPositionMs = displayedPositionMs, isEpisode = isEpisode)
+        RenderPlayerControls(displayedPositionMs = displayedPositionMs, isEpisode = isEpisode, hazeState = hazeState)
         RenderPlaybackOverlays(
             runtime = runtime,
             displayedPositionMs = displayedPositionMs,
@@ -190,7 +194,7 @@ internal fun PlayerScreenRuntime.RenderPlayerRuntimeUi() {
 }
 
 @Composable
-private fun PlayerScreenRuntime.RenderPlayerControls(displayedPositionMs: Long, isEpisode: Boolean) {
+private fun PlayerScreenRuntime.RenderPlayerControls(displayedPositionMs: Long, isEpisode: Boolean, hazeState: HazeState) {
     AnimatedVisibility(
         visible = (controlsVisible || showParentalGuide) && !playerControlsLocked,
         enter = fadeIn(),
@@ -291,6 +295,7 @@ private fun PlayerScreenRuntime.RenderPlayerControls(displayedPositionMs: Long, 
                 scheduleProgressSyncAfterSeek()
             },
             horizontalSafePadding = horizontalSafePadding,
+            hazeState = hazeState,
             modifier = Modifier.fillMaxSize(),
         )
     }

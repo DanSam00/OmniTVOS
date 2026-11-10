@@ -59,8 +59,20 @@ import com.nuvio.app.core.ui.AppIconResource
 import com.nuvio.app.core.ui.NuvioBackButton
 import com.nuvio.app.core.ui.appIconPainter
 import com.nuvio.app.core.ui.nuvioTypeScale
+import dev.chrisbanes.haze.HazeProgressive
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.HazeStyle
+import dev.chrisbanes.haze.HazeTint
+import dev.chrisbanes.haze.hazeEffect
 import nuvio.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.stringResource
+
+/**
+ * The scrim behind the header reads as a faint reflection of the video, so its blur stays light
+ * and fades out toward the video rather than matching the heavier footer frost.
+ */
+private val PlayerHeaderScrimBlurRadius = 16.dp
+private val PlayerFooterScrimBlurRadius = 30.dp
 
 @Composable
 internal fun PlayerControlsShell(
@@ -96,22 +108,27 @@ internal fun PlayerControlsShell(
     onScrubChange: (Long) -> Unit,
     onScrubFinished: (Long) -> Unit,
     horizontalSafePadding: androidx.compose.ui.unit.Dp,
+    hazeState: HazeState,
     modifier: Modifier = Modifier,
 ) {
     Box(modifier = modifier.fillMaxSize()) {
+        // Frosted-glass reflection of the video: a light frost near the top of the screen that
+        // deepens the further down the screen it sits, fading to clear right where it meets the video.
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(160.dp)
                 .align(Alignment.TopCenter)
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color.Black.copy(alpha = 0.7f),
-                            Color.Transparent,
-                        ),
-                    ),
-                ),
+                .hazeEffect(state = hazeState) {
+                    style = HazeStyle(
+                        tint = HazeTint(Color.Black.copy(alpha = 0.45f)),
+                        blurRadius = PlayerHeaderScrimBlurRadius,
+                    )
+                    progressive = HazeProgressive.verticalGradient(
+                        startIntensity = 1f,
+                        endIntensity = 0f,
+                    )
+                },
         )
 
         Box(
@@ -119,14 +136,16 @@ internal fun PlayerControlsShell(
                 .fillMaxWidth()
                 .height(220.dp)
                 .align(Alignment.BottomCenter)
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            Color.Black.copy(alpha = 0.7f),
-                        ),
-                    ),
-                ),
+                .hazeEffect(state = hazeState) {
+                    style = HazeStyle(
+                        tint = HazeTint(Color.Black.copy(alpha = 0.55f)),
+                        blurRadius = PlayerFooterScrimBlurRadius,
+                    )
+                    progressive = HazeProgressive.verticalGradient(
+                        startIntensity = 0f,
+                        endIntensity = 1f,
+                    )
+                },
         )
 
         Box(
