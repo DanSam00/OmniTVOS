@@ -2327,3 +2327,71 @@ private extension View {
         #endif
     }
 }
+
+
+// MARK: - Frosted scrim
+
+/// Frosted glass behind the player's controls: the video shows through,
+/// blurred. The bottom band, behind the transport and timeline, frosts
+/// hardest at the screen edge and clears as it rises; the top band, behind
+/// the title, is lighter and clears downward. A light dark tint keeps white
+/// text readable over bright scenes. Always dark, whatever the system style:
+/// it sits over video.
+struct PlayerFrostedScrim: View {
+    /// Share of the screen height each band covers.
+    var topFraction: CGFloat = 0.26
+    var bottomFraction: CGFloat = 0.42
+
+    var body: some View {
+        GeometryReader { proxy in
+            VStack(spacing: 0) {
+                band(edge: .top)
+                    .frame(height: proxy.size.height * topFraction)
+                Spacer(minLength: 0)
+                band(edge: .bottom)
+                    .frame(height: proxy.size.height * bottomFraction)
+            }
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+        .environment(\.colorScheme, .dark)
+    }
+
+    /// One band. Two materials stack so the blur deepens toward the edge,
+    /// not just its opacity: a thin one across the band, and a thicker one
+    /// over the outer part.
+    private func band(edge: VerticalEdge) -> some View {
+        let inward: UnitPoint = edge == .top ? .bottom : .top
+        let outward: UnitPoint = edge == .top ? .top : .bottom
+        let strength: Double = edge == .top ? 0.75 : 1
+        return ZStack {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .mask(LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0),
+                        .init(color: .black.opacity(0.85 * strength), location: 0.45),
+                        .init(color: .black.opacity(strength), location: 1),
+                    ],
+                    startPoint: inward,
+                    endPoint: outward
+                ))
+            Rectangle()
+                .fill(.thinMaterial)
+                .mask(LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0.35),
+                        .init(color: .black.opacity(0.9 * strength), location: 1),
+                    ],
+                    startPoint: inward,
+                    endPoint: outward
+                ))
+            LinearGradient(
+                colors: [.clear, .black.opacity(edge == .top ? 0.32 : 0.45)],
+                startPoint: inward,
+                endPoint: outward
+            )
+        }
+    }
+}

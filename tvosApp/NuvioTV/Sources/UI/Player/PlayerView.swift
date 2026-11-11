@@ -515,6 +515,13 @@ struct PlayerView: View {
             .allowsHitTesting(!viewModel.postPlayState.isVisible)
             .zIndex(5)
             #else
+            // Frosted glass behind the controls. Its own layer, so it only
+            // fades: inside the controls it scaled with them on show and
+            // hide, and its edge showed as a rectangle.
+            PlayerFrostedScrim()
+                .opacity(controlsChromeVisible ? 1 : 0)
+                .animation(.playerControls, value: controlsChromeVisible)
+                .hiddenInMiniWindow(isMiniWindow)
             PlayerControls(
                 viewModel: viewModel,
                 isSkipSegmentFocused: skipSegmentFocused,
@@ -663,6 +670,18 @@ struct PlayerView: View {
             // Hold for the full player session (not only .playing/.buffering).
             // Status flicker previously re-enabled Sleep After mid-watch.
             PlaybackWakeLock.acquire()
+            #if (os(macOS) && OMNI_MAC_DEBUG_PLAY) || (os(tvOS) && OMNI_TV_DEBUG_PLAY)
+            // `-OmniDebugControlsAfter <seconds>`: bring the controls up and
+            // keep them up, for screenshots, without pressing anything.
+            let controlsAfter = UserDefaults.standard.double(forKey: "OmniDebugControlsAfter")
+            if controlsAfter > 0 {
+                for tick in 0..<30 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + controlsAfter + Double(tick) * 2) { [viewModel] in
+                        viewModel.revealControls()
+                    }
+                }
+            }
+            #endif
             viewModel.load(
                 url: url,
                 meta: meta,
@@ -1038,6 +1057,16 @@ struct PlayerView: View {
             return
         }
         onBack()
+    }
+
+    /// Whether the transport controls are on screen (Apple TV and Mac).
+    private var controlsChromeVisible: Bool {
+        viewModel.showControls
+            && didReportPlaybackStarted
+            && !viewModel.isSwitchingSource
+            && !viewModel.showSettingsPanel
+            && !viewModel.isScrubbing
+            && !viewModel.showPauseOverlay
     }
 
     #if os(macOS)
