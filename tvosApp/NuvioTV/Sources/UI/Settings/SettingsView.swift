@@ -11305,14 +11305,9 @@ private struct CollectionsSettingsSection: View {
         #endif
     }
 
-    /// The community browser is the iPhone's for now.
-    private static var hasCommunityBrowser: Bool {
-        #if os(iOS)
-        true
-        #else
-        false
-        #endif
-    }
+    /// Every platform browses nuvio.tv's community collections now: the
+    /// iPhone in its own list sheet, the TV and Mac in a glass panel.
+    private static var hasCommunityBrowser: Bool { true }
 
     private static var noCollectionsText: String {
         #if os(iOS) || os(macOS)
@@ -11386,7 +11381,10 @@ private struct CollectionsSettingsSection: View {
                         showToast("Added \(title)")
                     }
                     #else
-                    EmptyView()
+                    CommunityCollectionsPanelSheet(accentColor: accentColor) { rows, title in
+                        importCollections(rows)
+                        showToast("Added \(title)")
+                    }
                     #endif
                 case .editor(let index):
                     CollectionEditorSheet(
@@ -11552,6 +11550,15 @@ private struct CollectionsActionBar: View {
         .padding(.vertical, 12)
         #else
         HStack(spacing: 14) {
+            if let onCommunity {
+                CollectionsGlassButton(
+                    title: "Community",
+                    systemImage: "person.3",
+                    prominent: false,
+                    disabled: false,
+                    action: onCommunity
+                )
+            }
             CollectionsGlassButton(
                 title: L10n.string("tvos_settings_export", fallback: "Export"),
                 systemImage: "square.and.arrow.up",
@@ -11671,6 +11678,271 @@ private struct CollectionsGlassButton: View {
         return Color.white.opacity(prominent ? 0.20 : 0.14)
     }
 }
+
+// MARK: Community collections (TV and Mac)
+
+#if !os(iOS)
+/// Settings → Layout → Collections → Community on the TV and Mac: browse the
+/// collections shared on nuvio.tv and add them. The iPhone has its own list
+/// sheet (`PhoneCommunityCollectionsSheet`); this is the same browser in the
+/// glass-panel language of Templates, with a kids profile seeing the
+/// child-friendly entries first and getting only the children's part of one.
+private struct CommunityCollectionsPanelSheet: View {
+    let accentColor: Color
+    /// Adds the chosen entry's collections (the same merge as Import).
+    let onAdd: (_ rows: [[String: Any]], _ title: String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var sort: CommunityCollections.Sort = .popular
+    @State private var search = ""
+    @State private var items: [CommunityCollections.Item] = []
+    @State private var page = 1
+    @State private var hasNextPage = false
+    @State private var isLoading = false
+    @State private var error: String?
+    @State private var adding: String?
+    @State private var added: Set<String> = []
+
+    private var forKids: Bool { ProfileSettings.current.bool(forKey: SettingsKey.kidsProfile) }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.62)
+                .ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Community Collections")
+                        .font(.system(size: 38, weight: .bold))
+                        .foregroundColor(.white)
+                    Text(forKids
+                        ? "Shared on nuvio.tv. Kids profile: collections for children come first, and only the children's part of a big library is added."
+                        : "Collections people have shared on nuvio.tv. Add one and it joins your Home.")
+                        .font(.system(size: 21, weight: .medium))
+                        .foregroundColor(.white.opacity(0.6))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack(spacing: 14) {
+                    searchField
+                    ForEach(CommunityCollections.Sort.allCases) { option in
+                        CollectionChipButton(title: option.label, isSelected: sort == option, showsCheckmark: true) {
+                            sort = option
+                        }
+                    }
+                }
+
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        if let error {
+                            Text(error)
+                                .font(.system(size: 20, weight: .medium))
+                                .foregroundColor(.white.opacity(0.6))
+                                .padding(.vertical, 12)
+                        }
+                        ForEach(CommunityCollections.ordered(items, forKids: forKids)) { item in
+                            CommunityCollectionPanelRow(
+                                item: item,
+                                accentColor: accentColor,
+                                showsKidsMark: forKids && item.isKidFriendly,
+                                state: adding == item.id ? .adding : (added.contains(item.id) ? .added : .idle)
+                            ) {
+                                guard adding == nil, !added.contains(item.id) else { return }
+                                Task { await add(item) }
+                            }
+                        }
+                        if hasNextPage {
+                            HStack { Spacer(); ProgressView().tint(.white); Spacer() }
+                                .padding(.vertical, 12)
+                                .onAppear { Task { await load(reset: false) } }
+                        }
+                    }
+                    .padding(.vertical, 12)
+                    .padding(.horizontal, 6)
+                }
+                .scrollClipDisabledIfAvailable()
+                .frame(height: Self.listHeight)
+                .overlay {
+                    if isLoading, items.isEmpty { ProgressView().tint(.white) }
+                }
+
+                HStack {
+                    Spacer()
+                    CollectionsGlassButton(title: "Done", action: { dismiss() })
+                }
+                // Full width, so Down from the search field reaches Done
+                // even when the list between them has nothing to focus.
+                .focusSection()
+            }
+            .settingsPanelWidth(1040)
+            .padding(.horizontal, 56)
+            .padding(.vertical, 46)
+            .loginGlassPanel()
+        }
+        .onExitCommand { dismiss() }
+        .task(id: sort) { await load(reset: true) }
+    }
+
+    /// tvOS draws its own focused field (a second capsule inside the glass
+    /// one looked broken); the Mac field has no chrome, so it gets the glass.
+    @ViewBuilder
+    private var searchField: some View {
+        let field = TextField("Search collections", text: $search)
+            .font(.system(size: 22, weight: .medium))
+            .onSubmit { Task { await load(reset: true) } }
+        #if os(tvOS)
+        field
+        #else
+        field
+            .textFieldStyle(.plain)
+            .padding(.horizontal, 24)
+            .frame(height: 58)
+            .modifier(GlassCapsule(focused: false))
+        #endif
+    }
+
+    /// The Mac sheet sizes to its content, so the list needs a set height
+    /// there; the TV's full-screen cover leaves room for a taller one.
+    private static var listHeight: CGFloat {
+        #if os(macOS)
+        480
+        #else
+        560
+        #endif
+    }
+
+    private func load(reset: Bool) async {
+        guard !isLoading else { return }
+        isLoading = true
+        defer { isLoading = false }
+        let next = reset ? 1 : page + 1
+        do {
+            let result = try await CommunityCollections.list(sort: sort, search: search, page: next)
+            items = reset ? result.items : items + result.items
+            page = next
+            hasNextPage = result.hasNextPage
+            error = items.isEmpty ? "No collections found." : nil
+        } catch {
+            if reset { items = [] }
+            hasNextPage = false
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func add(_ item: CommunityCollections.Item) async {
+        adding = item.id
+        defer { adding = nil }
+        do {
+            var rows = try await CommunityCollections.collections(for: item)
+            if forKids {
+                rows = CommunityCollections.forKids(
+                    rows, madeForKids: CommunityCollections.entryIsMadeForKids(title: item.title, tags: item.tags)
+                )
+            }
+            guard !rows.isEmpty else {
+                error = "Nothing in \(item.title) is suitable for a kids profile."
+                return
+            }
+            onAdd(rows, item.title)
+            added.insert(item.id)
+            await CommunityCollections.recordInstall(item)
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+}
+
+/// One shared collection: cover, title, description, counts, and an Add
+/// state on the right. The whole row is the button so the remote and the
+/// keyboard have one stop per entry.
+private struct CommunityCollectionPanelRow: View {
+    enum AddState { case idle, adding, added }
+
+    let item: CommunityCollections.Item
+    let accentColor: Color
+    let showsKidsMark: Bool
+    let state: AddState
+    let action: () -> Void
+
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .center, spacing: 22) {
+                AsyncImage(url: FixtureArtwork.displayURL(item.imageURL)) { image in
+                    image.resizable().aspectRatio(contentMode: .fill)
+                } placeholder: {
+                    Color.white.opacity(0.08)
+                        .overlay(
+                            Image(systemName: "rectangle.stack")
+                                .font(.system(size: 26, weight: .semibold))
+                                .foregroundColor(.white.opacity(0.4))
+                        )
+                }
+                .frame(width: 176, height: 99)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 10) {
+                        Text(item.title)
+                            .font(.system(size: 26, weight: .bold))
+                            .foregroundColor(isFocused ? .black : .white)
+                            .lineLimit(1)
+                        if showsKidsMark {
+                            Image(systemName: "star.circle.fill")
+                                .font(.system(size: 22, weight: .semibold))
+                                .foregroundColor(accentColor)
+                                .accessibilityLabel("For kids")
+                        }
+                    }
+                    if !item.description.isEmpty {
+                        Text(item.description)
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundColor(isFocused ? .black.opacity(0.62) : .white.opacity(0.58))
+                            .lineLimit(2)
+                    }
+                    Text("\(item.isPack ? "Pack · " : "")\(item.installs) installs · \(item.likes) likes")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(isFocused ? .black.opacity(0.5) : .white.opacity(0.4))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Group {
+                    switch state {
+                    case .adding:
+                        ProgressView().tint(isFocused ? .black : .white)
+                    case .added:
+                        Label("Added", systemImage: "checkmark")
+                    case .idle:
+                        Label("Add", systemImage: "plus")
+                    }
+                }
+                .font(.system(size: 21, weight: .semibold))
+                .foregroundColor(isFocused ? .black : .white.opacity(0.88))
+                .frame(minWidth: 110, alignment: .trailing)
+            }
+            .padding(18)
+            .background(
+                isFocused ? Color.white : Color.white.opacity(0.075),
+                in: RoundedRectangle(cornerRadius: 24, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .strokeBorder(
+                        isFocused ? AppFocusOutline.color : Color.white.opacity(0.16),
+                        lineWidth: isFocused ? AppFocusOutline.width : 1
+                    )
+            )
+            .scaleEffect(isFocused ? 1.015 : 1)
+        }
+        .buttonStyle(PosterCardButtonStyle())
+        .nuvioFocusable()
+        .focused($isFocused)
+        .focusEffectDisabledIfAvailable()
+        .animation(.easeOut(duration: 0.12), value: isFocused)
+    }
+}
+#endif
 
 // MARK: Collection templates
 

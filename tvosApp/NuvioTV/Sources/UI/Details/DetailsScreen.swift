@@ -5367,24 +5367,37 @@ private struct TvDetailsCastAndTrailer: View {
                     .disabled(entryLocked)
             }
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 58) {
-                    ForEach(Array(displayPeople.enumerated()), id: \.element.id) { index, person in
-                        TvDetailsPersonCard(
-                            person: person,
-                            macIsFocused: macIsFocused(index),
-                            onSelect: { onPersonClick(person) },
-                            onFocus: {
-                                focusedPersonIndex = index
-                                onFocus()
-                            }
-                        )
-                        .disabled(entryLocked)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 58) {
+                        ForEach(Array(displayPeople.enumerated()), id: \.element.id) { index, person in
+                            TvDetailsPersonCard(
+                                person: person,
+                                macIsFocused: macIsFocused(index),
+                                onSelect: { onPersonClick(person) },
+                                onFocus: {
+                                    focusedPersonIndex = index
+                                    onFocus()
+                                }
+                            )
+                            .disabled(entryLocked)
+                            .id(person.id)
+                        }
+                    }
+                    .padding(.trailing, 80)
+                }
+                .scrollClipDisabledIfAvailable()
+                #if os(macOS)
+                // tvOS scrolls to the focused card itself. The Mac caret is
+                // not focus, so with more cast than fits, follow it by hand.
+                .onChange(of: macCastIndex) { _, index in
+                    guard let index, displayPeople.indices.contains(index) else { return }
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(displayPeople[index].id, anchor: nil)
                     }
                 }
-                .padding(.trailing, 80)
+                #endif
             }
-            .scrollClipDisabledIfAvailable()
         }
         #if os(macOS)
         .onChange(of: displayPeople.map(\.id), initial: true) { _, _ in
@@ -5393,7 +5406,13 @@ private struct TvDetailsCastAndTrailer: View {
         #endif
     }
 
-    /// The row caps the cast at eight and falls back to `meta.cast` when TMDB
+    #if os(macOS)
+    private var macCastIndex: Int? {
+        macFocus.row == .cast ? macFocus.index : nil
+    }
+    #endif
+
+    /// The row caps the cast at twenty and falls back to `meta.cast` when TMDB
     /// gave nothing, so only it knows how many cards are actually drawn — the
     /// page above would have published the wrong number either way.
     #if os(macOS)
@@ -5406,21 +5425,26 @@ private struct TvDetailsCastAndTrailer: View {
     }
     #endif
 
+    /// Creators and directors come first, then the billed cast. TMDB lists
+    /// everyone down to one-line guest roles, mostly without a photo, so
+    /// the row stops at twenty.
+    private static let castLimit = 20
+
     private var displayPeople: [TmdbPersonMetadata] {
         if !people.isEmpty {
-            return Array(people.prefix(8))
+            return Array(people.prefix(Self.castLimit))
         }
 
         let cast = meta.cast ?? []
         if !cast.isEmpty {
-            return Array(cast.prefix(8)).map {
+            return Array(cast.prefix(Self.castLimit)).map {
                 TmdbPersonMetadata(name: $0, role: nil, profileURL: nil, tmdbId: nil)
             }
         }
 
         let creators = (meta.director ?? []) + (meta.writer ?? [])
         if !creators.isEmpty {
-            return Array(creators.prefix(8)).map {
+            return Array(creators.prefix(Self.castLimit)).map {
                 TmdbPersonMetadata(name: $0, role: nil, profileURL: nil, tmdbId: nil)
             }
         }
