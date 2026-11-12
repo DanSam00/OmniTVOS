@@ -3568,9 +3568,13 @@ struct TvDetailsContent: View {
                 }
             }
             #if os(macOS)
-            .onChange(of: relatedRowItems.count, initial: true) { _, count in
+            // Keyed on the ids, not the count: the closure below keeps a copy of
+            // this view, so when TMDB's list is swapped for Trakt's (same
+            // length, different titles) a count key left Return opening the
+            // titles from the first list under the new posters.
+            .onChange(of: relatedRowItems.map(\.id), initial: true) { _, ids in
                 macFocus.begin(page: uiState.meta?.id ?? "")
-                macFocus.setCount(count, for: .related)
+                macFocus.setCount(ids.count, for: .related)
                 macFocus.register(.related) { index in
                     let items = relatedRowItems
                     guard items.indices.contains(index) else { return }
@@ -3581,7 +3585,7 @@ struct TvDetailsContent: View {
             // Cast and the company rows sit below More Like This and were
             // absent from the keyboard model entirely, so Down stopped at the
             // related row and the bottom of the page was unreachable.
-            .onChange(of: uiState.companies.count, initial: true) { _, _ in
+            .onChange(of: uiState.companies.map(\.id), initial: true) { _, _ in
                 macFocus.begin(page: uiState.meta?.id ?? "")
                 let networks = uiState.companies.filter { $0.kind == .network }
                 let production = uiState.companies.filter { $0.kind == .production }
@@ -5383,7 +5387,7 @@ private struct TvDetailsCastAndTrailer: View {
             .scrollClipDisabledIfAvailable()
         }
         #if os(macOS)
-        .onChange(of: displayPeople.count, initial: true) { _, _ in
+        .onChange(of: displayPeople.map(\.id), initial: true) { _, _ in
             publishMacRow()
         }
         #endif
