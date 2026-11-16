@@ -4449,11 +4449,18 @@ enum CollectionsStore {
             return beforeById[id] == canonical(row) ? nil : id
         })
         let deleted = Set(beforeById.keys).subtracting(raw.compactMap { $0["id"] as? String })
+        // A move changes no row, so it shows only as a different order of the
+        // rows both lists share.
+        let afterIds = raw.compactMap { $0["id"] as? String }
+        let afterSet = Set(afterIds)
+        let beforeShared = before.compactMap { $0["id"] as? String }.filter { afterSet.contains($0) }
+        let afterShared = afterIds.filter { beforeById[$0] != nil }
+        let reordered = beforeShared != afterShared
         _ = writeData(data, forKey: storageKey)
         NotificationCenter.default.post(name: changedNotification, object: nil)
         NotificationCenter.default.post(
             name: locallyEditedNotification,
-            object: LocalEdit(rows: raw, changedIds: changed, deletedIds: deleted)
+            object: LocalEdit(rows: raw, changedIds: changed, deletedIds: deleted, reordered: reordered)
         )
     }
 
@@ -4462,6 +4469,8 @@ enum CollectionsStore {
         let rows: [[String: Any]]
         let changedIds: Set<String>
         let deletedIds: Set<String>
+        /// The edit moved rows, so the account should take this device's order.
+        var reordered: Bool = false
     }
 
     private static func canonical(_ row: [String: Any]) -> Data? {
@@ -4475,7 +4484,51 @@ enum CollectionsStore {
     ///   cannot undo an edit made on another device.
     /// - A local row the account has never had is kept unless it was seen in
     ///   an earlier pull (then it was deleted elsewhere, not created here).
+    /// - When the edit moved rows, the result takes this device's order; a row
+    ///   only the account has stays after the row it followed there.
     static func mergeLocalEdit(
+        local: [[String: Any]],
+        remote: [[String: Any]],
+        changedIds: Set<String>,
+        deletedIds: Set<String>,
+        previouslyPulledIds: Set<String>,
+        reordered: Bool = false
+    ) -> [[String: Any]] {
+        let merged = mergeLocalEditRows(
+            local: local,
+            remote: remote,
+            changedIds: changedIds,
+            deletedIds: deletedIds,
+            previouslyPulledIds: previouslyPulledIds
+        )
+        guard reordered else { return merged }
+        return inLocalOrder(merged, local: local)
+    }
+
+    /// `merged` rearranged to follow `local`. Rows `local` lacks keep their
+    /// place behind the nearest row before them that it has.
+    private static func inLocalOrder(_ merged: [[String: Any]], local: [[String: Any]]) -> [[String: Any]] {
+        let mergedIds = merged.map { ($0["id"] as? String) ?? "" }
+        let mergedById = Dictionary(zip(mergedIds, merged), uniquingKeysWith: { first, _ in first })
+        var result: [[String: Any]] = []
+        var placed = Set<String>()
+        for row in local {
+            guard let id = row["id"] as? String, let mergedRow = mergedById[id],
+                  placed.insert(id).inserted else { continue }
+            result.append(mergedRow)
+        }
+        for (index, id) in mergedIds.enumerated() where !placed.contains(id) {
+            let anchor = mergedIds[..<index].last(where: { placed.contains($0) })
+            let insertAt = anchor
+                .flatMap { anchorId in result.firstIndex { ($0["id"] as? String) == anchorId } }
+                .map { $0 + 1 } ?? 0
+            result.insert(merged[index], at: insertAt)
+            placed.insert(id)
+        }
+        return result
+    }
+
+    private static func mergeLocalEditRows(
         local: [[String: Any]],
         remote: [[String: Any]],
         changedIds: Set<String>,

@@ -1513,7 +1513,8 @@ final class NuvioSyncManager: ObservableObject {
                         remote: remoteRows,
                         changedIds: edit.changedIds,
                         deletedIds: edit.deletedIds,
-                        previouslyPulledIds: previouslyPulledIds
+                        previouslyPulledIds: previouslyPulledIds,
+                        reordered: edit.reordered
                     )
                 }
 

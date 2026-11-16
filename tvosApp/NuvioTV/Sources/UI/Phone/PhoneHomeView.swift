@@ -8,7 +8,13 @@ import SwiftUI
 /// rows or partial-load retry. Rows arrive as each add-on answers.
 @MainActor
 final class PhoneHomeLoader: ObservableObject {
-    @Published private(set) var sections: [TVHomeSection] = []
+    /// The add-on catalog rows, in saved order.
+    @Published private(set) var sections: [TVHomeSection] = [] {
+        didSet { composeHomeRows() }
+    }
+    /// Every row Home draws, catalogs and collections together, in the
+    /// Layout list's order (`TVHomeCatalogOrder.homeOrder`), as on the TV.
+    @Published private(set) var homeRows: [TVHomeSection] = []
     @Published private(set) var continueWatching: [ContinueWatchingItem] = [] {
         // The Continue Watching widget shows exactly this row.
         didSet { ContinueWatchingStore.publishHomeRowToTopShelf(continueWatching.filter { $0.cardKind == nil }) }
@@ -16,7 +22,9 @@ final class PhoneHomeLoader: ObservableObject {
     /// The progress the row was last built from, before `ContinueWatchingExtras`.
     private var rawContinueWatching: [ContinueWatchingItem] = []
     /// The synced collections, one row of folder cards each, as on the TV.
-    @Published private(set) var collectionRows: [TVHomeSection] = TVHomeSection.collectionRows()
+    @Published private(set) var collectionRows: [TVHomeSection] = TVHomeSection.collectionRows() {
+        didSet { composeHomeRows() }
+    }
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
 
@@ -59,6 +67,22 @@ final class PhoneHomeLoader: ObservableObject {
         observers.append(center.addObserver(forName: CollectionsStore.changedNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.collectionRows = TVHomeSection.collectionRows() }
         })
+        // A move in Settings → Layout reorders the mounted Home straight away.
+        observers.append(center.addObserver(forName: TVHomeCatalogOrder.changedNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.composeHomeRows() }
+        })
+        composeHomeRows()
+    }
+
+    /// Pinned collections lead and the rest follow the catalogs until the
+    /// Layout list has placed them; from then on its order wins.
+    private func composeHomeRows() {
+        var seen = Set<String>()
+        homeRows = TVHomeCatalogOrder.homeOrder(
+            collectionRows.filter(\.isPinnedCollection)
+                + sections
+                + collectionRows.filter { !$0.isPinnedCollection }
+        ).filter { seen.insert($0.id).inserted }
     }
 
     deinit {
@@ -102,11 +126,7 @@ final class PhoneHomeLoader: ObservableObject {
             // the iPhone was taken for new and held back in Add Catalogs.
             // Written once the load finishes, so a slow add-on's rows aren't
             // left out.
-            TVHomeCatalogOrder.writeSnapshot(
-                collectionRows.filter(\.isPinnedCollection)
-                    + sections
-                    + collectionRows.filter { !$0.isPinnedCollection }
-            )
+            TVHomeCatalogOrder.writeSnapshot(homeRows)
         } catch is CancellationError {
         } catch {
             if sections.isEmpty { errorMessage = error.localizedDescription }
@@ -411,19 +431,17 @@ struct PhoneHomeView: View {
                         continueWatchingRow
                     }
 
-                    // Pinned collections lead, the rest follow the catalogs,
+                    // Catalogs and collections in the Layout list's order,
                     // as on the TV.
-                    ForEach(loader.collectionRows.filter(\.isPinnedCollection)) { collectionRow($0) }
-
-                    ForEach(loader.sections) { section in
-                        if style.isGrid {
+                    ForEach(loader.homeRows) { section in
+                        if section.isCollectionRow {
+                            collectionRow(section)
+                        } else if style.isGrid {
                             gridSection(section)
                         } else {
                             catalogRow(section)
                         }
                     }
-
-                    ForEach(loader.collectionRows.filter { !$0.isPinnedCollection }) { collectionRow($0) }
 
                     if loader.sections.isEmpty && loader.collectionRows.isEmpty {
                         emptyState

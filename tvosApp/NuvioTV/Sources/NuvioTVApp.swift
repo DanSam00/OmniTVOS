@@ -8099,13 +8099,7 @@ struct TVHomeView: View {
     #endif
 
     private func homeOrderedSections(_ sections: [TVHomeSection]) -> [TVHomeSection] {
-        let pinnedCollections = sections.filter {
-            $0.isCollectionRow && $0.isPinnedCollection
-        }
-        let remainder = sections.filter {
-            !($0.isCollectionRow && $0.isPinnedCollection)
-        }
-        let ordered = pinnedCollections + TVHomeCatalogOrder.apply(to: remainder)
+        let ordered = TVHomeCatalogOrder.homeOrder(sections)
         // Home renders these in a ForEach keyed by section id, and `.id(section.id)`
         // is also the scroll target. A repeated id therefore collapses to a single
         // view: the extra entry occupies a row index with nothing focusable in it,
@@ -9473,29 +9467,51 @@ enum TVHomeCatalogOrder {
         return index
     }
 
+    /// The order Home follows: the local Settings reorder, otherwise the
+    /// account layout (including `collection_<id>` slots among catalogs).
+    private static func effectiveOrder() -> [String] {
+        let localOrder = savedOrder()
+        guard localOrder.isEmpty else { return localOrder }
+        guard let data = ProfileSettings.current.data(forKey: SettingsKey.homeCatalogSyncedOrder),
+              let keys = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+        return normalizedOrder(keys)
+    }
+
+    /// Catalog rows from addons use `addon_<key>` ids; order keys omit the
+    /// prefix. Collection rows already use `collection_<id>`.
+    private static func orderKey(for section: TVHomeSection) -> String {
+        if section.isCollectionRow { return section.id }
+        return sectionOrderKey(section.id)
+    }
+
+    /// Every Home row, collections included, in the Layout list's order.
+    ///
+    /// Pinned collections used to be lifted above everything whatever the
+    /// list said, and Home then wrote that back as the list's order — so a
+    /// collection moved in Settings jumped straight back. Now a move in the
+    /// list decides for every row it has placed; a pinned collection it has
+    /// not placed (one just added, or every one before the first move here)
+    /// still starts at the top. Only this device's moves count: the account's
+    /// order mixes collections in among catalogs where Home never showed them,
+    /// and following it would rearrange Home unasked.
+    static func homeOrder(_ sections: [TVHomeSection]) -> [TVHomeSection] {
+        let placed = Set(savedOrder())
+        let leading = sections.filter {
+            $0.isCollectionRow && $0.isPinnedCollection && !placed.contains(orderKey(for: $0))
+        }
+        let leadingIds = Set(leading.map(\.id))
+        return leading + apply(to: sections.filter { !leadingIds.contains($0.id) })
+    }
+
     /// Saved order first (rows the user has placed), then any new rows in
     /// their natural position order — mirrors Android's orderedKeys behavior.
     /// Falls back to the account-synced order when no local reorder exists.
     static func apply(to sections: [TVHomeSection]) -> [TVHomeSection] {
-        let localOrder = savedOrder()
-        let syncedKeys: [String] = {
-            guard let data = ProfileSettings.current.data(forKey: SettingsKey.homeCatalogSyncedOrder),
-                  let keys = try? JSONDecoder().decode([String].self, from: data) else { return [] }
-            return normalizedOrder(keys)
-        }()
-        // Prefer the local Settings reorder; otherwise honor the account layout
-        // (including `collection_<id>` slots among catalogs).
-        let order = localOrder.isEmpty ? syncedKeys : localOrder
+        let order = effectiveOrder()
         guard !order.isEmpty else { return sections }
         var indexByKey: [String: Int] = [:]
         for (index, key) in order.enumerated() where indexByKey[key] == nil {
             indexByKey[key] = index
-        }
-        // Catalog rows from addons use `addon_<key>` ids; order keys omit the
-        // prefix. Collection rows already use `collection_<id>`.
-        func orderKey(for section: TVHomeSection) -> String {
-            if section.isCollectionRow { return section.id }
-            return sectionOrderKey(section.id)
         }
         let known = sections
             .filter { indexByKey[orderKey(for: $0)] != nil }
