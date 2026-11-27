@@ -13,8 +13,9 @@ struct ContentGuide: Codable, Equatable {
 
     var rating: String?
     var lines: [Line]
-    /// Where the lines came from: "ddd" (Does the Dog Die, which must be
-    /// credited wherever its data shows) or nil (IMDb).
+    /// Where the lines came from: "ddd" (Does the Dog Die) or nil (IMDb).
+    /// Its terms ask for "Powered by DoesTheDogDie.com" beside the lines; the
+    /// owner chose to leave that off while the app is only for their own use.
     var linesSource: String? = nil
 
     var isEmpty: Bool { (rating ?? "").isEmpty && lines.isEmpty }
@@ -256,14 +257,6 @@ struct ContentGuideOverlay: View {
                             }
                             .transition(.move(edge: .leading).combined(with: .opacity))
                         }
-                    }
-                    // Does the Dog Die's terms: credited wherever its data shows.
-                    if guide.linesSource == "ddd", !guide.lines.isEmpty, revealed >= 1 {
-                        Text("Powered by DoesTheDogDie.com")
-                            .font(.system(size: lineSize * 0.62, weight: .medium))
-                            .foregroundColor(.white.opacity(0.6))
-                            .padding(.top, gap * 0.5)
-                            .transition(.opacity)
                     }
                 }
                 .foregroundColor(.white)
