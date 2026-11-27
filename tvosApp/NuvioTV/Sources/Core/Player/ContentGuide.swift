@@ -32,7 +32,11 @@ enum ContentGuideService {
     /// metadata, and (Omni X) the advisory lines for its IMDb id, kept for
     /// two months.
     static func guide(for meta: NuvioMeta) async -> ContentGuide? {
-        let rating = meta.certification?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        var rating = meta.certification?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        // Most add-ons (Cinemeta among them) send no certificate: ask TMDB.
+        if rating == nil || rating?.uppercased() == "NR" {
+            rating = await tmdbRating(for: meta)
+        }
         var guide = ContentGuide(rating: rating, lines: [])
         if let imdb = imdbID(of: meta) {
             if let held = cached(imdb) {
@@ -49,6 +53,50 @@ enum ContentGuideService {
         if let id = meta.imdbId, id.hasPrefix("tt") { return id }
         let first = meta.id.split(separator: ":").first.map(String.init) ?? meta.id
         return first.hasPrefix("tt") ? first : nil
+    }
+
+    // MARK: Certificate from TMDB
+
+    nonisolated(unsafe) private static var tmdbRatings: [String: String] = [:]
+    private static let englishBoards = ["US", "GB", "AU", "CA", "NZ", "IE"]
+
+    /// The title's certificate from TMDB: the US one, else the viewer's
+    /// region's, else another English-language board's. Nil without TMDB
+    /// (switched off, no key) or when no board has rated it.
+    private static func tmdbRating(for meta: NuvioMeta) async -> String? {
+        lock.lock()
+        let known = tmdbRatings[meta.id]
+        lock.unlock()
+        if let known { return known.nilIfEmpty }
+        guard let key = TmdbAccountKey.key(),
+              let resolved = await TmdbDetailsService.resolveTmdbId(for: meta) else { return nil }
+        let isTV = resolved.mediaType == "tv"
+        let path = isTV ? "tv/\(resolved.id)/content_ratings" : "movie/\(resolved.id)/release_dates"
+        guard let url = URL(string: "https://api.themoviedb.org/3/\(path)?api_key=\(key)") else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let results = json["results"] as? [[String: Any]] else { return nil }
+        var byBoard: [String: String] = [:]
+        for entry in results {
+            guard let country = entry["iso_3166_1"] as? String, byBoard[country] == nil else { continue }
+            let candidates: [String] = isTV
+                ? [entry["rating"] as? String ?? ""]
+                : (entry["release_dates"] as? [[String: Any]] ?? []).map { $0["certification"] as? String ?? "" }
+            if let rating = candidates
+                .map({ $0.trimmingCharacters(in: .whitespaces) })
+                .first(where: { !$0.isEmpty && $0.uppercased() != "NR" }) {
+                byBoard[country] = rating
+            }
+        }
+        let order = ["US"] + [Locale.current.region?.identifier].compactMap { $0 } + englishBoards
+        let rating = order.lazy.compactMap { byBoard[$0] }.first ?? ""
+        lock.lock()
+        tmdbRatings[meta.id] = rating
+        lock.unlock()
+        return rating.nilIfEmpty
     }
 
     // MARK: Cache
