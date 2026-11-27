@@ -487,6 +487,8 @@ struct ContentView: View {
         // does this in PhoneMainTabView).
         .task(id: isOnMainScreen ? profileViewModel.activeProfile?.id : nil) {
             guard isOnMainScreen, profileViewModel.activeProfile != nil else { return }
+            // Each IPTV subscription's end date, and the reminders before it.
+            Task { await IPTVSourceInfoService.refreshAll() }
             await CommunityCollections.installPendingIfNeeded()
             #if OMNI_X
             guard ProfileSettings.current.bool(forKey: SettingsKey.kidsProfile) else { return }

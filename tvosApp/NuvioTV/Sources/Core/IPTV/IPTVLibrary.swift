@@ -104,6 +104,7 @@ enum IPTVSourceStore {
     static func remove(id: String) {
         save(sources().filter { $0.id != id })
         IPTVLibrary.shared.forget(sourceID: id)
+        IPTVSourceInfoStore.forget(id: id)
     }
 
     /// A playlist the signed-out guest starts with, so Live TV and the
@@ -224,6 +225,9 @@ struct IPTVPlaylist: Codable {
     var channels: [IPTVChannel]
     var guideURL: String?
     var fetchedAt: Date
+    /// Films and shows an M3U playlist also listed (not kept as channels).
+    var movieCount: Int? = nil
+    var seriesCount: Int? = nil
 }
 
 /// What a playlist load is doing, for the bar under Save.
@@ -353,6 +357,7 @@ final class IPTVLibrary: @unchecked Sendable {
             let fetched = try await Self.fetch(source, progress: progress ?? { _ in })
             install(fetched, sourceID: source.id)
             Self.writeCache(fetched, sourceID: source.id)
+            IPTVSourceInfoService.recordPlaylist(fetched, for: source)
             return fetched
         } catch {
             // Offline or the provider is down: an old list still plays.
@@ -557,7 +562,10 @@ final class IPTVLibrary: @unchecked Sendable {
                 ? "The playlist has films and shows but no live channels."
                 : "The playlist has no channels in it.")
         }
-        return IPTVPlaylist(channels: parsed.channels, guideURL: parsed.guideURL, fetchedAt: Date())
+        return IPTVPlaylist(
+            channels: parsed.channels, guideURL: parsed.guideURL, fetchedAt: Date(),
+            movieCount: parsed.movieCount, seriesCount: parsed.seriesCount
+        )
     }
 
     private struct XtreamCategory: Decodable {

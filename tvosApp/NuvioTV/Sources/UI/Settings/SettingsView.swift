@@ -9002,23 +9002,22 @@ private struct IPTVSettingsSection: View {
     let accentColor: Color
 
     @State private var sources: [IPTVSource] = IPTVSourceStore.sources()
-    @State private var editing: IPTVSource?
-    @State private var addingKind: IPTVSource.Kind?
-    @ObservedObject private var hiddenStore = HiddenLibraryFoldersStore.shared
+    @State private var infos = IPTVSourceInfoStore.all()
+    @State private var showingManager = false
 
-    private var hiddenFolders: [HiddenLibraryFolders.Folder] {
-        hiddenStore.folders
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-    }
-
-    private var hideHint: String {
-        #if os(macOS)
-        return "Right-click a folder in Library → Folders, or press ⌥↩ on it, to hide it."
-        #elseif os(iOS)
-        return "Touch and hold a folder in Library → Folders to hide it."
-        #else
-        return "Hold Select on a folder in Library → Folders to hide it."
-        #endif
+    /// "2 sources · next ends in 12 days", or how to start.
+    private var summary: String {
+        guard !sources.isEmpty else {
+            return L10n.string("iptv_manage_none", fallback: "Add an Xtream login or M3U playlist from your provider")
+        }
+        var parts = [sources.count == 1 ? "1 source" : "\(sources.count) sources"]
+        let soonest = sources.compactMap { infos[$0.id]?.daysLeft() }.min()
+        if let soonest {
+            parts.append(soonest < 0 ? "a subscription has ended"
+                : soonest == 0 ? "a subscription ends today"
+                : "next ends in \(soonest) day\(soonest == 1 ? "" : "s")")
+        }
+        return parts.joined(separator: " · ")
     }
 
     var body: some View {
@@ -9027,64 +9026,177 @@ private struct IPTVSettingsSection: View {
             subtitle: L10n.string("iptv_group_subtitle", fallback: "Your provider's live channels, from an M3U playlist or an Xtream login, in the Live TV guide and in Search.")
         ) {
             SettingsActionRow(
-                title: L10n.string("iptv_add_m3u", fallback: "Add M3U Playlist"),
-                subtitle: L10n.string("iptv_add_m3u_subtitle", fallback: "A playlist link (.m3u or .m3u8) from your provider"),
-                value: "",
+                title: L10n.string("iptv_manage", fallback: "Manage IPTV"),
+                subtitle: summary,
+                value: L10n.string("settings_open", fallback: "Open"),
                 accentColor: accentColor,
-                macRowID: "iptv.addM3U"
+                macRowID: "iptv.manage"
             ) {
-                addingKind = .m3u
-            }
-            SettingsActionRow(
-                title: L10n.string("iptv_add_xtream", fallback: "Add Xtream Login"),
-                subtitle: L10n.string("iptv_add_xtream_subtitle", fallback: "Server address, username and password from your provider"),
-                value: "",
-                accentColor: accentColor,
-                macRowID: "iptv.addXtream"
-            ) {
-                addingKind = .xtream
-            }
-            ForEach(sources) { source in
-                SettingsActionRow(
-                    title: source.name,
-                    subtitle: "\(source.kind == .m3u ? "M3U" : "Xtream") · \(source.summary) · "
-                        + "\(IPTVLibrary.shared.cachedChannels(sourceID: source.id).count) channels",
-                    value: L10n.string("action_edit", fallback: "Edit"),
-                    accentColor: accentColor,
-                    macRowID: "iptv.source.\(source.id)"
-                ) {
-                    editing = source
-                }
-            }
-            // Folders hidden from Library → Folders, each shown again here.
-            if !sources.isEmpty {
-                let hidden = hiddenFolders
-                SettingsActionRow(
-                    title: "Hidden Folders",
-                    subtitle: hidden.isEmpty
-                        ? hideHint
-                        : "\(hidden.count) hidden from Library → Folders. Choose one to show it again.",
-                    value: hidden.count > 1 ? "Show All" : (hidden.isEmpty ? "None" : ""),
-                    accentColor: accentColor,
-                    macRowID: "iptv.hiddenFolders"
-                ) {
-                    if hidden.count > 1 { HiddenLibraryFolders.showAll() }
-                }
-                ForEach(hidden) { folder in
-                    SettingsActionRow(
-                        title: folder.name,
-                        subtitle: "\(folder.kindTitle) · hidden",
-                        value: "Show",
-                        accentColor: accentColor,
-                        macRowID: "iptv.hidden.\(folder.id)"
-                    ) {
-                        HiddenLibraryFolders.show(folder)
-                    }
-                }
+                showingManager = true
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: IPTVSourceStore.changedNotification)) { _ in
             sources = IPTVSourceStore.sources()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: IPTVSourceInfoStore.changedNotification)) { _ in
+            infos = IPTVSourceInfoStore.all()
+        }
+        .sheet(isPresented: $showingManager) {
+            IPTVManagerSheet(accentColor: accentColor)
+                .modifier(ClearPresentationBackgroundIfAvailable())
+                .modifier(MacSheetCloseButton())
+        }
+    }
+}
+
+/// The IPTV pop-up: each subscription with what it listed when last read
+/// (channels, films, shows), when it was read and when it runs out, and
+/// the way to add, edit, sync or remove one.
+private struct IPTVManagerSheet: View {
+    let accentColor: Color
+
+    @Environment(\.dismiss) private var dismiss
+    @AppStorage(SettingsKey.amoled) private var amoled = false
+    @AppStorage(SettingsKey.bodyColor) private var bodyColor = SettingsBackground.charcoal.rawValue
+
+    @State private var sources: [IPTVSource] = IPTVSourceStore.sources()
+    @State private var infos = IPTVSourceInfoStore.all()
+    @State private var editing: IPTVSource?
+    @State private var addingKind: IPTVSource.Kind?
+    @State private var syncing: Set<String> = []
+
+    private static let numbers: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        return formatter
+    }()
+
+    private static let dates: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter
+    }()
+
+    private func count(_ value: Int?) -> String {
+        guard let value else { return L10n.string("iptv_not_counted", fallback: "Not counted yet") }
+        return Self.numbers.string(from: NSNumber(value: value)) ?? String(value)
+    }
+
+    private func lastSynced(_ info: IPTVSourceInfo?) -> String {
+        guard let info else { return L10n.string("iptv_never_synced", fallback: "Not yet") }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(for: info.syncedAt, relativeTo: Date())
+    }
+
+    private func subscription(_ info: IPTVSourceInfo?, kind: IPTVSource.Kind) -> String {
+        guard let info else { return "—" }
+        guard let end = info.expiresAt, let days = info.daysLeft() else {
+            return info.accountChecked
+                ? L10n.string("iptv_no_expiry", fallback: "No end date")
+                : (kind == .m3u
+                    ? L10n.string("iptv_expiry_unknown_m3u", fallback: "Not shown for this link")
+                    : L10n.string("iptv_expiry_unknown", fallback: "Not reported yet"))
+        }
+        let date = Self.dates.string(from: end)
+        let trial = info.isTrial == true ? " (trial)" : ""
+        if days < 0 { return "Expired \(date)\(trial)" }
+        if days == 0 { return "⚠︎ Ends today\(trial)" }
+        let when = "in \(days) day\(days == 1 ? "" : "s")"
+        return days <= 7 ? "⚠︎ \(date) · \(when)\(trial)" : "\(date) · \(when)\(trial)"
+    }
+
+    var body: some View {
+        ZStack {
+            Color.nuvioBackground(amoled: amoled, body: bodyColor).ignoresSafeArea()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    Text(L10n.string("iptv_group_title", fallback: "IPTV"))
+                        .font(.system(size: 36, weight: .bold))
+                        .foregroundColor(.white)
+
+                    if sources.isEmpty {
+                        Text(L10n.string("iptv_manage_none", fallback: "Add an Xtream login or M3U playlist from your provider"))
+                            .font(.system(size: 20))
+                            .foregroundColor(.white.opacity(0.6))
+                    }
+
+                    ForEach(sources) { source in
+                        let info = infos[source.id]
+                        SettingsGroup(
+                            title: source.name,
+                            subtitle: "\(source.kind == .m3u ? "M3U" : "Xtream") · \(source.summary)"
+                        ) {
+                            SettingsInfoRow(title: L10n.string("iptv_channels", fallback: "Channels"), value: count(info?.channels))
+                            SettingsInfoRow(title: L10n.string("iptv_movies", fallback: "Movies"), value: count(info?.movies))
+                            SettingsInfoRow(title: L10n.string("iptv_shows", fallback: "Shows"), value: count(info?.series))
+                            SettingsInfoRow(title: L10n.string("iptv_last_synced", fallback: "Last synced"), value: lastSynced(info))
+                            SettingsInfoRow(title: L10n.string("iptv_expires", fallback: "Subscription ends"), value: subscription(info, kind: source.kind))
+                            SettingsActionRow(
+                                title: L10n.string("iptv_sync_now", fallback: "Sync Now"),
+                                subtitle: L10n.string("iptv_sync_now_sub", fallback: "Reload the channels and count the films and shows"),
+                                value: syncing.contains(source.id)
+                                    ? L10n.string("tvos_common_working", fallback: "Working…")
+                                    : L10n.string("iptv_sync", fallback: "Sync"),
+                                accentColor: accentColor,
+                                macRowID: "iptv.sync.\(source.id)"
+                            ) {
+                                sync(source)
+                            }
+                            SettingsActionRow(
+                                title: L10n.string("action_edit", fallback: "Edit"),
+                                subtitle: L10n.string("iptv_edit_sub", fallback: "Change the name, link or login, or remove this source"),
+                                value: L10n.string("action_edit", fallback: "Edit"),
+                                accentColor: accentColor,
+                                macRowID: "iptv.edit.\(source.id)"
+                            ) {
+                                editing = source
+                            }
+                        }
+                    }
+
+                    SettingsGroup(
+                        title: L10n.string("iptv_add_title", fallback: "Add a source"),
+                        subtitle: L10n.string("iptv_add_sub", fallback: "Omni plays what your own provider supplies")
+                    ) {
+                        SettingsActionRow(
+                            title: L10n.string("iptv_add_xtream", fallback: "Add Xtream Login"),
+                            subtitle: L10n.string("iptv_add_xtream_subtitle", fallback: "Server address, username and password from your provider"),
+                            value: "",
+                            accentColor: accentColor,
+                            macRowID: "iptv.addXtream"
+                        ) {
+                            addingKind = .xtream
+                        }
+                        SettingsActionRow(
+                            title: L10n.string("iptv_add_m3u", fallback: "Add M3U Playlist"),
+                            subtitle: L10n.string("iptv_add_m3u_subtitle", fallback: "A playlist link (.m3u or .m3u8) from your provider"),
+                            value: "",
+                            accentColor: accentColor,
+                            macRowID: "iptv.addM3U"
+                        ) {
+                            addingKind = .m3u
+                        }
+                    }
+
+                    #if !os(macOS)
+                    HStack {
+                        Spacer()
+                        SMBDialogButton(title: L10n.string("action_done", fallback: "Done"), isPrimary: true) { dismiss() }
+                    }
+                    .focusSection()
+                    #endif
+                }
+                .padding(40)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: IPTVSourceStore.changedNotification)) { _ in
+            sources = IPTVSourceStore.sources()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: IPTVSourceInfoStore.changedNotification)) { _ in
+            infos = IPTVSourceInfoStore.all()
         }
         .sheet(item: $editing) { source in
             IPTVSourceEditSheet(source: source, kind: source.kind, accentColor: accentColor)
@@ -9096,6 +9208,16 @@ private struct IPTVSettingsSection: View {
         )) { box in
             IPTVSourceEditSheet(source: nil, kind: box.kind, accentColor: accentColor)
                 .modifier(ClearPresentationBackgroundIfAvailable())
+        }
+    }
+
+    private func sync(_ source: IPTVSource) {
+        guard syncing.insert(source.id).inserted else { return }
+        Task { @MainActor in
+            _ = try? await IPTVLibrary.shared.playlist(for: source, force: true)
+            await IPTVSourceInfoService.refreshAccount(for: source)
+            await IPTVSourceInfoService.countCatalog(for: source)
+            syncing.remove(source.id)
         }
     }
 }

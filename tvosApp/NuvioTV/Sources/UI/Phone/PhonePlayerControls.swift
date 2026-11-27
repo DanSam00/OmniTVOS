@@ -700,7 +700,13 @@ struct PhonePlayerControls: View {
 
     private var chrome: some View {
         ZStack {
-            PlayerFrostedScrim(topFraction: 0.3, bottomFraction: 0.45)
+            LinearGradient(
+                colors: [.black.opacity(0.7), .clear, .clear, .black.opacity(0.8)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
 
             VStack(spacing: 0) {
                 topBar

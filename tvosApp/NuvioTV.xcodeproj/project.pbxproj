@@ -1004,6 +1004,12 @@
 		OSFE33B3AF1C9362C3C602A1 /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSF316ACFA586F3A856FE622 /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift */; };
 		OSFCB96DB48C820030BBA5EA /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSF316ACFA586F3A856FE622 /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift */; };
 		OSF3C8B10D28A9591A554606 /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSF316ACFA586F3A856FE622 /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift */; };
+		OSF414D70C3818AEA07A62DB /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSF28BE92B919108F0349F28 /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift */; };
+		OSF8AC0A8E737EF88E13EFCC /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSF28BE92B919108F0349F28 /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift */; };
+		OSF26CCD8091B490CE7A82AA /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSF28BE92B919108F0349F28 /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift */; };
+		OSF28439CA759C0D9CFA0E3A /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSF28BE92B919108F0349F28 /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift */; };
+		OSFDA072C425FECBBDAD7E7A /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSF28BE92B919108F0349F28 /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift */; };
+		OSFC52E1C2E04089525FA1FB /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSF28BE92B919108F0349F28 /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1309,6 +1315,7 @@
 		OSF46655EFCCF05141734C73 /* NuvioTV/Sources/Core/IPTV/IPTVVODBrowser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/IPTV/IPTVVODBrowser.swift; sourceTree = "<group>"; };
 		OSF72F00E37828B794F7D8E3 /* NuvioTV/Sources/UI/Phone/PhoneFoldersView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/UI/Phone/PhoneFoldersView.swift; sourceTree = "<group>"; };
 		OSF316ACFA586F3A856FE622 /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/UI/Library/LibraryFoldersView.swift; sourceTree = "<group>"; };
+		OSF28BE92B919108F0349F28 /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -1575,6 +1582,7 @@
 				WGSH00000000000000000001 /* NuvioTV/Sources/Core/Widgets/OmniWidgetShared.swift */,
 				PCCS00000000000000000001 /* NuvioTV/Sources/UI/Phone/PhoneCommunityCollections.swift */,
 				CMCL00000000000000000001 /* NuvioTV/Sources/Core/Collections/CommunityCollections.swift */,
+				OSF28BE92B919108F0349F28 /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift */,
 				OSF316ACFA586F3A856FE622 /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift */,
 				OSF72F00E37828B794F7D8E3 /* NuvioTV/Sources/UI/Phone/PhoneFoldersView.swift */,
 				OSF46655EFCCF05141734C73 /* NuvioTV/Sources/Core/IPTV/IPTVVODBrowser.swift */,
@@ -2222,6 +2230,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				OSF414D70C3818AEA07A62DB /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift in Sources */,
 				OSF331F1091B0C37EF7C055A /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift in Sources */,
 				OSF8DBA2C01A33A0E3963833 /* NuvioTV/Sources/UI/Phone/PhoneFoldersView.swift in Sources */,
 				OSFC6F1415BB1C5FBF2E5397 /* NuvioTV/Sources/Core/IPTV/IPTVVODBrowser.swift in Sources */,
@@ -2375,6 +2384,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				OSFC52E1C2E04089525FA1FB /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift in Sources */,
 				OSF3C8B10D28A9591A554606 /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift in Sources */,
 				OSFD32EC79CA40BC52DA31B5 /* NuvioTV/Sources/UI/Phone/PhoneFoldersView.swift in Sources */,
 				OSFE9CA4CE2747CCBC2CD9E6 /* NuvioTV/Sources/Core/IPTV/IPTVVODBrowser.swift in Sources */,
@@ -2537,6 +2547,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				OSF8AC0A8E737EF88E13EFCC /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift in Sources */,
 				OSFAE44BEF05F2331C272FA5 /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift in Sources */,
 				OSF6DE52A7A2FF3171FEF84C /* NuvioTV/Sources/UI/Phone/PhoneFoldersView.swift in Sources */,
 				OSFE56D182E672C2CF44EF94 /* NuvioTV/Sources/Core/IPTV/IPTVVODBrowser.swift in Sources */,
@@ -2700,6 +2711,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				OSF26CCD8091B490CE7A82AA /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift in Sources */,
 				OSFAB4918D8346EF5D2D456A /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift in Sources */,
 				OSF1E6C3A7F4C46BCBAE54DA /* NuvioTV/Sources/UI/Phone/PhoneFoldersView.swift in Sources */,
 				OSFC3596070AD45CF2BD264B /* NuvioTV/Sources/Core/IPTV/IPTVVODBrowser.swift in Sources */,
@@ -2866,6 +2878,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				OSFDA072C425FECBBDAD7E7A /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift in Sources */,
 				OSFCB96DB48C820030BBA5EA /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift in Sources */,
 				OSFCE9356A5BD0032605203B /* NuvioTV/Sources/UI/Phone/PhoneFoldersView.swift in Sources */,
 				OSFBD60883B01DA22A46D266 /* NuvioTV/Sources/Core/IPTV/IPTVVODBrowser.swift in Sources */,
@@ -3058,6 +3071,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				OSF28439CA759C0D9CFA0E3A /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift in Sources */,
 				OSFE33B3AF1C9362C3C602A1 /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift in Sources */,
 				OSF42B1394A54658B7C3618D /* NuvioTV/Sources/UI/Phone/PhoneFoldersView.swift in Sources */,
 				OSF86791319F8047554F5D91 /* NuvioTV/Sources/Core/IPTV/IPTVVODBrowser.swift in Sources */,

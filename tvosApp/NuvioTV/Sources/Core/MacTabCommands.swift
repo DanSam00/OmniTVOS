@@ -203,8 +203,22 @@ final class MacKeyRouter: ObservableObject {
     }
 
     func isFront(_ token: UUID?) -> Bool {
-        guard let token, isRoutable else { return false }
+        guard let token, isRoutable, !latestPressIsConsumed else { return false }
         return stack.last?.token == token
+    }
+
+    /// Set while the press being delivered has been taken by a dropdown. A
+    /// press goes to every listener in turn: when the dropdown handled Return
+    /// and released the keys first, the screen behind it became front in the
+    /// same delivery and ran that Return too, so choosing "Mark as Watched"
+    /// from the ⌥↩ menu also started the episode.
+    private var latestPressIsConsumed = false
+
+    /// Called by whoever takes the press being delivered; nothing else
+    /// receives it. Cleared once delivery has finished.
+    func consumeLatestPress() {
+        latestPressIsConsumed = true
+        DispatchQueue.main.async { [weak self] in self?.latestPressIsConsumed = false }
     }
 
     /// Claims made before this point stop receiving keys until the barrier is
@@ -960,6 +974,7 @@ final class MacOptionPanel: ObservableObject {
     @discardableResult
     func handle(_ key: MacKey) -> Bool {
         guard isPresented, MacKeyRouter.shared.isFront(token) else { return false }
+        MacKeyRouter.shared.consumeLatestPress()
         switch key {
         case .up:
             highlighted = max(0, highlighted - 1)

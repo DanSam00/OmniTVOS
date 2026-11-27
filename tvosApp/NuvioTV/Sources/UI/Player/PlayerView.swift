@@ -515,13 +515,6 @@ struct PlayerView: View {
             .allowsHitTesting(!viewModel.postPlayState.isVisible)
             .zIndex(5)
             #else
-            // Frosted glass behind the controls. Its own layer, so it only
-            // fades: inside the controls it scaled with them on show and
-            // hide, and its edge showed as a rectangle.
-            PlayerFrostedScrim()
-                .opacity(controlsChromeVisible ? 1 : 0)
-                .animation(.playerControls, value: controlsChromeVisible)
-                .hiddenInMiniWindow(isMiniWindow)
             PlayerControls(
                 viewModel: viewModel,
                 isSkipSegmentFocused: skipSegmentFocused,
@@ -1057,16 +1050,6 @@ struct PlayerView: View {
             return
         }
         onBack()
-    }
-
-    /// Whether the transport controls are on screen (Apple TV and Mac).
-    private var controlsChromeVisible: Bool {
-        viewModel.showControls
-            && didReportPlaybackStarted
-            && !viewModel.isSwitchingSource
-            && !viewModel.showSettingsPanel
-            && !viewModel.isScrubbing
-            && !viewModel.showPauseOverlay
     }
 
     #if os(macOS)
