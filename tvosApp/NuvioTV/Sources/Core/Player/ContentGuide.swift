@@ -13,6 +13,9 @@ struct ContentGuide: Codable, Equatable {
 
     var rating: String?
     var lines: [Line]
+    /// Where the lines came from: "ddd" (Does the Dog Die, which must be
+    /// credited wherever its data shows) or nil (IMDb).
+    var linesSource: String? = nil
 
     var isEmpty: Bool { (rating ?? "").isEmpty && lines.isEmpty }
 }
@@ -20,6 +23,8 @@ struct ContentGuide: Codable, Equatable {
 enum ContentGuideService {
     private static let storeKey = "omni.contentGuide.v1"
     private static let ttl: TimeInterval = 60 * 24 * 3600
+    /// A title with no warnings is asked about again after a week.
+    private static let emptyTTL: TimeInterval = 7 * 24 * 3600
     private static let lock = NSLock()
     private static var memory: [String: ContentGuide] = [:]
 
@@ -38,13 +43,24 @@ enum ContentGuideService {
             rating = await tmdbRating(for: meta)
         }
         var guide = ContentGuide(rating: rating, lines: [])
-        if let imdb = imdbID(of: meta) {
-            if let held = cached(imdb) {
-                guide.lines = held.lines
-            } else if let lines = await fetchLines(imdb: imdb) {
+        let imdb = imdbID(of: meta)
+        let cacheKey = imdb ?? meta.tmdbId.map { "tmdb:\($0)" }
+        if let cacheKey, let held = cached(cacheKey) {
+            guide.lines = held.lines
+            guide.linesSource = held.linesSource
+        } else if DoesTheDogDie.apiKey != nil {
+            // The viewer's own key: community warnings, kept for two months
+            // (a week when there were none, so new votes are picked up).
+            if let lines = await DoesTheDogDie.lines(imdb: imdb, tmdb: meta.tmdbId, isSeries: meta.isSeries) {
                 guide.lines = lines
-                remember(ContentGuide(rating: nil, lines: lines), for: imdb)
+                guide.linesSource = "ddd"
+                if let cacheKey {
+                    remember(ContentGuide(rating: nil, lines: lines, linesSource: "ddd"), for: cacheKey)
+                }
             }
+        } else if let imdb, let lines = await fetchLines(imdb: imdb) {
+            guide.lines = lines
+            remember(ContentGuide(rating: nil, lines: lines), for: imdb)
         }
         return guide.isEmpty ? nil : guide
     }
@@ -106,7 +122,8 @@ enum ContentGuideService {
         if let held = memory[imdb] { return held }
         guard let data = UserDefaults.standard.data(forKey: storeKey),
               let map = try? JSONDecoder().decode([String: Stored].self, from: data),
-              let stored = map[imdb], Date().timeIntervalSince(stored.fetchedAt) < ttl else { return nil }
+              let stored = map[imdb], Date().timeIntervalSince(stored.fetchedAt) < ttl,
+              !stored.guide.lines.isEmpty || Date().timeIntervalSince(stored.fetchedAt) < emptyTTL else { return nil }
         memory[imdb] = stored.guide
         return stored.guide
     }
@@ -197,14 +214,13 @@ private extension String {
 
 /// The rating card that writes itself in over the first seconds of
 /// playback: the certificate, then one line at a time for each kind of
-/// content, then it fades away. Once per start; off in Settings → Playback.
+/// content, then it fades away. Once per start, always.
 struct ContentGuideOverlay: View {
     let meta: NuvioMeta
     /// True once the picture is up.
     let playbackStarted: Bool
     var isSuppressed = false
 
-    @AppStorage(SettingsKey.contentGuideOnStart) private var enabled = true
     @State private var guide: ContentGuide?
     @State private var showsCard = false
     @State private var revealed = 0
@@ -241,6 +257,14 @@ struct ContentGuideOverlay: View {
                             .transition(.move(edge: .leading).combined(with: .opacity))
                         }
                     }
+                    // Does the Dog Die's terms: credited wherever its data shows.
+                    if guide.linesSource == "ddd", !guide.lines.isEmpty, revealed >= 1 {
+                        Text("Powered by DoesTheDogDie.com")
+                            .font(.system(size: lineSize * 0.62, weight: .medium))
+                            .foregroundColor(.white.opacity(0.6))
+                            .padding(.top, gap * 0.5)
+                            .transition(.opacity)
+                    }
                 }
                 .foregroundColor(.white)
                 .padding(pad)
@@ -255,11 +279,11 @@ struct ContentGuideOverlay: View {
         .animation(.easeOut(duration: 0.35), value: revealed)
         .animation(.easeInOut(duration: 0.5), value: showsCard)
         .task(id: meta.id) {
-            guard enabled, !meta.isLiveContent else { guide = nil; return }
+            guard !meta.isLiveContent else { guide = nil; return }
             guide = await ContentGuideService.guide(for: meta)
         }
         .task(id: playbackStarted) {
-            guard playbackStarted, enabled, !didRun, !meta.isLiveContent else { return }
+            guard playbackStarted, !didRun, !meta.isLiveContent else { return }
             // The advisory has had the time the picture took to start; give
             // it a moment more before giving up on it.
             for _ in 0..<8 where guide == nil { try? await Task.sleep(nanoseconds: 250_000_000) }
@@ -284,6 +308,142 @@ struct ContentGuideOverlay: View {
         case "moderate": return Color(red: 1.0, green: 0.62, blue: 0.2)
         case "severe": return Color(red: 1.0, green: 0.33, blue: 0.3)
         default: return .white.opacity(0.7)
+        }
+    }
+}
+
+
+// MARK: - Does the Dog Die
+
+/// Community content warnings from DoesTheDogDie.com's API.
+///
+/// The key is built in: the build scripts fill `OmniContentWarningsKey` in
+/// the app's Info.plist from a file kept on the developer's Mac, never in
+/// the repo. A build without it (a cloud build) shows the rating only.
+///
+/// Two requests a title — find it by IMDb (else TMDB) id, then its topic
+/// votes — against a free tier of 30 a minute and 5,000 a month shared by
+/// every device, so the guide's cache keeps each answer for weeks. A topic
+/// counts when at least three people said yes and more said yes than no.
+/// Series list each topic many times over (4,877 entries for Breaking Bad);
+/// the best-voted copy of each is kept.
+enum DoesTheDogDie {
+    private static let base = "https://www.doesthedogdie.com/api/v3"
+    private static let maxLines = 6
+    private static let minimumYes = 3
+
+    static let apiKey: String? = {
+        let raw = (Bundle.main.object(forInfoDictionaryKey: "OmniContentWarningsKey") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return raw.isEmpty || raw.hasPrefix("$(") ? nil : raw
+    }()
+
+    /// The title's warning lines; [] when it has none or is not listed; nil
+    /// when the API could not be asked (no key, offline, limit reached).
+    static func lines(imdb: String?, tmdb: Int?, isSeries: Bool) async -> [ContentGuide.Line]? {
+        guard let key = apiKey else { return nil }
+        var search = URLComponents(string: "\(base)/items")
+        if let imdb {
+            search?.queryItems = [URLQueryItem(name: "imdb", value: imdb)]
+        } else if let tmdb {
+            search?.queryItems = [URLQueryItem(name: "tmdb", value: String(tmdb))]
+        } else {
+            return nil
+        }
+        guard let searchURL = search?.url,
+              let found = await json(searchURL, key: key) as? [[String: Any]] else { return nil }
+        // "Movie" or "TV Show".
+        let item = found.first { item in
+            let type = ((item["itemTypeName"] as? String) ?? "").lowercased()
+            return isSeries ? type.contains("tv") : type.contains("movie")
+        } ?? found.first
+        guard let item else { return [] }
+        guard let id = (item["id"] as? Int) ?? (item["id"] as? String).flatMap(Int.init),
+              let detailURL = URL(string: "\(base)/items/\(id)"),
+              let detail = await json(detailURL, key: key) as? [String: Any] else { return nil }
+        return lines(from: detail["topicItemStats"] as? [[String: Any]] ?? [])
+    }
+
+    private static func json(_ url: URL, key: String) async -> Any? {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        request.setValue(key, forHTTPHeaderField: "X-API-KEY")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return try? JSONSerialization.jsonObject(with: data)
+    }
+
+    /// The topics a rating would speak to, by their exact names on the site,
+    /// most serious first: the order the lines are shown in.
+    private static let topics: [(name: String, label: String)] = [
+        ("someone is sexually assaulted", "Sexual assault"),
+        ("there is sexual content", "Sexual content"),
+        ("there are nude scenes", "Nudity"),
+        ("someone uses drugs", "Drug use"),
+        ("alcohol abuse", "Alcohol"),
+        ("there's blood/gore", "Gore"),
+        ("there's gun violence", "Gun violence"),
+        ("there's torture", "Torture"),
+        ("there's suicide", "Suicide"),
+        ("someone self harms", "Self-harm"),
+        ("there's domestic violence", "Domestic violence"),
+        ("there's child abuse", "Child abuse"),
+        ("there is obscene language/gestures", "Strong language"),
+        ("there are jump scares", "Jump scares"),
+        ("someone smokes or vapes", "Smoking"),
+    ]
+
+    static func lines(from stats: [[String: Any]]) -> [ContentGuide.Line] {
+        let rankByName = Dictionary(
+            topics.enumerated().map { ($1.name, $0) }, uniquingKeysWith: { first, _ in first }
+        )
+        // The best-voted copy of each topic.
+        var best: [Int: (yes: Int, no: Int, severity: [String: Any]?)] = [:]
+        for stat in stats {
+            let name = ((stat["topicName"] as? String) ?? "").lowercased()
+            guard let rank = rankByName[name] else { continue }
+            let yes = (stat["yesSum"] as? Int) ?? 0
+            let no = (stat["noSum"] as? Int) ?? 0
+            if let held = best[rank], held.yes >= yes { continue }
+            best[rank] = (yes, no, stat["severity"] as? [String: Any])
+        }
+        return best
+            .filter { $0.value.yes >= minimumYes && $0.value.yes > $0.value.no }
+            .sorted { $0.key < $1.key }
+            .prefix(maxLines)
+            .map { ContentGuide.Line(category: topics[$0.key].label, severity: severityText($0.value.severity)) }
+    }
+
+    /// The level most voters chose (the reviewer's, when there is one), in
+    /// the guide's three words. Each topic has its own scale — drug use runs
+    /// Implied, Used, Harmful; suicide talked about, attempted, completed —
+    /// so the words are read rather than the position.
+    private static func severityText(_ severity: [String: Any]?) -> String {
+        guard let severity, let levels = severity["levels"] as? [String], !levels.isEmpty else { return "" }
+        let counts = (severity["counts"] as? [Int]) ?? []
+        var index: Int?
+        if let verified = severity["verified"] as? Int, verified >= 1, verified <= levels.count {
+            index = verified - 1
+        } else if let top = counts.indices.max(by: { counts[$0] < counts[$1] }), counts[top] > 0 {
+            index = top
+        }
+        guard let index, levels.indices.contains(index) else { return "" }
+        switch levels[index].lowercased() {
+        case "implied", "mentioned", "talked about", "minor", "threatened", "mild", "incidental",
+             "partial", "casual", "verbal":
+            return "Mild"
+        case "depicted", "used", "groping", "drunk", "crude", "psychological", "attempted",
+             "startling", "covered":
+            return "Moderate"
+        case "harmful", "explicit", "excessive", "brutal", "severe", "completed", "addiction",
+             "jarring", "intentional", "abusive", "violent":
+            return "Severe"
+        default:
+            // An unknown word: placed by where it sits on the topic's scale.
+            guard levels.count > 1 else { return "" }
+            let position = Double(index) / Double(levels.count - 1)
+            return position <= 0.34 ? "Mild" : (position >= 0.67 ? "Severe" : "Moderate")
         }
     }
 }

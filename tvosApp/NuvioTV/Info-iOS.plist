@@ -2,6 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Filled in at build time from a key kept off the repo (scripts pass OMNI_CONTENT_WARNINGS_KEY); empty otherwise. -->
+	<key>OmniContentWarningsKey</key>
+	<string>$(OMNI_CONTENT_WARNINGS_KEY)</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
