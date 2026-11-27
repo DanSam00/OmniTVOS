@@ -1328,10 +1328,21 @@ struct CachedFolderCover<Content: View, Placeholder: View>: View {
     @State private var image: UIImage?
     @State private var loadedURL: URL?
 
+    /// Already in memory from an earlier draw or the prefetch, so the tile
+    /// shows at once instead of after a hop to the cache.
+    private var immediate: UIImage? {
+        guard let raw = PosterArtworkCache.shared.cachedImage(
+            for: url, maxPixelSize: CollectionArtPrefetch.coverPixels
+        ) else { return nil }
+        return lightensDarkInk ? DarkLogoInk.cachedResult(for: url, original: raw) : raw
+    }
+
     var body: some View {
         Group {
             if let image, loadedURL == url {
                 content(Image(uiImage: image))
+            } else if let immediate {
+                content(Image(uiImage: immediate))
             } else {
                 placeholder()
             }
@@ -1339,7 +1350,13 @@ struct CachedFolderCover<Content: View, Placeholder: View>: View {
         .task(id: url) {
             guard loadedURL != url || image == nil else { return }
             TVHomeDebugTrace.log("folderCover.begin \(url.lastPathComponent)")
-            guard let loaded = await BackdropImageCache.shared.image(for: url),
+            // The poster cache: on disk across launches, one fetch per
+            // address however many tiles ask, decoded at tile size. The
+            // backdrop cache decoded every cover at screen size, in memory
+            // only, so a Home full of folders refetched and redecoded them.
+            guard let loaded = await PosterArtworkCache.shared.image(
+                      for: url, maxPixelSize: CollectionArtPrefetch.coverPixels
+                  ),
                   !Task.isCancelled else {
                 TVHomeDebugTrace.log("folderCover.none cancelled=\(Task.isCancelled) \(url.lastPathComponent)")
                 return

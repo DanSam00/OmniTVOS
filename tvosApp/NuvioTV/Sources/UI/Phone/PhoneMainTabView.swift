@@ -162,6 +162,7 @@ struct PhoneMainTabView: View {
                 // A kids profile never starts with 18+ switched on.
                 if PhoneKidsMode.isActive { NSFWVisibility.shared.showsInSearch = false }
                 Task { await IPTVSourceInfoService.refreshAll() }
+                CollectionArtPrefetch.start()
                 await CommunityCollections.installPendingIfNeeded()
                 #if OMNI_X
                 guard PhoneKidsMode.isActive else { return }

@@ -489,6 +489,7 @@ struct ContentView: View {
             guard isOnMainScreen, profileViewModel.activeProfile != nil else { return }
             // Each IPTV subscription's end date, and the reminders before it.
             Task { await IPTVSourceInfoService.refreshAll() }
+            CollectionArtPrefetch.start()
             await CommunityCollections.installPendingIfNeeded()
             #if OMNI_X
             guard ProfileSettings.current.bool(forKey: SettingsKey.kidsProfile) else { return }

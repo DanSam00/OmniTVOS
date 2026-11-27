@@ -1010,6 +1010,18 @@
 		OSF28439CA759C0D9CFA0E3A /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSF28BE92B919108F0349F28 /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift */; };
 		OSFDA072C425FECBBDAD7E7A /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSF28BE92B919108F0349F28 /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift */; };
 		OSFC52E1C2E04089525FA1FB /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSF28BE92B919108F0349F28 /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift */; };
+		OSF583AABF1F6AFC805A206A /* NuvioTV/Sources/Core/Collections/CollectionArtPrefetch.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSFAB08F7009FEEC59CB4EED /* NuvioTV/Sources/Core/Collections/CollectionArtPrefetch.swift */; };
+		OSFBFB746F663F235839F48E /* NuvioTV/Sources/Core/Collections/CollectionArtPrefetch.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSFAB08F7009FEEC59CB4EED /* NuvioTV/Sources/Core/Collections/CollectionArtPrefetch.swift */; };
+		OSF8A35274F919E6E9F47A3A /* NuvioTV/Sources/Core/Collections/CollectionArtPrefetch.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSFAB08F7009FEEC59CB4EED /* NuvioTV/Sources/Core/Collections/CollectionArtPrefetch.swift */; };
+		OSFE97B91D74B4D442C9D071 /* NuvioTV/Sources/Core/Collections/CollectionArtPrefetch.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSFAB08F7009FEEC59CB4EED /* NuvioTV/Sources/Core/Collections/CollectionArtPrefetch.swift */; };
+		OSF882AF2348B232DAFC28AD /* NuvioTV/Sources/Core/Collections/CollectionArtPrefetch.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSFAB08F7009FEEC59CB4EED /* NuvioTV/Sources/Core/Collections/CollectionArtPrefetch.swift */; };
+		OSF2250930DE3DEA04CD9DC8 /* NuvioTV/Sources/Core/Collections/CollectionArtPrefetch.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSFAB08F7009FEEC59CB4EED /* NuvioTV/Sources/Core/Collections/CollectionArtPrefetch.swift */; };
+		OSF9FDDDB4E69C7894DC0C5A /* NuvioTV/Sources/Core/Player/ContentGuide.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSF955F755AAD29BE0CF799B /* NuvioTV/Sources/Core/Player/ContentGuide.swift */; };
+		OSF60CAC2FB81B19F87F1A6C /* NuvioTV/Sources/Core/Player/ContentGuide.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSF955F755AAD29BE0CF799B /* NuvioTV/Sources/Core/Player/ContentGuide.swift */; };
+		OSF64BC3EC85224421EB39F0 /* NuvioTV/Sources/Core/Player/ContentGuide.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSF955F755AAD29BE0CF799B /* NuvioTV/Sources/Core/Player/ContentGuide.swift */; };
+		OSF2843FE227DC7F3410D207 /* NuvioTV/Sources/Core/Player/ContentGuide.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSF955F755AAD29BE0CF799B /* NuvioTV/Sources/Core/Player/ContentGuide.swift */; };
+		OSF6185350165F7A33E8EA8C /* NuvioTV/Sources/Core/Player/ContentGuide.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSF955F755AAD29BE0CF799B /* NuvioTV/Sources/Core/Player/ContentGuide.swift */; };
+		OSF3D3A57A47CA281AB4D3D7 /* NuvioTV/Sources/Core/Player/ContentGuide.swift in Sources */ = {isa = PBXBuildFile; fileRef = OSF955F755AAD29BE0CF799B /* NuvioTV/Sources/Core/Player/ContentGuide.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1316,6 +1328,8 @@
 		OSF72F00E37828B794F7D8E3 /* NuvioTV/Sources/UI/Phone/PhoneFoldersView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/UI/Phone/PhoneFoldersView.swift; sourceTree = "<group>"; };
 		OSF316ACFA586F3A856FE622 /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/UI/Library/LibraryFoldersView.swift; sourceTree = "<group>"; };
 		OSF28BE92B919108F0349F28 /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift; sourceTree = "<group>"; };
+		OSFAB08F7009FEEC59CB4EED /* NuvioTV/Sources/Core/Collections/CollectionArtPrefetch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/Collections/CollectionArtPrefetch.swift; sourceTree = "<group>"; };
+		OSF955F755AAD29BE0CF799B /* NuvioTV/Sources/Core/Player/ContentGuide.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NuvioTV/Sources/Core/Player/ContentGuide.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -1582,6 +1596,8 @@
 				WGSH00000000000000000001 /* NuvioTV/Sources/Core/Widgets/OmniWidgetShared.swift */,
 				PCCS00000000000000000001 /* NuvioTV/Sources/UI/Phone/PhoneCommunityCollections.swift */,
 				CMCL00000000000000000001 /* NuvioTV/Sources/Core/Collections/CommunityCollections.swift */,
+				OSF955F755AAD29BE0CF799B /* NuvioTV/Sources/Core/Player/ContentGuide.swift */,
+				OSFAB08F7009FEEC59CB4EED /* NuvioTV/Sources/Core/Collections/CollectionArtPrefetch.swift */,
 				OSF28BE92B919108F0349F28 /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift */,
 				OSF316ACFA586F3A856FE622 /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift */,
 				OSF72F00E37828B794F7D8E3 /* NuvioTV/Sources/UI/Phone/PhoneFoldersView.swift */,
@@ -2230,6 +2246,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				OSF9FDDDB4E69C7894DC0C5A /* NuvioTV/Sources/Core/Player/ContentGuide.swift in Sources */,
+				OSF583AABF1F6AFC805A206A /* NuvioTV/Sources/Core/Collections/CollectionArtPrefetch.swift in Sources */,
 				OSF414D70C3818AEA07A62DB /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift in Sources */,
 				OSF331F1091B0C37EF7C055A /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift in Sources */,
 				OSF8DBA2C01A33A0E3963833 /* NuvioTV/Sources/UI/Phone/PhoneFoldersView.swift in Sources */,
@@ -2384,6 +2402,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				OSF3D3A57A47CA281AB4D3D7 /* NuvioTV/Sources/Core/Player/ContentGuide.swift in Sources */,
+				OSF2250930DE3DEA04CD9DC8 /* NuvioTV/Sources/Core/Collections/CollectionArtPrefetch.swift in Sources */,
 				OSFC52E1C2E04089525FA1FB /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift in Sources */,
 				OSF3C8B10D28A9591A554606 /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift in Sources */,
 				OSFD32EC79CA40BC52DA31B5 /* NuvioTV/Sources/UI/Phone/PhoneFoldersView.swift in Sources */,
@@ -2547,6 +2567,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				OSF60CAC2FB81B19F87F1A6C /* NuvioTV/Sources/Core/Player/ContentGuide.swift in Sources */,
+				OSFBFB746F663F235839F48E /* NuvioTV/Sources/Core/Collections/CollectionArtPrefetch.swift in Sources */,
 				OSF8AC0A8E737EF88E13EFCC /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift in Sources */,
 				OSFAE44BEF05F2331C272FA5 /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift in Sources */,
 				OSF6DE52A7A2FF3171FEF84C /* NuvioTV/Sources/UI/Phone/PhoneFoldersView.swift in Sources */,
@@ -2711,6 +2733,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				OSF64BC3EC85224421EB39F0 /* NuvioTV/Sources/Core/Player/ContentGuide.swift in Sources */,
+				OSF8A35274F919E6E9F47A3A /* NuvioTV/Sources/Core/Collections/CollectionArtPrefetch.swift in Sources */,
 				OSF26CCD8091B490CE7A82AA /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift in Sources */,
 				OSFAB4918D8346EF5D2D456A /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift in Sources */,
 				OSF1E6C3A7F4C46BCBAE54DA /* NuvioTV/Sources/UI/Phone/PhoneFoldersView.swift in Sources */,
@@ -2878,6 +2902,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				OSF6185350165F7A33E8EA8C /* NuvioTV/Sources/Core/Player/ContentGuide.swift in Sources */,
+				OSF882AF2348B232DAFC28AD /* NuvioTV/Sources/Core/Collections/CollectionArtPrefetch.swift in Sources */,
 				OSFDA072C425FECBBDAD7E7A /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift in Sources */,
 				OSFCB96DB48C820030BBA5EA /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift in Sources */,
 				OSFCE9356A5BD0032605203B /* NuvioTV/Sources/UI/Phone/PhoneFoldersView.swift in Sources */,
@@ -3071,6 +3097,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				OSF2843FE227DC7F3410D207 /* NuvioTV/Sources/Core/Player/ContentGuide.swift in Sources */,
+				OSFE97B91D74B4D442C9D071 /* NuvioTV/Sources/Core/Collections/CollectionArtPrefetch.swift in Sources */,
 				OSF28439CA759C0D9CFA0E3A /* NuvioTV/Sources/Core/IPTV/IPTVSourceInfo.swift in Sources */,
 				OSFE33B3AF1C9362C3C602A1 /* NuvioTV/Sources/UI/Library/LibraryFoldersView.swift in Sources */,
 				OSF42B1394A54658B7C3618D /* NuvioTV/Sources/UI/Phone/PhoneFoldersView.swift in Sources */,

@@ -496,6 +496,15 @@ struct PlayerView: View {
 
             #endif
 
+            // The rating and content advisory, written in line by line as
+            // playback starts.
+            ContentGuideOverlay(
+                meta: meta,
+                playbackStarted: didReportPlaybackStarted,
+                isSuppressed: isMiniWindow
+            )
+            .zIndex(4)
+
             // Kept mounted (not gated by an `if`) so the hide animates too: removing
             // a view that holds tvOS focus makes the focus engine finalize the
             // removal before the transition can play, so only the appear would

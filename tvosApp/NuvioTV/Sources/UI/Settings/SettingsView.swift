@@ -328,6 +328,7 @@ enum SettingsKey {
     static let jellyfinLibraryIndex = "nuvio.tv.settings.integrations.jellyfinLibraryIndex"
     static let jellyfinLocalRowEnabled = "nuvio.tv.settings.integrations.jellyfinLocalRowEnabled"
 
+    static let contentGuideOnStart = "nuvio.tv.settings.playback.contentGuideOnStart"
     static let playerEngine = "nuvio.tv.settings.playback.playerEngine"
     static let externalPlayer = "nuvio.tv.settings.playback.externalPlayer"
     static let smartStreamSelection = "nuvio.tv.settings.playback.smartStreamSelection"
@@ -6805,6 +6806,7 @@ private struct PlaybackSettingsView: View {
     @AppStorage(SettingsKey.smartSubtitleMatching) private var smartSubtitleMatching = true
     @AppStorage(SettingsKey.cachedOnlyStreams) private var cachedOnlyStreams = false
     @AppStorage(SettingsKey.preferHardwareDecodedStreams) private var preferHardwareDecodedStreams = true
+    @AppStorage(SettingsKey.contentGuideOnStart) private var contentGuideOnStart = true
     @AppStorage(SettingsKey.streamSortOption) private var streamSortOption = StreamSortOption.quality.rawValue
     @AppStorage(SettingsKey.showFileSizeBadges) private var showFileSizeBadges = true
     @AppStorage(SettingsKey.showAddonLogo) private var showAddonLogo = false
@@ -7072,6 +7074,13 @@ private struct PlaybackSettingsView: View {
                     title: L10n.string("tvos_settings_prefer_hardware_codecs", fallback: "Prefer Hardware Decoded Streams"),
                     subtitle: L10n.string("tvos_settings_prefer_hardware_codecs_subtitle", fallback: "Prioritize HEVC and H.264 streams over AV1 for 4K content to prevent high CPU load (300%+), reduce heat, and ensure native Dolby Vision and HDR support on Apple TV"),
                     isOn: $preferHardwareDecodedStreams,
+                    accentColor: accentColor
+                )
+
+                SettingsToggleRow(
+                    title: L10n.string("settings_content_guide", fallback: "Content Guide on Start"),
+                    subtitle: L10n.string("settings_content_guide_sub", fallback: "When playback starts, briefly show the rating and what the title contains, such as violence or language"),
+                    isOn: $contentGuideOnStart,
                     accentColor: accentColor
                 )
 

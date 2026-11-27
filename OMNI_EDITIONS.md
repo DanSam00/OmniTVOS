@@ -76,3 +76,9 @@ The Omni target runs `python3 scripts/strip_public_catalog.py` after copying res
 - iOS widgets and the Top Shelf for Omni (its iOS/tvOS targets have no extensions and no App Group yet; `topShelfAppGroupID` derives `group.<bundle id>` when they are added). App Store Connect record, privacy policy, age rating, screenshots, and App Review notes (state that Omni ships no content and no content sources; users supply their own IPTV / Jellyfin / SMB).
 - **Account deletion**: Settings → Account → Delete Account (below Sign Out) asks "Are you sure?" and deletes either the active non-primary profile, or — on the primary profile, with an explicit warning — the whole Nuvio account. The account case calls `AuthConfig.deleteAccountFunction` (`delete_my_account`) on Nuvio's backend; **that function must exist there** (it is a guess at the name) or the button reports that deletion is unavailable and Apple will reject the app.
 - Nuvio sign-in: optional (Skip works). It is still a third-party service; a bundled offline copy of the curated collections would remove Review's dependence on it.
+
+## Added later
+
+- **IPTV pop-up** (Settings → Integrations → IPTV → Manage): per subscription, channels / movies / shows as last read, when it was synced, and when it ends (Xtream `exp_date`; M3U links usually give none). Films and shows are counted by downloading the panel's lists, so that runs on "Sync Now" and, on its own, only on the Mac. Reminders go out three days and one day before the end date (iOS/macOS; tvOS only shows it in the pop-up).
+- **Content guide on start**: the rating and advisory lines write in over the first seconds of playback (Settings → Playback → Content Guide on Start). Advisory lines come from IMDb's parents' guide page in Omni X only; Omni shows the certificate.
+- **Collection art** is prefetched at launch into the poster cache (on disk), so Home's collection rows draw without waiting.

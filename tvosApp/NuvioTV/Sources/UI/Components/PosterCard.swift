@@ -1844,8 +1844,33 @@ struct CachedPosterArtwork<Placeholder: View>: View {
 actor PosterArtworkCache {
     static let shared = PosterArtworkCache()
 
-    private let cache = NSCache<NSString, UIImage>()
+    /// NSCache is thread-safe, which lets a view read it while it is built.
+    nonisolated(unsafe) private let cache = NSCache<NSString, UIImage>()
     private var inFlight: [String: Task<UIImage?, Never>] = [:]
+
+    /// The image if it is already decoded at this size, without waiting, so
+    /// a card that has been seen before draws on its first frame.
+    nonisolated func cachedImage(for url: URL, maxPixelSize: Int) -> UIImage? {
+        guard !PosterArtworkCachePolicy.isVolatile(url) else { return nil }
+        let bounded = min(max(maxPixelSize, 160), 1400)
+        return cache.object(forKey: "\(url.absoluteString)#\(bounded)" as NSString)
+    }
+
+    /// Fetches and decodes ahead of need, a few at a time, so the art is on
+    /// disk and in memory by the time its row is drawn.
+    func prefetch(_ urls: [URL], maxPixelSize: Int) async {
+        var iterator = urls.makeIterator()
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<4 {
+                guard let url = iterator.next() else { break }
+                group.addTask { _ = await self.image(for: url, maxPixelSize: maxPixelSize) }
+            }
+            while await group.next() != nil {
+                guard !Task.isCancelled, let url = iterator.next() else { continue }
+                group.addTask { _ = await self.image(for: url, maxPixelSize: maxPixelSize) }
+            }
+        }
+    }
 
     init() {
         cache.countLimit = 220
